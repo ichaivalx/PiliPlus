@@ -105,7 +105,21 @@ jobs:
 
             - name: Flutter Build Release Apk
               if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' }}
-              run: flutter build apk --release --split-per-abi --dart-define-from-file=pili_release.json --pub
+              run: |
+                  set -o pipefail
+                  flutter build apk --release --split-per-abi --dart-define-from-file=pili_release.json --pub 2>&1 | tee flutter_build.log
+                  status=${PIPESTATUS[0]}
+                  if [ "$status" -ne 0 ]; then
+                    snippet=$(grep -E "Error:|FAILURE:|Exception:|Failed to|Could not|Target kernel_snapshot_program failed|Dart compiler exited" flutter_build.log | tail -n 80 || true)
+                    if [ -z "$snippet" ]; then
+                      snippet=$(tail -n 80 flutter_build.log)
+                    fi
+                    snippet=${snippet//'%'/'%25'}
+                    snippet=${snippet//$'\r'/'%0D'}
+                    snippet=${snippet//$'\n'/'%0A'}
+                    echo "::error title=Flutter build failed::${snippet:0:8000}"
+                  fi
+                  exit "$status"
 
             - name: Flutter Build Dev Apk
               if: ${{ github.event_name == 'pull_request' }}
