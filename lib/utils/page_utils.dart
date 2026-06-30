@@ -575,7 +575,7 @@ abstract final class PageUtils {
     bool isVertical = false,
     Dimension? dimension,
   }) {
-    final arguments = {
+    final arguments = <String, dynamic>{
       'aid': aid ?? IdUtils.bv2av(bvid!),
       'bvid': bvid ?? IdUtils.av2bv(aid!),
       'cid': cid,

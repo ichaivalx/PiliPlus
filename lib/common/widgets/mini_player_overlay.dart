@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:PiliPlus/common/style.dart';
+import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player_service.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
 import 'package:flutter/material.dart';
