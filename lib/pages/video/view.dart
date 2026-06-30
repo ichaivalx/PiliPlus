@@ -190,7 +190,12 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         ..addStatusLister(playerListener)
         ..addPositionListener(positionListener);
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        MiniPlayerService.instanceOrNull?.finishRestore(heroTag);
+        if (mounted) {
+          MiniPlayerService.instanceOrNull?.updateRestoreTarget(
+            heroTag,
+            _playerGlobalRect(),
+          );
+        }
       });
       return;
     }
@@ -1369,7 +1374,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     controller
       ..removeStatusLister(playerListener)
       ..removePositionListener(positionListener);
-    miniPlayer.minimizeCurrentRoute();
   }
 
   bool _isMiniDragStart(double width, Offset position) {

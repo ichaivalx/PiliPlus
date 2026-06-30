@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:math' show max, min;
 import 'dart:ui';
 
@@ -37,6 +38,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   bool _restoreAnimating = false;
   bool _moving = false;
   bool _resizing = false;
+  String? _restoreAnimatingHeroTag;
 
   @override
   void initState() {
@@ -113,14 +115,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     );
   }
 
-  Rect _sourceRectOr(Rect fallback) {
-    final source = _service.snapshot.value?.sourceRect;
-    if (source == null || source.isEmpty) {
-      return fallback;
-    }
-    return source;
-  }
-
   void _snapTo(Rect rect) {
     if (_controller.isAnimating) {
       _controller.stop();
@@ -142,28 +136,44 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _beginRect = _lastPaintRect ??
         (snapshot.sourceRect.isEmpty ? target : snapshot.sourceRect);
     _targetRect = target;
-    _controller.forward(from: 0);
+    _controller.forward(from: 0).whenComplete(() {
+      if (mounted && _service.isEntering && !_service.isRestoring) {
+        unawaited(_service.finishEnterAnimation());
+      }
+    });
   }
 
   Future<void> _restore(Rect current) async {
-    if (_restoreAnimating || !_service.beginRestore()) {
+    if (_service.isEntering || _restoreAnimating || !_service.beginRestore()) {
       return;
     }
-    _restoreAnimating = true;
-    _beginRect = _lastPaintRect ?? current;
-    _targetRect = _sourceRectOr(current);
-    try {
-      await _controller.forward(from: 0);
-      if (mounted && _service.isRestoring && _service.snapshot.value != null) {
-        _service.restore();
-      }
-    } finally {
-      _restoreAnimating = false;
+    _beginRect = current;
+    _targetRect = current;
+    _lastPaintRect = current;
+    if (mounted) {
+      _service.restore();
     }
   }
 
+  void _ensureRestoreAnimation(Rect target, String heroTag) {
+    if (_restoreAnimating && _restoreAnimatingHeroTag == heroTag) {
+      return;
+    }
+    _restoreAnimating = true;
+    _restoreAnimatingHeroTag = heroTag;
+    _beginRect = _lastPaintRect ?? _service.placement.value ?? target;
+    _targetRect = target;
+    _controller.forward(from: 0).whenComplete(() {
+      if (mounted && _service.isRestoring) {
+        _service.finishRestore(heroTag);
+      }
+      _restoreAnimating = false;
+      _restoreAnimatingHeroTag = null;
+    });
+  }
+
   void _startMove(DragStartDetails details, Rect current) {
-    if (_service.isRestoring) {
+    if (_service.isEntering || _service.isRestoring) {
       return;
     }
     _moving = true;
@@ -205,7 +215,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 
   void _startResize(DragStartDetails details, Rect current) {
-    if (_service.isRestoring) {
+    if (_service.isEntering || _service.isRestoring) {
       return;
     }
     _resizing = true;
@@ -273,28 +283,39 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
             _resizeStartRect = null;
             _moving = false;
             _resizing = false;
+            _restoreAnimatingHeroTag = null;
             return const SizedBox.shrink();
           }
 
           final mediaQuery = MediaQuery.of(context);
           final size = mediaQuery.size;
           final padding = mediaQuery.viewPadding;
-          final target = _clampRect(
+          final miniTarget = _clampRect(
             _service.placement.value ?? _defaultMiniRect(size, padding),
             size,
             padding,
           );
+          final restoreTarget = _service.restoreTarget.value;
+          final restoreHeroTag = _service.restoringHeroTag;
+          final isRestoreToPage = _service.restoring.value &&
+              restoreTarget != null &&
+              restoreHeroTag != null;
+          final target = isRestoreToPage ? restoreTarget! : miniTarget;
           final hasManualPlacement =
               _service.placement.value != null && !_service.restoring.value;
 
-          if (!hasManualPlacement) {
+          if (isRestoreToPage) {
+            _ensureRestoreAnimation(target, restoreHeroTag!);
+          } else if (!_service.restoring.value && !hasManualPlacement) {
             _ensureForwardAnimation(target, snapshot);
           }
 
           return AnimatedBuilder(
             animation: _controller,
             builder: (context, child) {
-              final rect = hasManualPlacement
+              final rect = _service.restoring.value && !isRestoreToPage
+                  ? _lastPaintRect ?? target
+                  : hasManualPlacement
                   ? target
                   : Rect.lerp(
                       _beginRect ?? target,
@@ -377,7 +398,9 @@ class _MiniPlayerSurface extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               Obx(() {
-                if (!service.restoring.value && videoController != null) {
+                if (!service.entering.value &&
+                    !service.restoring.value &&
+                    videoController != null) {
                   final videoFit = controller.videoFit.value;
                   return FittedBox(
                     fit: videoFit.boxFit,
@@ -435,23 +458,34 @@ class _MiniPlayerSurface extends StatelessWidget {
               Positioned(
                 top: 6,
                 left: 6,
-                child: _MiniResizeHandle(
-                  onPanStart: onResizeStart,
-                  onPanUpdate: onResizeUpdate,
-                  onPanEnd: onResizeEnd,
+                child: Obx(
+                  () => service.entering.value || service.restoring.value
+                      ? const SizedBox.shrink()
+                      : _MiniResizeHandle(
+                          onPanStart: onResizeStart,
+                          onPanUpdate: onResizeUpdate,
+                          onPanEnd: onResizeEnd,
+                        ),
                 ),
               ),
               Positioned(
                 top: 6,
                 right: 6,
-                child: _MiniIconButton(
-                  tooltip: '关闭小窗',
-                  icon: Icons.close,
-                  onPressed: service.close,
+                child: Obx(
+                  () => service.entering.value || service.restoring.value
+                      ? const SizedBox.shrink()
+                      : _MiniIconButton(
+                          tooltip: '关闭小窗',
+                          icon: Icons.close,
+                          onPressed: service.close,
+                        ),
                 ),
               ),
               Center(
                 child: Obx(() {
+                  if (service.entering.value || service.restoring.value) {
+                    return const SizedBox.shrink();
+                  }
                   if (service.loading.value) {
                     return SizedBox.square(
                       dimension: 34,

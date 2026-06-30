@@ -1635,10 +1635,14 @@ class PlPlayerController with BlockConfigMixin {
   }
 
   static void updatePlayCount() {
-    if (_instance?._playerCount == 1) {
-      _instance?.dispose();
+    final instance = _instance;
+    if (instance == null || instance._playerCount <= 0) {
+      return;
+    }
+    if (instance._playerCount == 1) {
+      instance.dispose();
     } else {
-      _instance?._playerCount -= 1;
+      instance._playerCount -= 1;
     }
   }
 

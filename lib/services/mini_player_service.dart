@@ -70,6 +70,8 @@ class MiniPlayerSnapshot {
 }
 
 class MiniPlayerService extends GetxController {
+  static const _videoDetailRouteName = '/videoV';
+
   static MiniPlayerService get ensureInitialized {
     if (Get.isRegistered<MiniPlayerService>()) {
       return Get.find<MiniPlayerService>();
@@ -88,19 +90,24 @@ class MiniPlayerService extends GetxController {
   final Rxn<MiniPlayerSnapshot> snapshot = Rxn<MiniPlayerSnapshot>();
   final RxBool visible = false.obs;
   final RxBool loading = false.obs;
+  final RxBool entering = false.obs;
   final RxBool restoring = false.obs;
   final Rxn<Rect> placement = Rxn<Rect>();
+  final Rxn<Rect> restoreTarget = Rxn<Rect>();
 
   String? _restoredHeroTag;
   PlPlayerController? _restoredController;
   MiniPlayerSnapshot? _pendingRestoredSnapshot;
   bool? _previousEnableBackgroundPlay;
+  Transition? _previousDefaultTransition;
   Completer<void>? _replaceCompleter;
   int _epoch = 0;
 
   bool get isActive => visible.value && snapshot.value != null;
+  bool get isEntering => entering.value;
   bool get isRestoring => restoring.value;
   bool get isActiveOrRestoring => isActive || restoring.value;
+  String? get restoringHeroTag => _restoredHeroTag ?? snapshot.value?.heroTag;
 
   bool isTabletLandscape(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
@@ -154,6 +161,20 @@ class MiniPlayerService extends GetxController {
     _previousEnableBackgroundPlay = null;
   }
 
+  void _disableRouteTransitionForRestore() {
+    _previousDefaultTransition ??= Get.defaultTransition;
+    Get.rootController.defaultTransition = Transition.noTransition;
+  }
+
+  void _restoreRouteTransitionPreference() {
+    final previous = _previousDefaultTransition;
+    if (previous == null) {
+      return;
+    }
+    Get.rootController.defaultTransition = previous;
+    _previousDefaultTransition = null;
+  }
+
   bool enter(MiniPlayerSnapshot nextSnapshot) {
     if (nextSnapshot.plPlayerController.videoController == null ||
         nextSnapshot.videoUrl == null) {
@@ -163,7 +184,9 @@ class MiniPlayerService extends GetxController {
       placement.value = null;
     }
     _epoch += 1;
+    entering.value = true;
     restoring.value = false;
+    restoreTarget.value = null;
     _restoredHeroTag = null;
     _restoredController = null;
     _pendingRestoredSnapshot = null;
@@ -192,10 +215,27 @@ class MiniPlayerService extends GetxController {
     placement.value = null;
   }
 
+  bool _isVideoDetailRoute(Route<dynamic> route) =>
+      route.settings.name == _videoDetailRouteName;
+
   Future<void> minimizeCurrentRoute() async {
     await Future<void>.delayed(Duration.zero);
-    if (Get.currentRoute == '/videoV') {
-      Get.back();
+    if (Get.currentRoute != _videoDetailRouteName) {
+      return;
+    }
+    Get.until((route) => route.isFirst || !_isVideoDetailRoute(route));
+  }
+
+  Future<void> finishEnterAnimation() async {
+    if (!entering.value || !isActive || restoring.value) {
+      return;
+    }
+    try {
+      await minimizeCurrentRoute();
+    } finally {
+      if (!restoring.value) {
+        entering.value = false;
+      }
     }
   }
 
@@ -451,10 +491,12 @@ class MiniPlayerService extends GetxController {
 
   bool beginRestore() {
     final current = snapshot.value;
-    if (current == null || restoring.value || loading.value) {
+    if (current == null || entering.value || restoring.value || loading.value) {
       return false;
     }
     restoring.value = true;
+    entering.value = false;
+    restoreTarget.value = null;
     _epoch += 1;
     return true;
   }
@@ -469,15 +511,12 @@ class MiniPlayerService extends GetxController {
       return;
     }
     final arguments = current.restoreArguments;
-    visible.value = false;
-    snapshot.value = null;
-    loading.value = false;
-    placement.value = null;
     _restoredHeroTag = current.heroTag;
     _restoredController = current.plPlayerController;
     _pendingRestoredSnapshot = current;
+    _disableRouteTransitionForRestore();
     Get.toNamed(
-      '/videoV',
+      _videoDetailRouteName,
       arguments: arguments,
       preventDuplicates: false,
     );
@@ -493,6 +532,13 @@ class MiniPlayerService extends GetxController {
     return current;
   }
 
+  void updateRestoreTarget(String heroTag, Rect target) {
+    if (!restoring.value || restoringHeroTag != heroTag) {
+      return;
+    }
+    restoreTarget.value = target;
+  }
+
   void finishRestore(String heroTag) {
     if (!restoring.value || _restoredHeroTag != heroTag) {
       return;
@@ -501,8 +547,14 @@ class MiniPlayerService extends GetxController {
     _restoredController = null;
     _restoredHeroTag = null;
     _pendingRestoredSnapshot = null;
+    visible.value = false;
+    snapshot.value = null;
+    loading.value = false;
+    entering.value = false;
     restoring.value = false;
     placement.value = null;
+    restoreTarget.value = null;
+    _restoreRouteTransitionPreference();
     _restoreBackgroundPlayPreference();
   }
 
@@ -512,12 +564,15 @@ class MiniPlayerService extends GetxController {
     visible.value = false;
     snapshot.value = null;
     loading.value = false;
+    entering.value = false;
     restoring.value = false;
     placement.value = null;
+    restoreTarget.value = null;
     _restoredHeroTag = null;
     _restoredController = null;
     _pendingRestoredSnapshot = null;
     _epoch += 1;
+    _restoreRouteTransitionPreference();
     if (current != null) {
       current.plPlayerController.inAppMiniPlayerActive = false;
       current.plPlayerController.makeHeartBeat(
