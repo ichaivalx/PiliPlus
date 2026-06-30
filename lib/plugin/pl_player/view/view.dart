@@ -50,6 +50,7 @@ import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/forward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/mpv_convert_webp.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/play_pause_btn.dart';
+import 'package:PiliPlus/services/mini_player_service.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -97,6 +98,7 @@ class PLVideoPlayer extends StatefulWidget {
     this.danmuWidget,
     this.showEpisodes,
     this.showViewPoints,
+    this.onEnterMiniPlayer,
     this.fill = Colors.black,
     this.alignment = Alignment.center,
     super.key,
@@ -120,6 +122,7 @@ class PLVideoPlayer extends StatefulWidget {
   ])?
   showEpisodes;
   final VoidCallback? showViewPoints;
+  final VoidCallback? onEnterMiniPlayer;
   final Color fill;
   final Alignment alignment;
 
@@ -329,7 +332,8 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!plPlayerController.continuePlayInBackground.value) {
+    if (!plPlayerController.continuePlayInBackground.value &&
+        !MiniPlayerService.isMiniActive) {
       late final player = plPlayerController.videoPlayerController;
       if (const <AppLifecycleState>[.paused, .detached].contains(state)) {
         if (player != null && player.state.playing) {
@@ -1008,7 +1012,8 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         _gestureType = .horizontal;
       } else if (dy > 3 * dx) {
         if (!plPlayerController.enableSlideVolumeBrightness &&
-            !plPlayerController.enableSlideFS) {
+            !plPlayerController.enableSlideFS &&
+            widget.onEnterMiniPlayer == null) {
           return;
         }
 
@@ -1025,7 +1030,8 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
             _gestureType = .left;
           }
         } else if (tapPosition < sectionWidth * 2) {
-          if (!plPlayerController.enableSlideFS) {
+          if (!plPlayerController.enableSlideFS &&
+              widget.onEnterMiniPlayer == null) {
             return;
           }
           // 全屏
@@ -1097,6 +1103,14 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
 
       void fullScreenTrigger(bool status) {
         plPlayerController.triggerFullScreen(status: status);
+      }
+
+      if (!isFullScreen &&
+          widget.onEnterMiniPlayer != null &&
+          cumulativeDy > 42) {
+        _gestureType = .center_down;
+        widget.onEnterMiniPlayer!();
+        return;
       }
 
       if (cumulativeDy > threshold) {

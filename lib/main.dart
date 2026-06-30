@@ -4,6 +4,7 @@ import 'package:PiliPlus/build_config.dart';
 import 'package:PiliPlus/common/constants.dart';
 import 'package:PiliPlus/common/widgets/back_detector.dart';
 import 'package:PiliPlus/common/widgets/custom_toast.dart';
+import 'package:PiliPlus/common/widgets/mini_player_overlay.dart';
 import 'package:PiliPlus/common/widgets/route_aware_mixin.dart';
 import 'package:PiliPlus/common/widgets/scale_app.dart';
 import 'package:PiliPlus/common/widgets/scroll_behavior.dart';
@@ -325,7 +326,7 @@ class MyApp extends StatelessWidget {
         child: child,
       );
     }
-    return child;
+    return AppMiniPlayerOverlay(child: child);
   }
 
   /// from [DynamicColorBuilderState.initPlatformState]

@@ -130,6 +130,7 @@ class PlPlayerController with BlockConfigMixin {
       Pref.continuePlayInBackground.obs;
 
   bool _autoPlay = false;
+  bool inAppMiniPlayerActive = false;
 
   // 记录历史记录
   int? _aid;
@@ -1724,6 +1725,9 @@ class PlPlayerController with BlockConfigMixin {
 
   void onPopInvokedWithResult(bool didPop, Object? result) {
     if (didPop) {
+      if (inAppMiniPlayerActive) {
+        return;
+      }
       if (playerStatus.isPlaying) {
         pause();
       }

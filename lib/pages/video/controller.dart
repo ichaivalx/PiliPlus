@@ -49,6 +49,7 @@ import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/services/mini_player_service.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -122,6 +123,8 @@ class VideoDetailController extends GetxController
 
   final plPlayerController = PlPlayerController.getInstance()
     ..brightness.value = -1;
+  MiniPlayerSnapshot? restoredMiniSnapshot;
+  bool get isRestoredFromMini => restoredMiniSnapshot != null;
   bool get setSystemBrightness => plPlayerController.setSystemBrightness;
   bool get removeSafeArea => plPlayerController.removeSafeArea;
   double get uiScale => plPlayerController.uiScale;
@@ -388,6 +391,25 @@ class VideoDetailController extends GetxController
     heroTag = args['heroTag'];
     cover = RxString(args['cover'] ?? '');
     isVertical = RxBool(args['isVertical'] ?? false);
+
+    restoredMiniSnapshot = MiniPlayerService.instanceOrNull
+        ?.takeRestoredSnapshot(heroTag);
+    if (restoredMiniSnapshot case final snapshot?) {
+      data = snapshot.data;
+      firstVideo = snapshot.firstVideo;
+      currentVideoQa.value = snapshot.currentVideoQa;
+      currentAudioQa = snapshot.currentAudioQa;
+      currentDecodeFormats = snapshot.currentDecodeFormats;
+      videoUrl = snapshot.videoUrl;
+      audioUrl = snapshot.audioUrl;
+      volume = snapshot.volume;
+      playedTime = snapshot.position;
+      videoState.value = true;
+      _autoPlay.value = true;
+      if (snapshot.cover.isNotEmpty) {
+        cover.value = snapshot.cover;
+      }
+    }
 
     sourceType = args['sourceType'] ?? SourceType.normal;
     isFileSource = sourceType == SourceType.file;

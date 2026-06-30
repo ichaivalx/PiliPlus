@@ -18,6 +18,7 @@ import 'package:PiliPlus/pages/common/publish/publish_route.dart';
 import 'package:PiliPlus/pages/contact/view.dart';
 import 'package:PiliPlus/pages/fav_panel/view.dart';
 import 'package:PiliPlus/pages/share/view.dart';
+import 'package:PiliPlus/services/mini_player_service.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/app_scheme.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
@@ -547,6 +548,10 @@ abstract final class PageUtils {
     if (roomId == null) {
       return;
     }
+    if (MiniPlayerService.instanceOrNull case final miniPlayer?
+        when miniPlayer.isActive) {
+      miniPlayer.close();
+    }
     if (off) {
       Get.offNamed('/liveRoom', arguments: roomId);
     } else {
@@ -585,6 +590,13 @@ abstract final class PageUtils {
       'heroTag': Utils.makeHeroTag(cid),
       ...?extraArguments,
     };
+    final miniPlayer = MiniPlayerService.instanceOrNull;
+    if (miniPlayer != null && miniPlayer.isActive) {
+      if (!off && miniPlayer.shouldReplaceWith(arguments)) {
+        return miniPlayer.replaceWith(arguments);
+      }
+      miniPlayer.close();
+    }
     if (off) {
       return Get.offNamed(
         '/videoV',
