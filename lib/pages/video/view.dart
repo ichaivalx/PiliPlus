@@ -110,8 +110,16 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   bool get pipNoDanmaku =>
       videoDetailController.plPlayerController.pipNoDanmaku;
 
+  MiniPlayerService? get miniPlayerService => MiniPlayerService.instanceOrNull;
+
   bool get isOwnedByMiniPlayer =>
-      MiniPlayerService.instanceOrNull?.ownsHeroTag(heroTag) ?? false;
+      miniPlayerService?.ownsHeroTag(heroTag) ?? false;
+
+  bool get isMiniPlayerHoldingPlayer =>
+      miniPlayerService?.isHoldingPlayer ?? false;
+
+  bool get shouldDetachPlayerForMini =>
+      isMiniPlayerHoldingPlayer && !isOwnedByMiniPlayer;
 
   bool isShowing = true;
 
@@ -176,6 +184,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       plPlayerController!
         ..addStatusLister(playerListener)
         ..addPositionListener(positionListener);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        MiniPlayerService.instanceOrNull?.finishRestore(heroTag);
+      });
       return;
     }
     videoDetailController.queryVideoUrl(autoFullScreenFlag: true);
@@ -357,12 +368,16 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
     if (!videoDetailController.plPlayerController.isCloseAll &&
         !isOwnedByMiniPlayer) {
-      videoPlayerServiceHandler?.onVideoDetailDispose(heroTag);
-      if (plPlayerController != null) {
-        videoDetailController.makeHeartBeat();
-        plPlayerController!.dispose();
-      } else {
+      if (shouldDetachPlayerForMini) {
         PlPlayerController.updatePlayCount();
+      } else {
+        videoPlayerServiceHandler?.onVideoDetailDispose(heroTag);
+        if (plPlayerController != null) {
+          videoDetailController.makeHeartBeat();
+          plPlayerController!.dispose();
+        } else {
+          PlPlayerController.updatePlayCount();
+        }
       }
     }
     removeObserverMobile(this);
@@ -389,6 +404,11 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       ..cancelBlockListener()
       ..playerStatus = plPlayerController?.playerStatus.value
       ..brightness = plPlayerController?.brightness.value;
+
+    if (shouldDetachPlayerForMini) {
+      return;
+    }
+
     if (plPlayerController != null) {
       videoDetailController.makeHeartBeat();
       plPlayerController!
@@ -406,6 +426,13 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     super.didPopNext();
 
     if (videoDetailController.plPlayerController.isCloseAll) {
+      return;
+    }
+
+    if (shouldDetachPlayerForMini) {
+      isShowing = true;
+      addObserverMobile(this);
+      introController.startTimer();
       return;
     }
 

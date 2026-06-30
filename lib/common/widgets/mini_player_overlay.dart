@@ -94,6 +94,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         Obx(() {
           final snapshot = _service.snapshot.value;
           if (!_service.visible.value || snapshot == null) {
+            _beginRect = null;
+            _targetRect = null;
+            _lastPaintRect = null;
             return const SizedBox.shrink();
           }
 
@@ -281,7 +284,7 @@ class _MiniPlayerSurface extends StatelessWidget {
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              DurationUtils.formatDuration(progress),
+                              DurationUtils.formatDuration(progress / 1000),
                               style: TextStyle(
                                 color: Colors.white.withValues(alpha: 0.88),
                                 fontSize: 11,

@@ -1551,18 +1551,7 @@ class PlPlayerController with BlockConfigMixin {
     Get.until((route) => route.isFirst);
   }
 
-  void dispose() {
-    // 每次减1，最后销毁
-    _resetPlayerOrientationIfNeeded();
-    cancelLongPressTimer();
-    _cancelSubForSeek();
-    if (!_isCloseAll && _playerCount > 1) {
-      _playerCount -= 1;
-      _heartDuration = 0;
-      return;
-    }
-
-    _playerCount = 0;
+  void _disposePlayerResources({required bool clearInstance}) {
     if (removeSafeArea) {
       showSystemBar();
     }
@@ -1608,8 +1597,41 @@ class PlPlayerController with BlockConfigMixin {
     _videoPlayerController?.dispose();
     _videoPlayerController = null;
     _videoController = null;
-    _instance = null;
+    if (clearInstance) {
+      _instance = null;
+    }
     videoPlayerServiceHandler?.clear();
+  }
+
+  void dispose() {
+    // 每次减1，最后销毁
+    _resetPlayerOrientationIfNeeded();
+    cancelLongPressTimer();
+    _cancelSubForSeek();
+    if (!_isCloseAll && _playerCount > 1) {
+      _playerCount -= 1;
+      _heartDuration = 0;
+      return;
+    }
+
+    _playerCount = 0;
+    _disposePlayerResources(clearInstance: true);
+  }
+
+  void disposeMiniPlayer() {
+    _resetPlayerOrientationIfNeeded();
+    cancelLongPressTimer();
+    _cancelSubForSeek();
+    inAppMiniPlayerActive = false;
+    if (_playerCount > 1) {
+      _playerCount -= 1;
+      _heartDuration = 0;
+      _disposePlayerResources(clearInstance: false);
+      return;
+    }
+
+    _playerCount = 0;
+    _disposePlayerResources(clearInstance: true);
   }
 
   static void updatePlayCount() {
