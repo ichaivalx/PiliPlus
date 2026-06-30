@@ -494,6 +494,9 @@ class PlPlayerController with BlockConfigMixin {
             orientation == .portraitDown)) {
       return;
     }
+    if (horizontalScreen && !isFullScreen) {
+      return;
+    }
     switch (orientation) {
       case .portraitUp:
         if (!_isVertical && controlsLock.value) return;
@@ -502,23 +505,23 @@ class PlPlayerController with BlockConfigMixin {
             triggerFullScreen(status: false, orientation: orientation);
           }
         } else {
-          portraitUpMode();
+          _setPlayerOrientation(portraitUpMode);
         }
       case .portraitDown:
         if (!horizontalScreen) return;
         if (!_isVertical && controlsLock.value) return;
-        portraitDownMode();
+        _setPlayerOrientation(portraitDownMode);
       case .landscapeLeft:
         if (!horizontalScreen && !isFullScreen) {
           triggerFullScreen(orientation: orientation, isManualFS: false);
         } else {
-          landscapeLeftMode();
+          _setPlayerOrientation(landscapeLeftMode);
         }
       case .landscapeRight:
         if (!horizontalScreen && !isFullScreen) {
           triggerFullScreen(orientation: orientation, isManualFS: false);
         } else {
-          landscapeRightMode();
+          _setPlayerOrientation(landscapeRightMode);
         }
     }
   }
@@ -1353,6 +1356,20 @@ class PlPlayerController with BlockConfigMixin {
   late final FullScreenMode mode = Pref.fullScreenMode;
   late final horizontalScreen = Pref.horizontalScreen;
   late final removeSafeArea = Pref.removeSafeArea;
+  bool _hasPlayerOrientation = false;
+
+  Future<void>? _setPlayerOrientation(Future<void>? Function() setOrientation) {
+    _hasPlayerOrientation = true;
+    return setOrientation();
+  }
+
+  Future<void>? _resetPlayerOrientationIfNeeded() {
+    if (!_hasPlayerOrientation) {
+      return null;
+    }
+    _hasPlayerOrientation = false;
+    return resetScreenRotation();
+  }
 
   Future<void>? changeOrientation({
     required bool isVertical,
@@ -1365,21 +1382,21 @@ class PlPlayerController with BlockConfigMixin {
         (mode == .vertical ||
             (mode == .auto && isVertical) ||
             (mode == .ratio && (isVertical || screenRatio < kScreenRatio)))) {
-      return portraitUpMode();
+      return _setPlayerOrientation(portraitUpMode);
     } else {
       // https://github.com/flutter/flutter/issues/73651
       // https://github.com/flutter/flutter/issues/183708
       if (Platform.isAndroid) {
         if ((orientation ?? _orientation) == .landscapeRight) {
-          return landscapeRightMode();
+          return _setPlayerOrientation(landscapeRightMode);
         } else {
-          return landscapeLeftMode();
+          return _setPlayerOrientation(landscapeLeftMode);
         }
       } else {
         if (orientation == .landscapeLeft) {
-          return landscapeLeftMode();
+          return _setPlayerOrientation(landscapeLeftMode);
         } else {
-          return landscapeRightMode();
+          return _setPlayerOrientation(landscapeRightMode);
         }
       }
     }
@@ -1415,10 +1432,10 @@ class PlPlayerController with BlockConfigMixin {
           if (!removeSafeArea) {
             showSystemBar();
           }
-          if (orientation == null && mode == .none) {
+          if (orientation == null && mode == .none && !_hasPlayerOrientation) {
             return;
           }
-          await resetScreenRotation();
+          await _resetPlayerOrientationIfNeeded();
         } else {
           await exitDesktopFullScreen();
         }
@@ -1535,7 +1552,7 @@ class PlPlayerController with BlockConfigMixin {
 
   void dispose() {
     // 每次减1，最后销毁
-    resetScreenRotation();
+    _resetPlayerOrientationIfNeeded();
     cancelLongPressTimer();
     _cancelSubForSeek();
     if (!_isCloseAll && _playerCount > 1) {
