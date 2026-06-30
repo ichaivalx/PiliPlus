@@ -65,6 +65,8 @@ import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:PiliPlus/utils/theme_utils.dart';
 import 'package:extended_nested_scroll_view/extended_nested_scroll_view.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/gestures.dart'
+    show PointerDownEvent, PointerEvent, PointerMoveEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show SystemUiOverlayStyle;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
@@ -122,6 +124,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       isMiniPlayerHoldingPlayer && !isOwnedByMiniPlayer;
 
   bool isShowing = true;
+  int? _miniDragPointer;
+  Offset? _miniDragStart;
+  bool _miniDragTriggered = false;
 
   bool get isFullScreen =>
       videoDetailController.plPlayerController.isFullScreen.value;
@@ -1297,10 +1302,10 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     return videoDetailController.args['title'] ?? '';
   }
 
-  void enterMiniPlayer() {
+  bool canEnterMiniPlayer() {
     final miniPlayer = MiniPlayerService.ensureInitialized;
     final controller = videoDetailController.plPlayerController;
-    if (!miniPlayer.canStartFrom(
+    return miniPlayer.canStartFrom(
       context: context,
       isUgc: videoDetailController.isUgc &&
           videoDetailController.args['pgcApi'] != true &&
@@ -1314,10 +1319,16 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       hasPlayer: controller.videoController != null &&
           controller.videoPlayerController != null &&
           videoDetailController.videoState.value,
-    )) {
+    );
+  }
+
+  void enterMiniPlayer() {
+    if (!canEnterMiniPlayer()) {
       return;
     }
 
+    final miniPlayer = MiniPlayerService.ensureInitialized;
+    final controller = videoDetailController.plPlayerController;
     final arguments = <String, dynamic>{
       ...videoDetailController.args,
       'aid': videoDetailController.aid,
@@ -1358,6 +1369,50 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     miniPlayer.minimizeCurrentRoute();
   }
 
+  bool _isMiniDragStart(double width, Offset position) {
+    if (!canEnterMiniPlayer()) {
+      return false;
+    }
+    final sectionWidth = width / 3;
+    return position.dx >= sectionWidth && position.dx <= sectionWidth * 2;
+  }
+
+  void _onMiniDragPointerDown(PointerDownEvent event, double width) {
+    if (!_isMiniDragStart(width, event.localPosition)) {
+      _miniDragPointer = null;
+      _miniDragStart = null;
+      _miniDragTriggered = false;
+      return;
+    }
+    _miniDragPointer = event.pointer;
+    _miniDragStart = event.localPosition;
+    _miniDragTriggered = false;
+  }
+
+  void _onMiniDragPointerMove(PointerMoveEvent event) {
+    if (_miniDragPointer != event.pointer ||
+        _miniDragStart == null ||
+        _miniDragTriggered) {
+      return;
+    }
+    final delta = event.localPosition - _miniDragStart!;
+    if (delta.dy > 52 && delta.dy > delta.dx.abs() * 1.25) {
+      _miniDragTriggered = true;
+      _miniDragPointer = null;
+      _miniDragStart = null;
+      enterMiniPlayer();
+    }
+  }
+
+  void _resetMiniDragPointer(PointerEvent event) {
+    if (_miniDragPointer != event.pointer) {
+      return;
+    }
+    _miniDragPointer = null;
+    _miniDragStart = null;
+    _miniDragTriggered = false;
+  }
+
   Widget plPlayer({
     required double width,
     required double height,
@@ -1371,42 +1426,49 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         (videoDetailController.horizontalScreen || isPortrait)),
     onPopInvokedWithResult:
         videoDetailController.plPlayerController.onPopInvokedWithResult,
-    child: Obx(
-      () =>
-          !videoDetailController.videoState.value ||
-              !videoDetailController.autoPlay ||
-              plPlayerController?.videoController == null
-          ? const SizedBox.shrink()
-          : PLVideoPlayer(
-              maxWidth: width,
-              maxHeight: height,
-              plPlayerController: plPlayerController!,
-              videoDetailController: videoDetailController,
-              introController: introController,
-              headerControl: HeaderControl(
-                key: videoDetailController.headerCtrKey,
-                isPortrait: isPortrait,
-                controller: videoDetailController.plPlayerController,
-                videoDetailCtr: videoDetailController,
-                heroTag: heroTag,
-              ),
-              danmuWidget: isPipMode && pipNoDanmaku
-                  ? null
-                  : Obx(
-                      () => PlDanmaku(
-                        key: ValueKey(videoDetailController.cid.value),
-                        isPipMode: isPipMode,
-                        cid: videoDetailController.cid.value,
-                        playerController: plPlayerController!,
-                        isFullScreen: plPlayerController!.isFullScreen.value,
-                        isFileSource: videoDetailController.isFileSource,
-                        size: Size(width, height),
+    child: Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (event) => _onMiniDragPointerDown(event, width),
+      onPointerMove: _onMiniDragPointerMove,
+      onPointerUp: _resetMiniDragPointer,
+      onPointerCancel: _resetMiniDragPointer,
+      child: Obx(
+        () =>
+            !videoDetailController.videoState.value ||
+                !videoDetailController.autoPlay ||
+                plPlayerController?.videoController == null
+            ? const SizedBox.shrink()
+            : PLVideoPlayer(
+                maxWidth: width,
+                maxHeight: height,
+                plPlayerController: plPlayerController!,
+                videoDetailController: videoDetailController,
+                introController: introController,
+                headerControl: HeaderControl(
+                  key: videoDetailController.headerCtrKey,
+                  isPortrait: isPortrait,
+                  controller: videoDetailController.plPlayerController,
+                  videoDetailCtr: videoDetailController,
+                  heroTag: heroTag,
+                ),
+                danmuWidget: isPipMode && pipNoDanmaku
+                    ? null
+                    : Obx(
+                        () => PlDanmaku(
+                          key: ValueKey(videoDetailController.cid.value),
+                          isPipMode: isPipMode,
+                          cid: videoDetailController.cid.value,
+                          playerController: plPlayerController!,
+                          isFullScreen: plPlayerController!.isFullScreen.value,
+                          isFileSource: videoDetailController.isFileSource,
+                          size: Size(width, height),
+                        ),
                       ),
-                    ),
-              showEpisodes: showEpisodes,
-              showViewPoints: showViewPoints,
-              onEnterMiniPlayer: enterMiniPlayer,
-            ),
+                showEpisodes: showEpisodes,
+                showViewPoints: showViewPoints,
+                onEnterMiniPlayer: enterMiniPlayer,
+              ),
+      ),
     ),
   );
 
@@ -1614,6 +1676,30 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         const Positioned.fill(child: ColoredBox(color: Colors.black)),
 
         plPlayer(width: width, height: height),
+
+        Positioned(
+          top: 12,
+          right: 12,
+          child: Obx(() {
+            if (!canEnterMiniPlayer()) {
+              return const SizedBox.shrink();
+            }
+            return Tooltip(
+              message: '小窗播放',
+              child: Material(
+                color: Colors.black.withValues(alpha: 0.48),
+                borderRadius: const BorderRadius.all(Radius.circular(6)),
+                child: IconButton(
+                  icon: const Icon(Icons.picture_in_picture_alt),
+                  iconSize: 22,
+                  color: Colors.white,
+                  tooltip: '小窗播放',
+                  onPressed: enterMiniPlayer,
+                ),
+              ),
+            );
+          }),
+        ),
 
         Obx(() {
           if (!videoDetailController.autoPlay) {
