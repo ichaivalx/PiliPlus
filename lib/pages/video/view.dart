@@ -1304,6 +1304,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   bool canEnterMiniPlayer() {
     final miniPlayer = MiniPlayerService.ensureInitialized;
+    if (miniPlayer.isActiveOrRestoring) {
+      return false;
+    }
     final controller = videoDetailController.plPlayerController;
     return miniPlayer.canStartFrom(
       context: context,

@@ -88,17 +88,19 @@ class MiniPlayerService extends GetxController {
   final Rxn<MiniPlayerSnapshot> snapshot = Rxn<MiniPlayerSnapshot>();
   final RxBool visible = false.obs;
   final RxBool loading = false.obs;
+  final RxBool restoring = false.obs;
+  final Rxn<Rect> placement = Rxn<Rect>();
 
-  bool _restoring = false;
   String? _restoredHeroTag;
   PlPlayerController? _restoredController;
+  MiniPlayerSnapshot? _pendingRestoredSnapshot;
   bool? _previousEnableBackgroundPlay;
   Completer<void>? _replaceCompleter;
   int _epoch = 0;
 
   bool get isActive => visible.value && snapshot.value != null;
-  bool get isRestoring => _restoring;
-  bool get isActiveOrRestoring => isActive || _restoring;
+  bool get isRestoring => restoring.value;
+  bool get isActiveOrRestoring => isActive || restoring.value;
 
   bool isTabletLandscape(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
@@ -157,10 +159,14 @@ class MiniPlayerService extends GetxController {
         nextSnapshot.videoUrl == null) {
       return false;
     }
+    if (!isActive) {
+      placement.value = null;
+    }
     _epoch += 1;
-    _restoring = false;
+    restoring.value = false;
     _restoredHeroTag = null;
     _restoredController = null;
+    _pendingRestoredSnapshot = null;
     _enableMiniBackgroundPlay();
     nextSnapshot.plPlayerController.inAppMiniPlayerActive = true;
     snapshot.value = nextSnapshot;
@@ -178,6 +184,14 @@ class MiniPlayerService extends GetxController {
     return true;
   }
 
+  void updatePlacement(Rect rect) {
+    placement.value = rect;
+  }
+
+  void clearPlacement() {
+    placement.value = null;
+  }
+
   Future<void> minimizeCurrentRoute() async {
     await Future<void>.delayed(Duration.zero);
     if (Get.currentRoute == '/videoV') {
@@ -186,7 +200,7 @@ class MiniPlayerService extends GetxController {
   }
 
   bool shouldReplaceWith(Map<String, dynamic> arguments) {
-    if (!isActive || _restoring || loading.value) {
+    if (!isActive || restoring.value || loading.value) {
       return false;
     }
     return arguments['videoType'] == VideoType.ugc &&
@@ -224,7 +238,10 @@ class MiniPlayerService extends GetxController {
       );
 
       final loaded = await _loadSnapshotFor(arguments, old, epoch);
-      if (loaded != null && visible.value && !_restoring && _epoch == epoch) {
+      if (loaded != null &&
+          visible.value &&
+          !restoring.value &&
+          _epoch == epoch) {
         loaded.plPlayerController.inAppMiniPlayerActive = true;
         snapshot.value = loaded;
         videoPlayerServiceHandler?.onMiniPlayerVideoChange(
@@ -284,7 +301,7 @@ class MiniPlayerService extends GetxController {
     );
 
     if (result case Success(:final response)) {
-      if (!visible.value || _restoring || _epoch != epoch) {
+      if (!visible.value || restoring.value || _epoch != epoch) {
         return null;
       }
 
@@ -313,7 +330,7 @@ class MiniPlayerService extends GetxController {
         volume: response.volume,
       );
 
-      if (!visible.value || _restoring || _epoch != epoch) {
+      if (!visible.value || restoring.value || _epoch != epoch) {
         return null;
       }
 
@@ -434,10 +451,10 @@ class MiniPlayerService extends GetxController {
 
   bool beginRestore() {
     final current = snapshot.value;
-    if (current == null || _restoring || loading.value) {
+    if (current == null || restoring.value || loading.value) {
       return false;
     }
-    _restoring = true;
+    restoring.value = true;
     _epoch += 1;
     return true;
   }
@@ -445,41 +462,47 @@ class MiniPlayerService extends GetxController {
   void restore() {
     final current = snapshot.value;
     if (current == null || loading.value) {
-      _restoring = false;
+      restoring.value = false;
       return;
     }
-    if (!_restoring && !beginRestore()) {
+    if (!restoring.value && !beginRestore()) {
       return;
     }
+    final arguments = current.restoreArguments;
+    visible.value = false;
+    snapshot.value = null;
+    loading.value = false;
+    placement.value = null;
+    _restoredHeroTag = current.heroTag;
+    _restoredController = current.plPlayerController;
+    _pendingRestoredSnapshot = current;
     Get.toNamed(
       '/videoV',
-      arguments: current.restoreArguments,
+      arguments: arguments,
       preventDuplicates: false,
     );
   }
 
   MiniPlayerSnapshot? takeRestoredSnapshot(String heroTag) {
-    final current = snapshot.value;
-    if (!_restoring || current == null || current.heroTag != heroTag) {
+    final current = _pendingRestoredSnapshot;
+    if (!restoring.value || current == null || current.heroTag != heroTag) {
       return null;
     }
     PlPlayerController.updatePlayCount();
-    visible.value = false;
-    snapshot.value = null;
-    loading.value = false;
-    _restoredHeroTag = heroTag;
-    _restoredController = current.plPlayerController;
+    _pendingRestoredSnapshot = null;
     return current;
   }
 
   void finishRestore(String heroTag) {
-    if (!_restoring || _restoredHeroTag != heroTag) {
+    if (!restoring.value || _restoredHeroTag != heroTag) {
       return;
     }
     _restoredController?.inAppMiniPlayerActive = false;
     _restoredController = null;
     _restoredHeroTag = null;
-    _restoring = false;
+    _pendingRestoredSnapshot = null;
+    restoring.value = false;
+    placement.value = null;
     _restoreBackgroundPlayPreference();
   }
 
@@ -489,9 +512,11 @@ class MiniPlayerService extends GetxController {
     visible.value = false;
     snapshot.value = null;
     loading.value = false;
-    _restoring = false;
+    restoring.value = false;
+    placement.value = null;
     _restoredHeroTag = null;
     _restoredController = null;
+    _pendingRestoredSnapshot = null;
     _epoch += 1;
     if (current != null) {
       current.plPlayerController.inAppMiniPlayerActive = false;

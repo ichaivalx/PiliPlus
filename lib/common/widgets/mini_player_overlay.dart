@@ -1,6 +1,8 @@
+import 'dart:math' show max, min;
 import 'dart:ui';
 
 import 'package:PiliPlus/common/style.dart';
+import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player_service.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
@@ -28,7 +30,13 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   Rect? _beginRect;
   Rect? _targetRect;
   Rect? _lastPaintRect;
+  Rect? _moveStartRect;
+  Rect? _resizeStartRect;
+  Offset? _moveStartPoint;
+  Offset? _resizeStartPoint;
   bool _restoreAnimating = false;
+  bool _moving = false;
+  bool _resizing = false;
 
   @override
   void initState() {
@@ -45,8 +53,36 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     super.dispose();
   }
 
-  Rect _miniRect(Size size, EdgeInsets padding) {
-    final width = clampDouble(size.width * 0.3, 300, 420);
+  double _minMiniWidth(Size size, EdgeInsets padding) {
+    final availableWidth = max(
+      240.0,
+      size.width - padding.left - padding.right - 48,
+    );
+    return min(430.0, availableWidth);
+  }
+
+  double _maxMiniWidth(Size size, EdgeInsets padding) {
+    final availableWidth = max(
+      240.0,
+      size.width - padding.left - padding.right - 48,
+    );
+    final availableHeight = max(
+      160.0,
+      size.height - padding.top - padding.bottom - 48,
+    );
+    final maxByHeight = availableHeight * Style.aspectRatio16x9;
+    return max(
+      _minMiniWidth(size, padding),
+      min(760.0, min(size.width * 0.56, min(availableWidth, maxByHeight))),
+    );
+  }
+
+  Rect _defaultMiniRect(Size size, EdgeInsets padding) {
+    final width = clampDouble(
+      size.width * 0.36,
+      _minMiniWidth(size, padding),
+      _maxMiniWidth(size, padding),
+    );
     final height = width / Style.aspectRatio16x9;
     return Rect.fromLTWH(
       size.width - padding.right - width - 24,
@@ -56,34 +92,167 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     );
   }
 
-  void _ensureForwardAnimation(Rect target) {
-    if (_targetRect == target && _controller.isAnimating) {
+  Rect _clampRect(Rect rect, Size size, EdgeInsets padding) {
+    final width = clampDouble(
+      rect.width,
+      _minMiniWidth(size, padding),
+      _maxMiniWidth(size, padding),
+    );
+    final height = width / Style.aspectRatio16x9;
+    final leftLimit = padding.left + 16;
+    final topLimit = padding.top + 16;
+    final rightLimit = size.width - padding.right - 16;
+    final bottomLimit = size.height - padding.bottom - 16;
+    final maxLeft = max(leftLimit, rightLimit - width);
+    final maxTop = max(topLimit, bottomLimit - height);
+    return Rect.fromLTWH(
+      clampDouble(rect.left, leftLimit, maxLeft),
+      clampDouble(rect.top, topLimit, maxTop),
+      width,
+      height,
+    );
+  }
+
+  Rect _sourceRectOr(Rect fallback) {
+    final source = _service.snapshot.value?.sourceRect;
+    if (source == null || source.isEmpty) {
+      return fallback;
+    }
+    return source;
+  }
+
+  void _snapTo(Rect rect) {
+    if (_controller.isAnimating) {
+      _controller.stop();
+    }
+    _controller.value = 1;
+    _beginRect = rect;
+    _targetRect = rect;
+    _lastPaintRect = rect;
+  }
+
+  void _ensureForwardAnimation(Rect target, MiniPlayerSnapshot snapshot) {
+    if (_restoreAnimating || _service.restoring.value) {
       return;
     }
-    final snapshot = _service.snapshot.value;
-    _beginRect = _lastPaintRect ?? snapshot?.sourceRect ?? target;
+    if (_targetRect == target &&
+        (_controller.isAnimating || _controller.value == 1)) {
+      return;
+    }
+    _beginRect = _lastPaintRect ??
+        (snapshot.sourceRect.isEmpty ? target : snapshot.sourceRect);
     _targetRect = target;
     _controller.forward(from: 0);
   }
 
-  Future<void> _restore(Rect target) async {
-    if (_restoreAnimating) {
-      return;
-    }
-    if (!_service.beginRestore()) {
+  Future<void> _restore(Rect current) async {
+    if (_restoreAnimating || !_service.beginRestore()) {
       return;
     }
     _restoreAnimating = true;
-    _beginRect = _lastPaintRect ?? target;
-    _targetRect = _service.snapshot.value?.sourceRect ?? target;
+    _beginRect = _lastPaintRect ?? current;
+    _targetRect = _sourceRectOr(current);
     try {
-      await _controller.reverse(from: 1);
-      if (mounted) {
+      await _controller.forward(from: 0);
+      if (mounted && _service.isRestoring && _service.snapshot.value != null) {
         _service.restore();
       }
     } finally {
       _restoreAnimating = false;
     }
+  }
+
+  void _startMove(DragStartDetails details, Rect current) {
+    if (_service.isRestoring) {
+      return;
+    }
+    _moving = true;
+    _moveStartPoint = details.globalPosition;
+    _moveStartRect = _lastPaintRect ?? current;
+    _service.updatePlacement(_moveStartRect!);
+    _snapTo(_moveStartRect!);
+  }
+
+  void _updateMove(
+    DragUpdateDetails details,
+    Size size,
+    EdgeInsets padding,
+  ) {
+    final startPoint = _moveStartPoint;
+    final startRect = _moveStartRect;
+    if (!_moving || startPoint == null || startRect == null) {
+      return;
+    }
+    final rect = _clampRect(
+      startRect.shift(details.globalPosition - startPoint),
+      size,
+      padding,
+    );
+    _service.updatePlacement(rect);
+    _snapTo(rect);
+  }
+
+  void _endMove(DragEndDetails details, Rect current) {
+    final velocity = details.velocity.pixelsPerSecond;
+    final shouldRestore =
+        velocity.dy < -650 && velocity.dy.abs() > velocity.dx.abs() * 1.2;
+    _moving = false;
+    _moveStartPoint = null;
+    _moveStartRect = null;
+    if (shouldRestore) {
+      _restore(_lastPaintRect ?? current);
+    }
+  }
+
+  void _startResize(DragStartDetails details, Rect current) {
+    if (_service.isRestoring) {
+      return;
+    }
+    _resizing = true;
+    _resizeStartPoint = details.globalPosition;
+    _resizeStartRect = _lastPaintRect ?? current;
+    _service.updatePlacement(_resizeStartRect!);
+    _snapTo(_resizeStartRect!);
+  }
+
+  void _updateResize(
+    DragUpdateDetails details,
+    Size size,
+    EdgeInsets padding,
+  ) {
+    final startPoint = _resizeStartPoint;
+    final startRect = _resizeStartRect;
+    if (!_resizing || startPoint == null || startRect == null) {
+      return;
+    }
+    final delta = details.globalPosition - startPoint;
+    final width = startRect.width -
+        delta.dx -
+        delta.dy * Style.aspectRatio16x9;
+    final clampedWidth = clampDouble(
+      width,
+      _minMiniWidth(size, padding),
+      _maxMiniWidth(size, padding),
+    );
+    final height = clampedWidth / Style.aspectRatio16x9;
+    final rect = _clampRect(
+      Rect.fromLTRB(
+        startRect.right - clampedWidth,
+        startRect.bottom - height,
+        startRect.right,
+        startRect.bottom,
+      ),
+      size,
+      padding,
+    );
+    _service.updatePlacement(rect);
+    _snapTo(rect);
+  }
+
+  void _endResize(DragEndDetails details) {
+    _resizing = false;
+    _resizeStartPoint = null;
+    _resizeStartRect = null;
   }
 
   @override
@@ -98,22 +267,40 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
             _beginRect = null;
             _targetRect = null;
             _lastPaintRect = null;
+            _moveStartPoint = null;
+            _moveStartRect = null;
+            _resizeStartPoint = null;
+            _resizeStartRect = null;
+            _moving = false;
+            _resizing = false;
             return const SizedBox.shrink();
           }
 
           final mediaQuery = MediaQuery.of(context);
-          final target = _miniRect(mediaQuery.size, mediaQuery.viewPadding);
-          _ensureForwardAnimation(target);
+          final size = mediaQuery.size;
+          final padding = mediaQuery.viewPadding;
+          final target = _clampRect(
+            _service.placement.value ?? _defaultMiniRect(size, padding),
+            size,
+            padding,
+          );
+          final hasManualPlacement =
+              _service.placement.value != null && !_service.restoring.value;
+
+          if (!hasManualPlacement) {
+            _ensureForwardAnimation(target, snapshot);
+          }
 
           return AnimatedBuilder(
             animation: _controller,
             builder: (context, child) {
-              final curve = Curves.easeOutCubic.transform(_controller.value);
-              final rect = Rect.lerp(
-                _beginRect ?? target,
-                _targetRect ?? target,
-                curve,
-              )!;
+              final rect = hasManualPlacement
+                  ? target
+                  : Rect.lerp(
+                      _beginRect ?? target,
+                      _targetRect ?? target,
+                      Curves.easeOutCubic.transform(_controller.value),
+                    )!;
               _lastPaintRect = rect;
               return Positioned.fromRect(
                 rect: rect,
@@ -121,10 +308,18 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
               );
             },
             child: _MiniPlayerSurface(
+              key: ValueKey(
+                '${snapshot.heroTag}-${snapshot.cid}-'
+                '${identityHashCode(snapshot.plPlayerController.videoController)}',
+              ),
               service: _service,
-              onRestore: () {
-                _restore(target);
-              },
+              onRestore: () => _restore(target),
+              onMoveStart: (details) => _startMove(details, target),
+              onMoveUpdate: (details) => _updateMove(details, size, padding),
+              onMoveEnd: (details) => _endMove(details, target),
+              onResizeStart: (details) => _startResize(details, target),
+              onResizeUpdate: (details) => _updateResize(details, size, padding),
+              onResizeEnd: _endResize,
             ),
           );
         }),
@@ -137,10 +332,23 @@ class _MiniPlayerSurface extends StatelessWidget {
   const _MiniPlayerSurface({
     required this.service,
     required this.onRestore,
+    required this.onMoveStart,
+    required this.onMoveUpdate,
+    required this.onMoveEnd,
+    required this.onResizeStart,
+    required this.onResizeUpdate,
+    required this.onResizeEnd,
+    super.key,
   });
 
   final MiniPlayerService service;
   final VoidCallback onRestore;
+  final GestureDragStartCallback onMoveStart;
+  final GestureDragUpdateCallback onMoveUpdate;
+  final GestureDragEndCallback onMoveEnd;
+  final GestureDragStartCallback onResizeStart;
+  final GestureDragUpdateCallback onResizeUpdate;
+  final GestureDragEndCallback onResizeEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -151,99 +359,129 @@ class _MiniPlayerSurface extends StatelessWidget {
 
     return Material(
       type: MaterialType.transparency,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onRestore,
-        onVerticalDragEnd: (details) {
-          if ((details.primaryVelocity ?? 0) < -240) {
-            onRestore();
-          }
-        },
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: Colors.black,
-            borderRadius: const BorderRadius.all(Radius.circular(8)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.28),
-                blurRadius: 24,
-                offset: const Offset(0, 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.black,
+          borderRadius: const BorderRadius.all(Radius.circular(8)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.28),
+              blurRadius: 24,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.all(Radius.circular(8)),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Obx(() {
+                if (!service.restoring.value && videoController != null) {
+                  final videoFit = controller.videoFit.value;
+                  return FittedBox(
+                    fit: videoFit.boxFit,
+                    child: SimpleVideo(
+                      controller: videoController,
+                      fill: Colors.black,
+                      aspectRatio: videoFit.aspectRatio,
+                    ),
+                  );
+                }
+                return LayoutBuilder(
+                  builder: (context, constraints) {
+                    final width = constraints.maxWidth.isFinite
+                        ? constraints.maxWidth
+                        : 420.0;
+                    final height = constraints.maxHeight.isFinite
+                        ? constraints.maxHeight
+                        : width / Style.aspectRatio16x9;
+                    if (snapshot.cover.isEmpty) {
+                      return const ColoredBox(color: Colors.black);
+                    }
+                    return NetworkImgLayer(
+                      src: snapshot.cover,
+                      width: width,
+                      height: height,
+                      quality: 60,
+                      borderRadius: BorderRadius.zero,
+                    );
+                  },
+                );
+              }),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.42),
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.72),
+                    ],
+                    stops: const [0, 0.42, 1],
+                  ),
+                ),
               ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: const BorderRadius.all(Radius.circular(8)),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (videoController != null)
-                  Obx(() {
-                    final videoFit = controller.videoFit.value;
-                    return FittedBox(
-                      fit: videoFit.boxFit,
-                      child: SimpleVideo(
-                        controller: videoController,
-                        fill: Colors.black,
-                        aspectRatio: videoFit.aspectRatio,
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: onRestore,
+                  onPanStart: onMoveStart,
+                  onPanUpdate: onMoveUpdate,
+                  onPanEnd: onMoveEnd,
+                ),
+              ),
+              Positioned(
+                top: 6,
+                left: 6,
+                child: _MiniResizeHandle(
+                  onPanStart: onResizeStart,
+                  onPanUpdate: onResizeUpdate,
+                  onPanEnd: onResizeEnd,
+                ),
+              ),
+              Positioned(
+                top: 6,
+                right: 6,
+                child: _MiniIconButton(
+                  tooltip: '关闭小窗',
+                  icon: Icons.close,
+                  onPressed: service.close,
+                ),
+              ),
+              Center(
+                child: Obx(() {
+                  if (service.loading.value) {
+                    return SizedBox.square(
+                      dimension: 34,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        color: colorScheme.primary,
                       ),
                     );
-                  })
-                else
-                  const ColoredBox(color: Colors.black),
-                DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.black.withValues(alpha: 0.42),
-                        Colors.transparent,
-                        Colors.black.withValues(alpha: 0.72),
-                      ],
-                      stops: const [0, 0.42, 1],
-                    ),
-                  ),
-                ),
-                Positioned(
-                  top: 6,
-                  right: 6,
-                  child: _MiniIconButton(
-                    tooltip: '关闭小窗',
-                    icon: Icons.close,
-                    onPressed: service.close,
-                  ),
-                ),
-                Center(
-                  child: Obx(() {
-                    if (service.loading.value) {
-                      return SizedBox.square(
-                        dimension: 34,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          color: colorScheme.primary,
-                        ),
-                      );
-                    }
-                    final isPlaying = controller.playerStatus.isPlaying;
-                    return _MiniIconButton(
-                      tooltip: isPlaying ? '暂停' : '播放',
-                      icon: isPlaying ? Icons.pause : Icons.play_arrow,
-                      size: 40,
-                      iconSize: 26,
-                      onPressed: () {
-                        if (isPlaying) {
-                          controller.pause();
-                        } else {
-                          controller.play();
-                        }
-                      },
-                    );
-                  }),
-                ),
-                Positioned(
-                  left: 12,
-                  right: 12,
-                  bottom: 10,
+                  }
+                  final isPlaying = controller.playerStatus.isPlaying;
+                  return _MiniIconButton(
+                    tooltip: isPlaying ? '暂停' : '播放',
+                    icon: isPlaying ? Icons.pause : Icons.play_arrow,
+                    size: 40,
+                    iconSize: 26,
+                    onPressed: () {
+                      if (isPlaying) {
+                        controller.pause();
+                      } else {
+                        controller.play();
+                      }
+                    },
+                  );
+                }),
+              ),
+              Positioned(
+                left: 12,
+                right: 12,
+                bottom: 10,
+                child: IgnorePointer(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -297,8 +535,46 @@ class _MiniPlayerSurface extends StatelessWidget {
                     ],
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniResizeHandle extends StatelessWidget {
+  const _MiniResizeHandle({
+    required this.onPanStart,
+    required this.onPanUpdate,
+    required this.onPanEnd,
+  });
+
+  final GestureDragStartCallback onPanStart;
+  final GestureDragUpdateCallback onPanUpdate;
+  final GestureDragEndCallback onPanEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '拖动调整大小',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: onPanStart,
+        onPanUpdate: onPanUpdate,
+        onPanEnd: onPanEnd,
+        child: Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.52),
+            borderRadius: const BorderRadius.all(Radius.circular(6)),
+          ),
+          child: const Icon(
+            Icons.open_in_full,
+            size: 17,
+            color: Colors.white,
           ),
         ),
       ),

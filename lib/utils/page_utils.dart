@@ -591,7 +591,10 @@ abstract final class PageUtils {
       ...?extraArguments,
     };
     final miniPlayer = MiniPlayerService.instanceOrNull;
-    if (miniPlayer != null && miniPlayer.isActive) {
+    if (miniPlayer != null && miniPlayer.isActiveOrRestoring) {
+      if (miniPlayer.isRestoring) {
+        return null;
+      }
       if (!off && miniPlayer.shouldReplaceWith(arguments)) {
         return miniPlayer.replaceWith(arguments);
       }
