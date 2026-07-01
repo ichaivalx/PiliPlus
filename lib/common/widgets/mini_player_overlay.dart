@@ -25,6 +25,12 @@ class AppMiniPlayerOverlay extends StatefulWidget {
 
 class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     with SingleTickerProviderStateMixin {
+  static const double _edgeGestureDistance = 72;
+  static const double _flingVelocity = 650;
+  static const double _snapVelocity = 420;
+  static const double _edgeAxisDominance = 1.15;
+  static const double _restoreAxisDominance = 1.05;
+
   final MiniPlayerService _service = MiniPlayerService.ensureInitialized;
   late final AnimationController _controller;
 
@@ -114,6 +120,97 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       clampDouble(rect.top, topLimit, maxTop),
       width,
       height,
+    );
+  }
+
+  ({bool left, bool right, bool top, bool bottom}) _edgeState(
+    Rect rect,
+    Size size,
+    EdgeInsets padding,
+  ) {
+    final leftLimit = padding.left + 16;
+    final topLimit = padding.top + 16;
+    final rightLimit = size.width - padding.right - 16;
+    final bottomLimit = size.height - padding.bottom - 16;
+    return (
+      left: rect.left - leftLimit <= _edgeGestureDistance,
+      right: rightLimit - rect.right <= _edgeGestureDistance,
+      top: rect.top - topLimit <= _edgeGestureDistance,
+      bottom: bottomLimit - rect.bottom <= _edgeGestureDistance,
+    );
+  }
+
+  bool _shouldCloseByFling(
+    Rect rect,
+    Velocity velocity,
+    Size size,
+    EdgeInsets padding,
+  ) {
+    final pixels = velocity.pixelsPerSecond;
+    final dx = pixels.dx;
+    final dy = pixels.dy;
+    final absDx = dx.abs();
+    final absDy = dy.abs();
+    final edge = _edgeState(rect, size, padding);
+    final horizontalIntent = absDx > absDy * _edgeAxisDominance;
+    final verticalIntent = absDy > absDx * _edgeAxisDominance;
+    return (horizontalIntent && edge.left && dx < -_flingVelocity) ||
+        (horizontalIntent && edge.right && dx > _flingVelocity) ||
+        (verticalIntent && edge.top && dy < -_flingVelocity) ||
+        (verticalIntent && edge.bottom && dy > _flingVelocity);
+  }
+
+  bool _shouldRestoreByFling(
+    Rect rect,
+    Velocity velocity,
+    Size size,
+    EdgeInsets padding,
+  ) {
+    final pixels = velocity.pixelsPerSecond;
+    final dx = pixels.dx;
+    final dy = pixels.dy;
+    final absDx = dx.abs();
+    final absDy = dy.abs();
+    final edge = _edgeState(rect, size, padding);
+    if (absDy <= absDx * _restoreAxisDominance) {
+      return false;
+    }
+    return (edge.bottom && dy < -_flingVelocity) ||
+        (edge.top && dy > _flingVelocity);
+  }
+
+  Rect _snapRectForFling(
+    Rect rect,
+    Velocity velocity,
+    Size size,
+    EdgeInsets padding,
+  ) {
+    final pixels = velocity.pixelsPerSecond;
+    final dx = pixels.dx;
+    final dy = pixels.dy;
+    final absDx = dx.abs();
+    final absDy = dy.abs();
+    if (max(absDx, absDy) < _snapVelocity) {
+      return rect;
+    }
+
+    final leftLimit = padding.left + 16;
+    final topLimit = padding.top + 16;
+    final rightLimit = size.width - padding.right - 16;
+    final bottomLimit = size.height - padding.bottom - 16;
+    if (absDx >= absDy) {
+      final left = dx < 0 ? leftLimit : rightLimit - rect.width;
+      return _clampRect(
+        Rect.fromLTWH(left, rect.top, rect.width, rect.height),
+        size,
+        padding,
+      );
+    }
+    final top = dy < 0 ? topLimit : bottomLimit - rect.height;
+    return _clampRect(
+      Rect.fromLTWH(rect.left, top, rect.width, rect.height),
+      size,
+      padding,
     );
   }
 
@@ -315,15 +412,28 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _snapTo(rect);
   }
 
-  void _endMove(DragEndDetails details, Rect current) {
-    final velocity = details.velocity.pixelsPerSecond;
-    final shouldRestore =
-        velocity.dy < -650 && velocity.dy.abs() > velocity.dx.abs() * 1.2;
+  void _endMove(
+    DragEndDetails details,
+    Rect current,
+    Size size,
+    EdgeInsets padding,
+  ) {
+    final rect = _lastPaintRect ?? current;
     _moving = false;
     _moveStartPoint = null;
     _moveStartRect = null;
-    if (shouldRestore) {
-      _restore(_lastPaintRect ?? current);
+    if (_shouldCloseByFling(rect, details.velocity, size, padding)) {
+      _service.close();
+      return;
+    }
+    if (_shouldRestoreByFling(rect, details.velocity, size, padding)) {
+      _restore(rect);
+      return;
+    }
+    final snapped = _snapRectForFling(rect, details.velocity, size, padding);
+    if (snapped != rect) {
+      _service.updatePlacement(snapped);
+      _snapTo(snapped);
     }
   }
 
@@ -449,10 +559,14 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
                 '${identityHashCode(snapshot.plPlayerController.videoController)}',
               ),
               service: _service,
-              onRestore: () => _restore(target),
               onMoveStart: (details) => _startMove(details, target),
               onMoveUpdate: (details) => _updateMove(details, size, padding),
-              onMoveEnd: (details) => _endMove(details, target),
+              onMoveEnd: (details) => _endMove(
+                details,
+                target,
+                size,
+                padding,
+              ),
               onResizeStart: (details) => _startResize(details, target),
               onResizeUpdate: (details) => _updateResize(details, size, padding),
               onResizeEnd: _endResize,
@@ -467,7 +581,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 class _MiniPlayerSurface extends StatelessWidget {
   const _MiniPlayerSurface({
     required this.service,
-    required this.onRestore,
     required this.onMoveStart,
     required this.onMoveUpdate,
     required this.onMoveEnd,
@@ -478,7 +591,6 @@ class _MiniPlayerSurface extends StatelessWidget {
   });
 
   final MiniPlayerService service;
-  final VoidCallback onRestore;
   final GestureDragStartCallback onMoveStart;
   final GestureDragUpdateCallback onMoveUpdate;
   final GestureDragEndCallback onMoveEnd;
@@ -562,7 +674,6 @@ class _MiniPlayerSurface extends StatelessWidget {
               Positioned.fill(
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: onRestore,
                   onPanStart: onMoveStart,
                   onPanUpdate: onMoveUpdate,
                   onPanEnd: onMoveEnd,
