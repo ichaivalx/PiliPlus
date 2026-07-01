@@ -1718,30 +1718,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
         plPlayer(width: width, height: height),
 
-        Positioned(
-          top: 12,
-          right: 12,
-          child: Obx(() {
-            if (!canEnterMiniPlayer()) {
-              return const SizedBox.shrink();
-            }
-            return Tooltip(
-              message: '小窗播放',
-              child: Material(
-                color: Colors.black.withValues(alpha: 0.48),
-                borderRadius: const BorderRadius.all(Radius.circular(6)),
-                child: IconButton(
-                  icon: const Icon(Icons.picture_in_picture_alt),
-                  iconSize: 22,
-                  color: Colors.white,
-                  tooltip: '小窗播放',
-                  onPressed: enterMiniPlayer,
-                ),
-              ),
-            );
-          }),
-        ),
-
         Obx(() {
           if (!videoDetailController.autoPlay) {
             return Positioned.fill(
