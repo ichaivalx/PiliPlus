@@ -581,6 +581,25 @@ class MiniPlayerService extends GetxController {
     _restoreBackgroundPlayPreference();
   }
 
+  void cancelRestore({bool popRestoredRoute = false}) {
+    if (!restoring.value) {
+      return;
+    }
+    final current = snapshot.value;
+    current?.plPlayerController.inAppMiniPlayerActive = true;
+    _restoredController = null;
+    _restoredHeroTag = null;
+    _pendingRestoredSnapshot = null;
+    loading.value = false;
+    entering.value = false;
+    restoring.value = false;
+    restoreTarget.value = null;
+    _restoreRouteTransitionPreference();
+    if (popRestoredRoute && Get.currentRoute == _videoDetailRouteName) {
+      Get.back();
+    }
+  }
+
   void close() {
     final current = snapshot.value;
     final restoredController = _restoredController;

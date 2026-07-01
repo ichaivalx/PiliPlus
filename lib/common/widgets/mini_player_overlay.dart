@@ -1,4 +1,4 @@
-import 'dart:async' show unawaited;
+import 'dart:async' show Timer, unawaited;
 import 'dart:math' show max, min;
 import 'dart:ui';
 
@@ -39,6 +39,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   bool _moving = false;
   bool _resizing = false;
   String? _restoreAnimatingHeroTag;
+  Timer? _restoreTargetTimer;
 
   @override
   void initState() {
@@ -51,6 +52,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   @override
   void dispose() {
+    _restoreTargetTimer?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -119,10 +121,48 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     if (_controller.isAnimating) {
       _controller.stop();
     }
+    _restoreAnimating = false;
+    _restoreAnimatingHeroTag = null;
     _controller.value = 1;
     _beginRect = rect;
     _targetRect = rect;
     _lastPaintRect = rect;
+  }
+
+  void _resetTransientState() {
+    if (_controller.isAnimating) {
+      _controller.stop();
+    }
+    _beginRect = null;
+    _targetRect = null;
+    _lastPaintRect = null;
+    _moveStartPoint = null;
+    _moveStartRect = null;
+    _resizeStartPoint = null;
+    _resizeStartRect = null;
+    _moving = false;
+    _resizing = false;
+    _restoreAnimating = false;
+    _restoreAnimatingHeroTag = null;
+    _restoreTargetTimer?.cancel();
+    _restoreTargetTimer = null;
+  }
+
+  void _runAnimation({
+    required VoidCallback onCompleted,
+    VoidCallback? onCanceled,
+  }) {
+    unawaited(
+      _controller.forward(from: 0).orCancel.then((_) {
+        if (mounted) {
+          onCompleted();
+        }
+      }).catchError((_) {
+        if (mounted) {
+          onCanceled?.call();
+        }
+      }),
+    );
   }
 
   void _ensureForwardAnimation(Rect target, MiniPlayerSnapshot snapshot) {
@@ -136,11 +176,19 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _beginRect = _lastPaintRect ??
         (snapshot.sourceRect.isEmpty ? target : snapshot.sourceRect);
     _targetRect = target;
-    _controller.forward(from: 0).whenComplete(() {
-      if (mounted && _service.isEntering && !_service.isRestoring) {
-        unawaited(_service.finishEnterAnimation());
-      }
-    });
+    unawaited(_service.minimizeCurrentRoute());
+    _runAnimation(
+      onCompleted: () {
+        if (_service.isEntering && !_service.isRestoring) {
+          unawaited(_service.finishEnterAnimation());
+        }
+      },
+      onCanceled: () {
+        if (_service.isEntering && !_service.isRestoring) {
+          unawaited(_service.finishEnterAnimation());
+        }
+      },
+    );
   }
 
   Future<void> _restore(Rect current) async {
@@ -152,6 +200,17 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _lastPaintRect = current;
     if (mounted) {
       _service.restore();
+      _restoreTargetTimer?.cancel();
+      _restoreTargetTimer = Timer(const Duration(seconds: 3), () {
+        if (!mounted ||
+            !_service.isRestoring ||
+            _service.restoreTarget.value != null) {
+          return;
+        }
+        _service.cancelRestore(popRestoredRoute: true);
+        _restoreAnimating = false;
+        _restoreAnimatingHeroTag = null;
+      });
     }
   }
 
@@ -161,15 +220,23 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     }
     _restoreAnimating = true;
     _restoreAnimatingHeroTag = heroTag;
+    _restoreTargetTimer?.cancel();
+    _restoreTargetTimer = null;
     _beginRect = _lastPaintRect ?? _service.placement.value ?? target;
     _targetRect = target;
-    _controller.forward(from: 0).whenComplete(() {
-      if (mounted && _service.isRestoring) {
-        _service.finishRestore(heroTag);
-      }
-      _restoreAnimating = false;
-      _restoreAnimatingHeroTag = null;
-    });
+    _runAnimation(
+      onCompleted: () {
+        if (_service.isRestoring) {
+          _service.finishRestore(heroTag);
+        }
+        _restoreAnimating = false;
+        _restoreAnimatingHeroTag = null;
+      },
+      onCanceled: () {
+        _restoreAnimating = false;
+        _restoreAnimatingHeroTag = null;
+      },
+    );
   }
 
   void _startMove(DragStartDetails details, Rect current) {
@@ -274,16 +341,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         Obx(() {
           final snapshot = _service.snapshot.value;
           if (!_service.visible.value || snapshot == null) {
-            _beginRect = null;
-            _targetRect = null;
-            _lastPaintRect = null;
-            _moveStartPoint = null;
-            _moveStartRect = null;
-            _resizeStartPoint = null;
-            _resizeStartRect = null;
-            _moving = false;
-            _resizing = false;
-            _restoreAnimatingHeroTag = null;
+            _resetTransientState();
             return const SizedBox.shrink();
           }
 
@@ -398,9 +456,7 @@ class _MiniPlayerSurface extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               Obx(() {
-                if (!service.entering.value &&
-                    !service.restoring.value &&
-                    videoController != null) {
+                if (videoController != null) {
                   final videoFit = controller.videoFit.value;
                   return FittedBox(
                     fit: videoFit.boxFit,
