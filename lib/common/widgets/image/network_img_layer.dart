@@ -83,7 +83,6 @@ class NetworkImgLayer extends StatelessWidget {
       fadeOutDuration: fadeOutDuration,
       fadeInDuration: fadeInDuration,
       placeholderFadeInDuration: Duration.zero,
-      useOldImageOnUrlChange: true,
       filterQuality: FilterQuality.low,
       placeholder: (_, _) =>
           getPlaceHolder?.call() ??
