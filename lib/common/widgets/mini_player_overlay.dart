@@ -574,7 +574,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 }
 
-class _MiniPlayerSurface extends StatelessWidget {
+class _MiniPlayerSurface extends StatefulWidget {
   const _MiniPlayerSurface({
     required this.service,
     required this.onMoveStart,
@@ -595,118 +595,211 @@ class _MiniPlayerSurface extends StatelessWidget {
   final GestureDragEndCallback onResizeEnd;
 
   @override
-  Widget build(BuildContext context) {
-    final snapshot = service.snapshot.value!;
+  State<_MiniPlayerSurface> createState() => _MiniPlayerSurfaceState();
+}
+
+class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
+  static const Duration _controlsHideDelay = Duration(seconds: 4);
+  static const Duration _controlsFadeDuration = Duration(milliseconds: 160);
+
+  Timer? _controlsHideTimer;
+  bool _controlsVisible = false;
+
+  @override
+  void dispose() {
+    _controlsHideTimer?.cancel();
+    super.dispose();
+  }
+
+  void _setControlsVisible(bool visible) {
+    if (!mounted || _controlsVisible == visible) {
+      return;
+    }
+    setState(() {
+      _controlsVisible = visible;
+    });
+  }
+
+  void _scheduleControlsHide() {
+    _controlsHideTimer?.cancel();
+    if (!_controlsVisible) {
+      return;
+    }
+    _controlsHideTimer = Timer(_controlsHideDelay, () {
+      _setControlsVisible(false);
+    });
+  }
+
+  void _showControls() {
+    if (widget.service.isEntering || widget.service.isRestoring) {
+      return;
+    }
+    _setControlsVisible(true);
+    _scheduleControlsHide();
+  }
+
+  void _togglePlayback() {
+    if (widget.service.isEntering || widget.service.isRestoring) {
+      return;
+    }
+    final controller = widget.service.snapshot.value?.plPlayerController;
+    if (controller == null) {
+      return;
+    }
+    if (controller.playerStatus.isPlaying) {
+      controller.pause();
+    } else {
+      controller.play();
+    }
+    _scheduleControlsHide();
+  }
+
+  void _handleMoveStart(DragStartDetails details) {
+    _controlsHideTimer?.cancel();
+    widget.onMoveStart(details);
+  }
+
+  void _handleMoveUpdate(DragUpdateDetails details) {
+    widget.onMoveUpdate(details);
+  }
+
+  void _handleMoveEnd(DragEndDetails details) {
+    widget.onMoveEnd(details);
+    _scheduleControlsHide();
+  }
+
+  void _handleResizeStart(DragStartDetails details) {
+    _controlsHideTimer?.cancel();
+    widget.onResizeStart(details);
+  }
+
+  void _handleResizeUpdate(DragUpdateDetails details) {
+    widget.onResizeUpdate(details);
+  }
+
+  void _handleResizeEnd(DragEndDetails details) {
+    widget.onResizeEnd(details);
+    _scheduleControlsHide();
+  }
+
+  Widget _buildVideoLayer(MiniPlayerSnapshot snapshot) {
     final controller = snapshot.plPlayerController;
     final videoController = controller.videoController;
-    final colorScheme = ColorScheme.of(context);
+    return Obx(() {
+      if (videoController != null) {
+        final videoFit = controller.videoFit.value;
+        return FittedBox(
+          fit: videoFit.boxFit,
+          child: SimpleVideo(
+            controller: videoController,
+            fill: Colors.black,
+            aspectRatio: videoFit.aspectRatio,
+          ),
+        );
+      }
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth.isFinite
+              ? constraints.maxWidth
+              : 420.0;
+          final height = constraints.maxHeight.isFinite
+              ? constraints.maxHeight
+              : width / Style.aspectRatio16x9;
+          if (snapshot.cover.isEmpty) {
+            return const ColoredBox(color: Colors.black);
+          }
+          return NetworkImgLayer(
+            src: snapshot.cover,
+            width: width,
+            height: height,
+            quality: 60,
+            borderRadius: BorderRadius.zero,
+          );
+        },
+      );
+    });
+  }
 
-    return Material(
-      type: MaterialType.transparency,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.black,
-          borderRadius: const BorderRadius.all(Radius.circular(8)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.28),
-              blurRadius: 24,
-              offset: const Offset(0, 12),
+  Widget _buildHiddenLoadingLayer(ColorScheme colorScheme) {
+    return IgnorePointer(
+      child: Center(
+        child: Obx(() {
+          if (_controlsVisible ||
+              !widget.service.loading.value ||
+              widget.service.entering.value ||
+              widget.service.restoring.value) {
+            return const SizedBox.shrink();
+          }
+          return SizedBox.square(
+            dimension: 34,
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              color: colorScheme.primary,
             ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: const BorderRadius.all(Radius.circular(8)),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _buildControlsLayer(
+    MiniPlayerSnapshot snapshot,
+    ColorScheme colorScheme,
+  ) {
+    final controller = snapshot.plPlayerController;
+    return Obx(() {
+      final transitioning =
+          widget.service.entering.value || widget.service.restoring.value;
+      final visible = _controlsVisible && !transitioning;
+      return IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
+          duration: _controlsFadeDuration,
+          curve: Curves.easeOutCubic,
           child: Stack(
             fit: StackFit.expand,
             children: [
-              Obx(() {
-                if (videoController != null) {
-                  final videoFit = controller.videoFit.value;
-                  return FittedBox(
-                    fit: videoFit.boxFit,
-                    child: SimpleVideo(
-                      controller: videoController,
-                      fill: Colors.black,
-                      aspectRatio: videoFit.aspectRatio,
+              IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withValues(alpha: 0.42),
+                        Colors.transparent,
+                        Colors.black.withValues(alpha: 0.72),
+                      ],
+                      stops: const [0, 0.42, 1],
                     ),
-                  );
-                }
-                return LayoutBuilder(
-                  builder: (context, constraints) {
-                    final width = constraints.maxWidth.isFinite
-                        ? constraints.maxWidth
-                        : 420.0;
-                    final height = constraints.maxHeight.isFinite
-                        ? constraints.maxHeight
-                        : width / Style.aspectRatio16x9;
-                    if (snapshot.cover.isEmpty) {
-                      return const ColoredBox(color: Colors.black);
-                    }
-                    return NetworkImgLayer(
-                      src: snapshot.cover,
-                      width: width,
-                      height: height,
-                      quality: 60,
-                      borderRadius: BorderRadius.zero,
-                    );
-                  },
-                );
-              }),
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.42),
-                      Colors.transparent,
-                      Colors.black.withValues(alpha: 0.72),
-                    ],
-                    stops: const [0, 0.42, 1],
                   ),
-                ),
-              ),
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onPanStart: onMoveStart,
-                  onPanUpdate: onMoveUpdate,
-                  onPanEnd: onMoveEnd,
                 ),
               ),
               Positioned(
                 top: 6,
                 left: 6,
-                child: Obx(
-                  () => service.entering.value || service.restoring.value
-                      ? const SizedBox.shrink()
-                      : _MiniResizeHandle(
-                          onPanStart: onResizeStart,
-                          onPanUpdate: onResizeUpdate,
-                          onPanEnd: onResizeEnd,
-                        ),
+                child: _MiniResizeHandle(
+                  onPanStart: _handleResizeStart,
+                  onPanUpdate: _handleResizeUpdate,
+                  onPanEnd: _handleResizeEnd,
                 ),
               ),
               Positioned(
                 top: 6,
                 right: 6,
-                child: Obx(
-                  () => service.entering.value || service.restoring.value
-                      ? const SizedBox.shrink()
-                      : _MiniIconButton(
-                          tooltip: '关闭小窗',
-                          icon: Icons.close,
-                          onPressed: service.close,
-                        ),
+                child: _MiniIconButton(
+                  tooltip: '关闭小窗',
+                  icon: Icons.close,
+                  onPressed: () {
+                    _controlsHideTimer?.cancel();
+                    widget.service.close();
+                  },
                 ),
               ),
               Center(
                 child: Obx(() {
-                  if (service.entering.value || service.restoring.value) {
-                    return const SizedBox.shrink();
-                  }
-                  if (service.loading.value) {
+                  if (widget.service.loading.value) {
                     return SizedBox.square(
                       dimension: 34,
                       child: CircularProgressIndicator(
@@ -721,13 +814,7 @@ class _MiniPlayerSurface extends StatelessWidget {
                     icon: isPlaying ? Icons.pause : Icons.play_arrow,
                     size: 40,
                     iconSize: 26,
-                    onPressed: () {
-                      if (isPlaying) {
-                        controller.pause();
-                      } else {
-                        controller.play();
-                      }
-                    },
+                    onPressed: _togglePlayback,
                   );
                 }),
               ),
@@ -790,6 +877,50 @@ class _MiniPlayerSurface extends StatelessWidget {
                   ),
                 ),
               ),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final snapshot = widget.service.snapshot.value!;
+    final colorScheme = ColorScheme.of(context);
+
+    return Material(
+      type: MaterialType.transparency,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.black,
+          borderRadius: const BorderRadius.all(Radius.circular(8)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.28),
+              blurRadius: 24,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.all(Radius.circular(8)),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              _buildVideoLayer(snapshot),
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _togglePlayback,
+                  onLongPress: _showControls,
+                  onPanStart: _handleMoveStart,
+                  onPanUpdate: _handleMoveUpdate,
+                  onPanEnd: _handleMoveEnd,
+                ),
+              ),
+              _buildHiddenLoadingLayer(colorScheme),
+              _buildControlsLayer(snapshot, colorScheme),
             ],
           ),
         ),
