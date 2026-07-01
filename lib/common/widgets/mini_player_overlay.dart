@@ -27,9 +27,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     with SingleTickerProviderStateMixin {
   static const double _edgeGestureDistance = 72;
   static const double _flingVelocity = 650;
+  static const double _restoreVelocity = 420;
   static const double _snapVelocity = 420;
-  static const double _edgeAxisDominance = 1.15;
-  static const double _restoreAxisDominance = 1.05;
+  static const double _restoreVerticalRatio = 0.75;
 
   final MiniPlayerService _service = MiniPlayerService.ensureInitialized;
   late final AnimationController _controller;
@@ -141,19 +141,16 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 
   bool _shouldCloseByFling(
-    Rect rect,
+    ({bool left, bool right, bool top, bool bottom}) edge,
     Velocity velocity,
-    Size size,
-    EdgeInsets padding,
   ) {
     final pixels = velocity.pixelsPerSecond;
     final dx = pixels.dx;
     final dy = pixels.dy;
     final absDx = dx.abs();
     final absDy = dy.abs();
-    final edge = _edgeState(rect, size, padding);
-    final horizontalIntent = absDx > absDy * _edgeAxisDominance;
-    final verticalIntent = absDy > absDx * _edgeAxisDominance;
+    final horizontalIntent = absDx >= absDy;
+    final verticalIntent = absDy > absDx;
     return (horizontalIntent && edge.left && dx < -_flingVelocity) ||
         (horizontalIntent && edge.right && dx > _flingVelocity) ||
         (verticalIntent && edge.top && dy < -_flingVelocity) ||
@@ -161,22 +158,19 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 
   bool _shouldRestoreByFling(
-    Rect rect,
+    ({bool left, bool right, bool top, bool bottom}) edge,
     Velocity velocity,
-    Size size,
-    EdgeInsets padding,
   ) {
     final pixels = velocity.pixelsPerSecond;
     final dx = pixels.dx;
     final dy = pixels.dy;
     final absDx = dx.abs();
     final absDy = dy.abs();
-    final edge = _edgeState(rect, size, padding);
-    if (absDy <= absDx * _restoreAxisDominance) {
+    if (absDy <= absDx * _restoreVerticalRatio) {
       return false;
     }
-    return (edge.bottom && dy < -_flingVelocity) ||
-        (edge.top && dy > _flingVelocity);
+    return (edge.bottom && dy < -_restoreVelocity) ||
+        (edge.top && dy > _restoreVelocity);
   }
 
   Rect _snapRectForFling(
@@ -419,14 +413,16 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     EdgeInsets padding,
   ) {
     final rect = _lastPaintRect ?? current;
+    final startRect = _moveStartRect ?? rect;
+    final startEdge = _edgeState(startRect, size, padding);
     _moving = false;
     _moveStartPoint = null;
     _moveStartRect = null;
-    if (_shouldCloseByFling(rect, details.velocity, size, padding)) {
+    if (_shouldCloseByFling(startEdge, details.velocity)) {
       _service.close();
       return;
     }
-    if (_shouldRestoreByFling(rect, details.velocity, size, padding)) {
+    if (_shouldRestoreByFling(startEdge, details.velocity)) {
       _restore(rect);
       return;
     }
