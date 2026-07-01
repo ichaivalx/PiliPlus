@@ -85,6 +85,31 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
     }
 
     videoDetail.value.title = Get.arguments['title'] ?? '';
+
+    final restoredSnapshot = videoDetailCtr.restoredMiniSnapshot;
+    if (restoredSnapshot?.bvid == bvid) {
+      if (restoredSnapshot?.ugcUserStat case final restoredUserStat?) {
+        userStat.value = restoredUserStat;
+      }
+      if (restoredSnapshot?.ugcFollowStatus case final restoredFollowStatus?) {
+        followStatus.value = restoredFollowStatus;
+      }
+      if (restoredSnapshot?.ugcStaffRelations case final restoredRelations?) {
+        staffRelations
+          ..clear()
+          ..addAll(restoredRelations);
+      }
+      if (restoredSnapshot?.ugcStatus case final restoredStatus?) {
+        status.value = restoredStatus;
+      }
+      if (userStat.value.card == null) {
+        unawaited(queryUserStat(videoDetail.value.staff));
+      }
+      if (isLogin && restoredSnapshot?.ugcFollowStatus == null) {
+        unawaited(queryAllStatus());
+        unawaited(queryFollowStatus());
+      }
+    }
   }
 
   // 获取视频简介&分p

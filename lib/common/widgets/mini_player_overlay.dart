@@ -271,6 +271,20 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     );
   }
 
+  Widget _restoreRevealScrim(BuildContext context) {
+    return IgnorePointer(
+      child: ColoredBox(
+        color: Theme.of(context).scaffoldBackgroundColor.withValues(
+          alpha: clampDouble(
+            1 - ((_controller.value - 0.62) / 0.38),
+            0,
+            1,
+          ),
+        ),
+      ),
+    );
+  }
+
   void _startMove(DragStartDetails details, Rect current) {
     if (_service.isEntering || _service.isRestoring) {
       return;
@@ -405,6 +419,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
           return AnimatedBuilder(
             animation: _controller,
             builder: (context, child) {
+              final progress = Curves.easeOutCubic.transform(
+                _controller.value,
+              );
               final rect = _service.restoring.value && !isRestoreToPage
                   ? _lastPaintRect ?? target
                   : hasManualPlacement
@@ -412,12 +429,18 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
                   : Rect.lerp(
                       _beginRect ?? target,
                       _targetRect ?? target,
-                      Curves.easeOutCubic.transform(_controller.value),
+                      progress,
                     )!;
               _lastPaintRect = rect;
-              return Positioned.fromRect(
-                rect: rect,
-                child: child!,
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (_service.restoring.value) _restoreRevealScrim(context),
+                  Positioned.fromRect(
+                    rect: rect,
+                    child: child!,
+                  ),
+                ],
               );
             },
             child: _MiniPlayerSurface(

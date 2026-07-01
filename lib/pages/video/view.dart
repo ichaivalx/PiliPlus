@@ -1386,6 +1386,18 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
             ? ugcIntroController.videoTags.value
             : null,
         relatedVideoState: _relatedVideoStateSnapshot(),
+        ugcUserStat: videoDetailController.isUgc
+            ? ugcIntroController.userStat.value
+            : null,
+        ugcFollowStatus: videoDetailController.isUgc
+            ? ugcIntroController.followStatus.value
+            : null,
+        ugcStaffRelations: videoDetailController.isUgc
+            ? Map.of(ugcIntroController.staffRelations)
+            : null,
+        ugcStatus: videoDetailController.isUgc
+            ? ugcIntroController.status.value
+            : null,
       ),
     );
     if (!didEnter) {

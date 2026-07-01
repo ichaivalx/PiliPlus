@@ -10,6 +10,8 @@ import 'package:PiliPlus/models/common/video/video_quality.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/model_hot_video_item.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
+import 'package:PiliPlus/models_new/member_card_info/data.dart';
+import 'package:PiliPlus/models_new/relation/data.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/models_new/video/video_tag/data.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
@@ -43,6 +45,10 @@ class MiniPlayerSnapshot {
     this.ugcVideoDetail,
     this.videoTags,
     this.relatedVideoState,
+    this.ugcUserStat,
+    this.ugcFollowStatus,
+    this.ugcStaffRelations,
+    this.ugcStatus,
   });
 
   final Map<String, dynamic> arguments;
@@ -62,6 +68,10 @@ class MiniPlayerSnapshot {
   VideoDetailData? ugcVideoDetail;
   List<VideoTagItem>? videoTags;
   LoadingState<List<HotVideoItemModel>?>? relatedVideoState;
+  MemberCardInfoData? ugcUserStat;
+  RelationData? ugcFollowStatus;
+  Map? ugcStaffRelations;
+  bool? ugcStatus;
 
   String get heroTag => arguments['heroTag'];
   int get cid => arguments['cid'];
