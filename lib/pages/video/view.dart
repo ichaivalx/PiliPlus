@@ -1462,14 +1462,10 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       onPointerUp: _resetMiniDragPointer,
       onPointerCancel: _resetMiniDragPointer,
       child: Obx(
-        () {
-          final hideForMiniRestore =
-              isOwnedByMiniPlayer &&
-              (miniPlayerService?.restoring.value ?? false);
-          return !videoDetailController.videoState.value ||
-                  hideForMiniRestore ||
-                  !videoDetailController.autoPlay ||
-                  plPlayerController?.videoController == null
+        () =>
+            !videoDetailController.videoState.value ||
+                !videoDetailController.autoPlay ||
+                plPlayerController?.videoController == null
             ? const SizedBox.shrink()
             : PLVideoPlayer(
                 maxWidth: width,
@@ -1500,8 +1496,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                 showEpisodes: showEpisodes,
                 showViewPoints: showViewPoints,
                 onEnterMiniPlayer: enterMiniPlayer,
-              );
-        },
+              ),
       ),
     ),
   );

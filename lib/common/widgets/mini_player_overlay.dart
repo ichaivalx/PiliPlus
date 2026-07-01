@@ -117,6 +117,35 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     );
   }
 
+  Rect _normalizeRestoreRect(Rect rect, Size size, EdgeInsets padding) {
+    final fallbackHeight = size.width / Style.aspectRatio16x9;
+    if (rect.isEmpty ||
+        !rect.left.isFinite ||
+        !rect.top.isFinite ||
+        !rect.width.isFinite ||
+        !rect.height.isFinite ||
+        rect.width < 80 ||
+        rect.height < 45) {
+      return Rect.fromLTWH(
+        0,
+        padding.top,
+        size.width,
+        fallbackHeight,
+      );
+    }
+
+    final width = clampDouble(rect.width, 80, size.width);
+    final height = clampDouble(rect.height, 45, size.height - padding.top);
+    final maxLeft = max(0.0, size.width - width);
+    final maxTop = max(padding.top, size.height - padding.bottom - height);
+    return Rect.fromLTWH(
+      clampDouble(rect.left, 0, maxLeft),
+      clampDouble(rect.top, padding.top, maxTop),
+      width,
+      height,
+    );
+  }
+
   void _snapTo(Rect rect) {
     if (_controller.isAnimating) {
       _controller.stop();
@@ -233,6 +262,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         _restoreAnimatingHeroTag = null;
       },
       onCanceled: () {
+        if (_service.isRestoring) {
+          _service.cancelRestore(popRestoredRoute: true);
+        }
         _restoreAnimating = false;
         _restoreAnimatingHeroTag = null;
       },
@@ -358,7 +390,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
           final isRestoreToPage = _service.restoring.value &&
               restoreTarget != null &&
               restoreHeroTag != null;
-          final target = isRestoreToPage ? restoreTarget! : miniTarget;
+          final target = isRestoreToPage
+              ? _normalizeRestoreRect(restoreTarget!, size, padding)
+              : miniTarget;
           final hasManualPlacement =
               _service.placement.value != null && !_service.restoring.value;
 
