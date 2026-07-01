@@ -8,7 +8,10 @@ import 'package:PiliPlus/models/common/video/audio_quality.dart';
 import 'package:PiliPlus/models/common/video/video_decode_type.dart';
 import 'package:PiliPlus/models/common/video/video_quality.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
+import 'package:PiliPlus/models/model_hot_video_item.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
+import 'package:PiliPlus/models_new/video/video_detail/data.dart';
+import 'package:PiliPlus/models_new/video/video_tag/data.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
@@ -37,6 +40,9 @@ class MiniPlayerSnapshot {
     required this.videoUrl,
     required this.audioUrl,
     required this.volume,
+    this.ugcVideoDetail,
+    this.videoTags,
+    this.relatedVideoState,
   });
 
   final Map<String, dynamic> arguments;
@@ -53,12 +59,19 @@ class MiniPlayerSnapshot {
   String? videoUrl;
   String? audioUrl;
   Volume? volume;
+  VideoDetailData? ugcVideoDetail;
+  List<VideoTagItem>? videoTags;
+  LoadingState<List<HotVideoItemModel>?>? relatedVideoState;
 
   String get heroTag => arguments['heroTag'];
   int get cid => arguments['cid'];
   String get bvid => arguments['bvid'];
   int get aid => arguments['aid'];
   VideoType get videoType => arguments['videoType'];
+  String? get sourceRouteName {
+    final value = arguments['miniSourceRouteName'];
+    return value is String ? value : null;
+  }
 
   Duration get position =>
       plPlayerController.videoPlayerController?.state.position ?? Duration.zero;
@@ -71,6 +84,7 @@ class MiniPlayerSnapshot {
 
 class MiniPlayerService extends GetxController {
   static const _videoDetailRouteName = '/videoV';
+  static const videoDetailRouteName = _videoDetailRouteName;
 
   static MiniPlayerService get ensureInitialized {
     if (Get.isRegistered<MiniPlayerService>()) {
@@ -223,7 +237,16 @@ class MiniPlayerService extends GetxController {
     if (Get.currentRoute != _videoDetailRouteName) {
       return;
     }
-    Get.until((route) => route.isFirst || !_isVideoDetailRoute(route));
+    final sourceRouteName = snapshot.value?.sourceRouteName;
+    Get.until((route) {
+      if (route.isFirst) {
+        return true;
+      }
+      if (sourceRouteName?.isNotEmpty == true) {
+        return route.settings.name == sourceRouteName;
+      }
+      return !_isVideoDetailRoute(route);
+    });
   }
 
   Future<void> finishEnterAnimation() async {

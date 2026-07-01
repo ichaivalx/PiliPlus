@@ -575,6 +575,7 @@ abstract final class PageUtils {
     bool isVertical = false,
     Dimension? dimension,
   }) {
+    final sourceRouteName = _resolveVideoSourceRoute(extraArguments);
     final arguments = <String, dynamic>{
       'aid': aid ?? IdUtils.bv2av(bvid!),
       'bvid': bvid ?? IdUtils.av2bv(aid!),
@@ -588,6 +589,7 @@ abstract final class PageUtils {
       'videoType': videoType,
       'isVertical': dimension?.isVertical ?? isVertical,
       'heroTag': Utils.makeHeroTag(cid),
+      'miniSourceRouteName': ?sourceRouteName,
       ...?extraArguments,
     };
     final miniPlayer = MiniPlayerService.instanceOrNull;
@@ -613,6 +615,35 @@ abstract final class PageUtils {
         preventDuplicates: false,
       );
     }
+  }
+
+  static String? _resolveVideoSourceRoute(Map? extraArguments) {
+    final explicit = extraArguments?['miniSourceRouteName'];
+    if (explicit is String &&
+        explicit.isNotEmpty &&
+        explicit != MiniPlayerService.videoDetailRouteName) {
+      return explicit;
+    }
+
+    if (Get.currentRoute == MiniPlayerService.videoDetailRouteName) {
+      final args = Get.arguments;
+      if (args is Map) {
+        final previous = args['miniSourceRouteName'];
+        if (previous is String &&
+            previous.isNotEmpty &&
+            previous != MiniPlayerService.videoDetailRouteName) {
+          return previous;
+        }
+      }
+      return null;
+    }
+
+    final currentRoute = Get.currentRoute;
+    if (currentRoute.isEmpty ||
+        currentRoute == MiniPlayerService.videoDetailRouteName) {
+      return null;
+    }
+    return currentRoute;
   }
 
   static final _pgcRegex = RegExp(r'(ep|ss)(\d+)');

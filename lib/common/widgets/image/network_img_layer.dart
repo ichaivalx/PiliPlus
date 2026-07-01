@@ -14,8 +14,8 @@ class NetworkImgLayer extends StatelessWidget {
     required this.width,
     required this.height,
     this.type = .def,
-    this.fadeOutDuration = const Duration(milliseconds: 120),
-    this.fadeInDuration = const Duration(milliseconds: 120),
+    this.fadeOutDuration = Duration.zero,
+    this.fadeInDuration = Duration.zero,
     this.quality = 1,
     this.borderRadius = Style.mdRadius,
     this.getPlaceHolder,
@@ -70,8 +70,10 @@ class NetworkImgLayer extends StatelessWidget {
     } else {
       memCacheHeight = height.cacheSize(context);
     }
+    final imageUrl = ImageUtils.thumbnailUrl(src, quality);
     return CachedNetworkImage(
-      imageUrl: ImageUtils.thumbnailUrl(src, quality),
+      imageUrl: imageUrl,
+      cacheKey: imageUrl,
       width: width,
       height: height,
       memCacheWidth: memCacheWidth,
@@ -80,6 +82,8 @@ class NetworkImgLayer extends StatelessWidget {
       alignment: alignment,
       fadeOutDuration: fadeOutDuration,
       fadeInDuration: fadeInDuration,
+      placeholderFadeInDuration: Duration.zero,
+      useOldImageOnUrlChange: true,
       filterQuality: FilterQuality.low,
       placeholder: (_, _) =>
           getPlaceHolder?.call() ??

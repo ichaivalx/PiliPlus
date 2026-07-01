@@ -35,6 +35,7 @@ import 'package:collection/collection.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -91,6 +92,7 @@ Future<void> _initAppPath() async {
 
 void main() async {
   ScaledWidgetsFlutterBinding.ensureInitialized();
+  _configureImageCache();
   MediaKit.ensureInitialized();
   await _initAppPath();
   try {
@@ -208,6 +210,17 @@ void main() async {
     );
   } else {
     runApp(const MyApp());
+  }
+}
+
+void _configureImageCache() {
+  final imageCache = PaintingBinding.instance.imageCache;
+  if (imageCache.maximumSize < 1800) {
+    imageCache.maximumSize = 1800;
+  }
+  const minCacheBytes = 256 * 1024 * 1024;
+  if (imageCache.maximumSizeBytes < minCacheBytes) {
+    imageCache.maximumSizeBytes = minCacheBytes;
   }
 }
 

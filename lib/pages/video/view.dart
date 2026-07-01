@@ -14,6 +14,8 @@ import 'package:PiliPlus/common/widgets/scroll_physics.dart';
 import 'package:PiliPlus/common/widgets/sliver/sliver_pinned_dynamic_header.dart';
 import 'package:PiliPlus/common/widgets/svg/play_icon.dart';
 import 'package:PiliPlus/models/common/episode_panel_type.dart';
+import 'package:PiliPlus/http/loading_state.dart';
+import 'package:PiliPlus/models/model_hot_video_item.dart';
 import 'package:PiliPlus/models_new/pgc/pgc_info_model/result.dart';
 import 'package:PiliPlus/models_new/video/video_detail/episode.dart' as ugc;
 import 'package:PiliPlus/models_new/video/video_detail/page.dart';
@@ -35,6 +37,7 @@ import 'package:PiliPlus/pages/video/introduction/ugc/widgets/page.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/season.dart';
 import 'package:PiliPlus/pages/video/member/controller.dart';
 import 'package:PiliPlus/pages/video/member/view.dart';
+import 'package:PiliPlus/pages/video/related/controller.dart';
 import 'package:PiliPlus/pages/video/related/view.dart';
 import 'package:PiliPlus/pages/video/reply/controller.dart';
 import 'package:PiliPlus/pages/video/reply/view.dart';
@@ -1307,6 +1310,18 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     return videoDetailController.args['title'] ?? '';
   }
 
+  LoadingState<List<HotVideoItemModel>?>? _relatedVideoStateSnapshot() {
+    if (!videoDetailController.isUgc ||
+        !videoDetailController.showRelatedVideo) {
+      return null;
+    }
+    try {
+      return Get.find<RelatedController>(tag: heroTag).loadingState.value;
+    } catch (_) {
+      return null;
+    }
+  }
+
   bool canEnterMiniPlayer() {
     final miniPlayer = MiniPlayerService.ensureInitialized;
     if (miniPlayer.isActiveOrRestoring) {
@@ -1364,6 +1379,13 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         videoUrl: videoDetailController.videoUrl,
         audioUrl: videoDetailController.audioUrl,
         volume: videoDetailController.volume,
+        ugcVideoDetail: videoDetailController.isUgc
+            ? ugcIntroController.videoDetail.value
+            : null,
+        videoTags: videoDetailController.isUgc
+            ? ugcIntroController.videoTags.value
+            : null,
+        relatedVideoState: _relatedVideoStateSnapshot(),
       ),
     );
     if (!didEnter) {

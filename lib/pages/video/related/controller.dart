@@ -6,14 +6,22 @@ import 'package:get/get.dart';
 
 class RelatedController
     extends CommonListController<List<HotVideoItemModel>?, HotVideoItemModel> {
-  RelatedController({this.autoQuery = true});
+  RelatedController({
+    this.autoQuery = true,
+    LoadingState<List<HotVideoItemModel>?>? initialState,
+  }) {
+    if (initialState != null) {
+      loadingState.value = initialState;
+    }
+  }
+
   String bvid = Get.arguments['bvid'];
   final bool autoQuery;
 
   @override
   void onInit() {
     super.onInit();
-    if (autoQuery) {
+    if (autoQuery && loadingState.value is Loading) {
       queryData();
     }
   }
