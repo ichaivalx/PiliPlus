@@ -125,6 +125,7 @@ class MiniPlayerService extends GetxController {
   bool? _previousEnableBackgroundPlay;
   Transition? _previousDefaultTransition;
   Completer<void>? _replaceCompleter;
+  double? _preferredMiniPlayerWidth;
   int _epoch = 0;
 
   bool get isActive => visible.value && snapshot.value != null;
@@ -132,6 +133,7 @@ class MiniPlayerService extends GetxController {
   bool get isRestoring => restoring.value;
   bool get isActiveOrRestoring => isActive || restoring.value;
   String? get restoringHeroTag => _restoredHeroTag ?? snapshot.value?.heroTag;
+  double? get preferredMiniPlayerWidth => _preferredMiniPlayerWidth;
 
   bool isTabletLandscape(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
@@ -233,6 +235,13 @@ class MiniPlayerService extends GetxController {
 
   void updatePlacement(Rect rect) {
     placement.value = rect;
+  }
+
+  void updatePreferredMiniPlayerWidth(double width) {
+    if (!width.isFinite || width <= 0) {
+      return;
+    }
+    _preferredMiniPlayerWidth = width;
   }
 
   void clearPlacement() {

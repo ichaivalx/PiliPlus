@@ -89,7 +89,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   Rect _defaultMiniRect(Size size, EdgeInsets padding) {
     final width = clampDouble(
-      size.width * 0.36,
+      _service.preferredMiniPlayerWidth ?? size.width * 0.36,
       _minMiniWidth(size, padding),
       _maxMiniWidth(size, padding),
     );
@@ -479,6 +479,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 
   void _endResize(DragEndDetails details) {
+    final rect = _lastPaintRect ?? _service.placement.value;
+    if (rect != null) {
+      _service.updatePreferredMiniPlayerWidth(rect.width);
+    }
     _resizing = false;
     _resizeStartPoint = null;
     _resizeStartRect = null;
