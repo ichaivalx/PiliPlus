@@ -90,6 +90,14 @@ class MiniPlayerSnapshot {
     ...arguments,
     'progress': position.inMilliseconds,
   };
+
+  void updateRestoreContext(Map<String, dynamic> nextArguments) {
+    arguments
+      ..clear()
+      ..addAll(nextArguments);
+    title = nextArguments['title'] ?? title;
+    cover = nextArguments['cover'] ?? cover;
+  }
 }
 
 class MiniPlayerService extends GetxController {
@@ -286,7 +294,52 @@ class MiniPlayerService extends GetxController {
     return arguments['videoType'] == VideoType.ugc &&
         arguments['pgcApi'] != true &&
         arguments['pgcItem'] == null &&
-        (arguments['sourceType'] ?? SourceType.normal) == SourceType.normal;
+        _canReplaceSource(arguments);
+  }
+
+  bool _canReplaceSource(Map<String, dynamic> arguments) {
+    final sourceType = arguments['sourceType'];
+    return sourceType == null ||
+        (sourceType is SourceType && sourceType != SourceType.file);
+  }
+
+  bool _hasSameRestoreContext(
+    Map<String, dynamic> current,
+    Map<String, dynamic> next,
+  ) {
+    if ((current['sourceType'] ?? SourceType.normal) !=
+        (next['sourceType'] ?? SourceType.normal)) {
+      return false;
+    }
+    const contextKeys = <String>[
+      'mediaId',
+      'mediaType',
+      'favTitle',
+      'count',
+      'desc',
+      'sortField',
+      'isContinuePlaying',
+      'isOwner',
+      'oid',
+      'miniSourceRouteName',
+    ];
+    for (final key in contextKeys) {
+      if (!_isSameContextValue(key, current[key], next[key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _isSameContextValue(String key, Object? current, Object? next) {
+    if (current == null || next == null) {
+      return current == next;
+    }
+    return switch (key) {
+      'mediaId' || 'mediaType' || 'count' || 'sortField' || 'oid' =>
+        current.toString() == next.toString(),
+      _ => current == next,
+    };
   }
 
   Future<void> replaceWith(Map<String, dynamic> arguments) async {
@@ -298,6 +351,10 @@ class MiniPlayerService extends GetxController {
     if (current != null &&
         current.cid == arguments['cid'] &&
         current.bvid == arguments['bvid']) {
+      if (!_hasSameRestoreContext(current.arguments, arguments)) {
+        current.updateRestoreContext({...arguments});
+        snapshot.refresh();
+      }
       restore();
       return;
     }
