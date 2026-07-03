@@ -1336,7 +1336,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       isFileSource: videoDetailController.isFileSource,
       isFullScreen: controller.isFullScreen.value,
       isDesktopPip: controller.isDesktopPip,
-      isNormalSource: !videoDetailController.isPlayAll,
       isQuerying: videoDetailController.isQuerying,
       isInteractive: videoDetailController.graphVersion != null,
       hasPlayer: controller.videoController != null &&

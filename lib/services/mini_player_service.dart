@@ -149,7 +149,6 @@ class MiniPlayerService extends GetxController {
     required bool isFullScreen,
     required bool isDesktopPip,
     required bool hasPlayer,
-    required bool isNormalSource,
     required bool isQuerying,
     required bool isInteractive,
   }) {
@@ -158,7 +157,6 @@ class MiniPlayerService extends GetxController {
         !isFileSource &&
         !isFullScreen &&
         !isDesktopPip &&
-        isNormalSource &&
         !isQuerying &&
         !isInteractive &&
         hasPlayer;
