@@ -288,7 +288,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       if (shutdownTimerService.isWaiting) {
         shutdownTimerService.handleWaiting();
       } else {
-        switch (plPlayerController!.playRepeat) {
+        switch (plPlayerController!.effectivePlayRepeat) {
           case PlayRepeat.singleCycle:
             exitFlag = false;
             plPlayerController!.play(repeat: true);

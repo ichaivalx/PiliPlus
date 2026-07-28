@@ -377,6 +377,11 @@ class PlPlayerController with BlockConfigMixin {
 
   // 播放顺序相关
   late PlayRepeat playRepeat = Pref.playRepeat;
+  late final Rx<PlayRepeat> _effectivePlayRepeat = playRepeat.obs;
+
+  PlayRepeat get effectivePlayRepeat => _effectivePlayRepeat.value;
+
+  bool get isSingleCycle => effectivePlayRepeat == PlayRepeat.singleCycle;
 
   TextStyle get subTitleStyle => TextStyle(
     height: 1.5,
@@ -1531,7 +1536,16 @@ class PlPlayerController with BlockConfigMixin {
 
   void setPlayRepeat(PlayRepeat type) {
     playRepeat = type;
+    _effectivePlayRepeat.value = type;
     if (!tempPlayerConf) video.put(VideoBoxKey.playRepeat, type.index);
+  }
+
+  void toggleTemporarySingleCycle() {
+    _effectivePlayRepeat.value = isSingleCycle
+        ? playRepeat == PlayRepeat.singleCycle
+              ? PlayRepeat.pause
+              : playRepeat
+        : PlayRepeat.singleCycle;
   }
 
   void putSubtitleSettings() {

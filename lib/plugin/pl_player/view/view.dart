@@ -459,6 +459,29 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         ),
       ),
 
+      /// 临时单个循环
+      BottomControlType.temporarySingleCycle => Obx(
+        () {
+          final enabled = plPlayerController.isSingleCycle;
+          return ComBtn(
+            width: widgetWidth,
+            height: 30,
+            tooltip: enabled ? '关闭单个循环' : '开启单个循环',
+            icon: DisabledIcon(
+              disable: !enabled,
+              iconSize: 22,
+              color: Colors.white,
+              child: const Icon(
+                Icons.repeat_one_rounded,
+                size: 22,
+                color: Colors.white,
+              ),
+            ),
+            onTap: plPlayerController.toggleTemporarySingleCycle,
+          );
+        },
+      ),
+
       /// 高能进度条
       BottomControlType.dmChart => Obx(
         () {
@@ -901,6 +924,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
       .playOrPause,
       .time,
       if (!isNotFileSource || anySeason) ...[.pre, .next],
+      .temporarySingleCycle,
     ];
 
     final flag =
