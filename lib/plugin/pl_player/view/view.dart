@@ -404,6 +404,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
     final anySeason = isSeason || isPart || isPgc || isPlayAll;
     final isFullScreen = this.isFullScreen;
     final double widgetWidth = isLandscape && isFullScreen ? 42 : 35;
+    final temporarySingleCycleWidth = widgetWidth * 5.5;
 
     Widget progressWidget(
       BottomControlType bottomControl,
@@ -464,17 +465,19 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         () {
           final enabled = plPlayerController.isSingleCycle;
           return ComBtn(
-            width: widgetWidth,
+            width: temporarySingleCycleWidth,
             height: 30,
             tooltip: enabled ? '关闭单个循环' : '开启单个循环',
-            icon: DisabledIcon(
-              disable: !enabled,
-              iconSize: 22,
-              color: Colors.white,
-              child: const Icon(
-                Icons.repeat_one_rounded,
-                size: 22,
+            icon: Center(
+              child: DisabledIcon(
+                disable: !enabled,
+                iconSize: 22,
                 color: Colors.white,
+                child: const Icon(
+                  Icons.repeat_one_rounded,
+                  size: 22,
+                  color: Colors.white,
+                ),
               ),
             ),
             onTap: plPlayerController.toggleTemporarySingleCycle,
@@ -917,17 +920,12 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
     };
 
     final isNotFileSource = !plPlayerController.isFileSource;
-
-    List<BottomControlType> userSpecifyItemLeft = [
+    final flag =
+        isFullScreen || plPlayerController.isDesktopPip || maxWidth >= 500;
+    final List<BottomControlType> userSpecifyItemLeft = [
       .playOrPause,
       .time,
       if (!isNotFileSource || anySeason) ...[.pre, .next],
-      .temporarySingleCycle,
-    ];
-
-    final flag =
-        isFullScreen || plPlayerController.isDesktopPip || maxWidth >= 500;
-    final List<BottomControlType> userSpecifyItemRight = [
       if (isNotFileSource && plPlayerController.showDmChart) .dmChart,
       if (plPlayerController.isAnim) .superResolution,
       if (isNotFileSource && plPlayerController.showViewPoints) .viewPoints,
@@ -939,6 +937,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
       if (isNotFileSource && flag) .qa,
       if (!plPlayerController.isDesktopPip) .fullscreen,
     ];
+    const userSpecifyItemRight = [BottomControlType.temporarySingleCycle];
     return PlayerBar(
       children: [
         Row(
