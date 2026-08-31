@@ -14,7 +14,6 @@ import 'package:PiliPlus/common/widgets/gesture/mouse_interactive_viewer.dart';
 import 'package:PiliPlus/common/widgets/gesture/player_gesture_recognizer.dart';
 import 'package:PiliPlus/common/widgets/loading_widget.dart';
 import 'package:PiliPlus/common/widgets/pair.dart';
-import 'package:PiliPlus/common/widgets/player_bar.dart';
 import 'package:PiliPlus/common/widgets/progress_bar/audio_video_progress_bar.dart';
 import 'package:PiliPlus/common/widgets/progress_bar/segment_progress_bar.dart';
 import 'package:PiliPlus/common/widgets/view_safe_area.dart';
@@ -404,7 +403,6 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
     final anySeason = isSeason || isPart || isPgc || isPlayAll;
     final isFullScreen = this.isFullScreen;
     final double widgetWidth = isLandscape && isFullScreen ? 42 : 35;
-    final temporarySingleCycleWidth = widgetWidth * 5.5;
 
     Widget progressWidget(
       BottomControlType bottomControl,
@@ -465,8 +463,8 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         () {
           final enabled = plPlayerController.isSingleCycle;
           return ComBtn(
-            width: temporarySingleCycleWidth,
-            height: 30,
+            width: double.infinity,
+            height: double.infinity,
             tooltip: enabled ? '关闭单个循环' : '开启单个循环',
             icon: Center(
               child: DisabledIcon(
@@ -937,18 +935,25 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
       if (isNotFileSource && flag) .qa,
       if (!plPlayerController.isDesktopPip) .fullscreen,
     ];
-    const userSpecifyItemRight = [BottomControlType.temporarySingleCycle];
-    return PlayerBar(
-      children: [
-        Row(
-          mainAxisSize: .min,
-          children: userSpecifyItemLeft.map(progressWidget).toList(),
-        ),
-        Row(
-          mainAxisSize: .min,
-          children: userSpecifyItemRight.map(progressWidget).toList(),
-        ),
-      ],
+    return SizedBox(
+      height: 34,
+      child: Row(
+        children: [
+          Expanded(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Row(
+                mainAxisSize: .min,
+                children: userSpecifyItemLeft.map(progressWidget).toList(),
+              ),
+            ),
+          ),
+          Expanded(
+            child: progressWidget(BottomControlType.temporarySingleCycle),
+          ),
+        ],
+      ),
     );
   }
 
