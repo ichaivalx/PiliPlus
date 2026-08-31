@@ -362,10 +362,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     );
   }
 
-  Widget _restoreRevealScrim(BuildContext context) {
+  Widget _restoreRevealScrim() {
     return IgnorePointer(
       child: ColoredBox(
-        color: Theme.of(context).scaffoldBackgroundColor.withValues(
+        color: Colors.black.withValues(
           alpha: clampDouble(
             1 - ((_controller.value - 0.62) / 0.38),
             0,
@@ -545,7 +545,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
               return Stack(
                 fit: StackFit.expand,
                 children: [
-                  if (_service.restoring.value) _restoreRevealScrim(context),
+                  if (_service.restoring.value) _restoreRevealScrim(),
                   Positioned.fromRect(
                     rect: rect,
                     child: child!,
