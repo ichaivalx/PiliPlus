@@ -4,7 +4,7 @@ import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/button/icon_button.dart';
 import 'package:PiliPlus/common/widgets/button/toolbar_icon_button.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
-import 'package:PiliPlus/common/widgets/flutter/draggable_scrollable_sheet.dart';
+import 'package:PiliPlus/common/widgets/draggable_sheet/dyn.dart';
 import 'package:PiliPlus/common/widgets/flutter/text_field/controller.dart';
 import 'package:PiliPlus/common/widgets/flutter/text_field/text_field.dart';
 import 'package:PiliPlus/common/widgets/pair.dart';
@@ -33,10 +33,10 @@ import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/grid.dart';
 import 'package:PiliPlus/utils/request_utils.dart';
 import 'package:collection/collection.dart';
-import 'package:flutter/material.dart' hide showTimePicker;
 import 'package:flutter/services.dart' show LengthLimitingTextInputFormatter;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
+import 'package:material_ui/material_ui.dart' hide showTimePicker;
 
 class CreateDynPanel extends CommonRichTextPubPage {
   const CreateDynPanel({
@@ -300,6 +300,7 @@ class _CreateDynPanelState extends CommonRichTextPubPageState<CreateDynPanel> {
             SliverToBoxAdapter(
               child: Material(
                 borderRadius: Style.mdRadius,
+                color: theme.colorScheme.secondaryContainer,
                 child: InkWell(
                   borderRadius: Style.mdRadius,
                   onTap: () => onPickImage(() {
@@ -307,14 +308,9 @@ class _CreateDynPanelState extends CommonRichTextPubPageState<CreateDynPanel> {
                       enablePublish.value = true;
                     }
                   }),
-                  child: Ink(
-                    width: 100,
-                    height: 100,
-                    decoration: BoxDecoration(
-                      borderRadius: Style.mdRadius,
-                      color: theme.colorScheme.secondaryContainer,
-                    ),
-                    child: const Center(child: Icon(Icons.add, size: 35)),
+                  child: const SizedBox.square(
+                    dimension: 100,
+                    child: Icon(Icons.add, size: 35),
                   ),
                 ),
               ),
