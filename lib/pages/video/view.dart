@@ -18,8 +18,6 @@ import 'package:PiliPlus/common/widgets/simple_app_bar.dart';
 import 'package:PiliPlus/common/widgets/sliver/video_header.dart';
 import 'package:PiliPlus/common/widgets/svg/play_icon.dart';
 import 'package:PiliPlus/models/common/episode_panel_type.dart';
-import 'package:PiliPlus/http/loading_state.dart';
-import 'package:PiliPlus/models/model_hot_video_item.dart';
 import 'package:PiliPlus/models_new/pgc/pgc_info_model/result.dart';
 import 'package:PiliPlus/models_new/video/video_detail/episode.dart' as ugc;
 import 'package:PiliPlus/models_new/video/video_detail/page.dart';
@@ -44,7 +42,7 @@ import 'package:PiliPlus/pages/video/introduction/ugc/widgets/season.dart'
     as ugc;
 import 'package:PiliPlus/pages/video/member/controller.dart';
 import 'package:PiliPlus/pages/video/member/view.dart';
-import 'package:PiliPlus/pages/video/related/controller.dart';
+import 'package:PiliPlus/pages/video/mini_player_host.dart';
 import 'package:PiliPlus/pages/video/related/view.dart';
 import 'package:PiliPlus/pages/video/reply/controller.dart';
 import 'package:PiliPlus/pages/video/reply/view.dart';
@@ -58,7 +56,6 @@ import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/plugin/pl_player/view/view.dart';
-import 'package:PiliPlus/services/mini_player_service.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show shutdownTimerService;
@@ -77,8 +74,6 @@ import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:PiliPlus/utils/theme_utils.dart';
 import 'package:extended_nested_scroll_view/extended_nested_scroll_view.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, clampDouble;
-import 'package:flutter/gestures.dart'
-    show PointerDownEvent, PointerEvent, PointerMoveEvent;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:get/get.dart';
@@ -93,7 +88,11 @@ class VideoDetailPageV extends StatefulWidget {
 }
 
 class _VideoDetailPageVState extends State<VideoDetailPageV>
-    with RouteAware, RouteAwareMixin, WidgetsBindingObserver {
+    with
+        RouteAware,
+        RouteAwareMixin,
+        WidgetsBindingObserver,
+        MiniPlayerHostMixin {
   final heroTag = Get.arguments['heroTag'];
 
   late final VideoDetailController videoDetailController;
@@ -130,21 +129,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   bool get pipNoDanmaku =>
       videoDetailController.plPlayerController.pipNoDanmaku;
 
-  MiniPlayerService? get miniPlayerService => MiniPlayerService.instanceOrNull;
-
-  bool get isOwnedByMiniPlayer =>
-      miniPlayerService?.ownsHeroTag(heroTag) ?? false;
-
-  bool get isMiniPlayerHoldingPlayer =>
-      miniPlayerService?.isHoldingPlayer ?? false;
-
-  bool get shouldDetachPlayerForMini =>
-      isMiniPlayerHoldingPlayer && !isOwnedByMiniPlayer;
-
   bool isShowing = true;
-  int? _miniDragPointer;
-  Offset? _miniDragStart;
-  bool _miniDragTriggered = false;
 
   bool get isFullScreen =>
       videoDetailController.plPlayerController.isFullScreen.value;
@@ -190,6 +175,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       );
     }
 
+    initMiniPlayerHost();
+
     videoSourceInit();
 
     addObserverMobile(this);
@@ -197,21 +184,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   // 获取视频资源，初始化播放器
   void videoSourceInit() {
-    if (videoDetailController.isRestoredFromMini) {
-      plPlayerController = videoDetailController.plPlayerController;
-      plPlayerController!
-        ..addStatusLister(playerListener)
-        ..addPositionListener(positionListener);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          MiniPlayerService.instanceOrNull?.updateRestoreTarget(
-            heroTag,
-            _playerGlobalRect(),
-          );
-        }
-      });
-      return;
-    }
     videoDetailController.queryVideoUrl(autoFullScreenFlag: true);
     if (videoDetailController.autoPlay) {
       plPlayerController = videoDetailController.plPlayerController;
@@ -374,6 +346,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   @override
   void dispose() {
+    disposeMiniPlayerHost();
+
     plPlayerController
       ?..removeStatusLister(playerListener)
       ..removePositionListener(positionListener);
@@ -396,18 +370,13 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       showSystemBar();
     }
 
-    if (!videoDetailController.plPlayerController.isCloseAll &&
-        !isOwnedByMiniPlayer) {
-      if (shouldDetachPlayerForMini) {
-        PlPlayerController.updatePlayCount();
+    if (!videoDetailController.plPlayerController.isCloseAll) {
+      videoPlayerServiceHandler?.onVideoDetailDispose(heroTag);
+      if (plPlayerController != null) {
+        videoDetailController.makeHeartBeat();
+        plPlayerController!.dispose();
       } else {
-        videoPlayerServiceHandler?.onVideoDetailDispose(heroTag);
-        if (plPlayerController != null) {
-          videoDetailController.makeHeartBeat();
-          plPlayerController!.dispose();
-        } else {
-          PlPlayerController.updatePlayCount();
-        }
+        PlPlayerController.updatePlayCount();
       }
     }
     removeObserverMobile(this);
@@ -419,6 +388,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   // 离开当前页面时
   void didPushNext() {
     super.didPushNext();
+    if (isCoveredByMiniPlayer) {
+      return;
+    }
     isShowing = false;
 
     removeObserverMobile(this);
@@ -434,19 +406,12 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       ..cancelBlockListener()
       ..playerStatus = plPlayerController?.playerStatus
       ..brightness = plPlayerController?.brightness.value;
-
-    if (shouldDetachPlayerForMini) {
-      return;
-    }
-
     if (plPlayerController != null) {
       videoDetailController.makeHeartBeat();
       plPlayerController!
         ..removeStatusLister(playerListener)
-        ..removePositionListener(positionListener);
-      if (!isOwnedByMiniPlayer) {
-        plPlayerController!.pause();
-      }
+        ..removePositionListener(positionListener)
+        ..pause();
     }
   }
 
@@ -459,14 +424,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       return;
     }
 
-    if (shouldDetachPlayerForMini) {
-      isShowing = true;
-      addObserverMobile(this);
-      introController.startTimer();
-      return;
-    }
-
-    if (isOwnedByMiniPlayer) {
+    if (miniPlayerHandlesPopNext()) {
       return;
     }
 
@@ -1264,173 +1222,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     ],
   );
 
-  Rect _playerGlobalRect() {
-    final context = videoDetailController.videoPlayerKey.currentContext;
-    final renderObject = context?.findRenderObject();
-    if (renderObject is RenderBox && renderObject.hasSize) {
-      return renderObject.localToGlobal(Offset.zero) & renderObject.size;
-    }
-    return Rect.fromLTWH(
-      0,
-      padding.top,
-      maxWidth,
-      videoDetailController.videoHeight,
-    );
-  }
-
-  String _currentVideoTitle() {
-    try {
-      final title = introController.videoDetail.value.title;
-      if (title?.isNotEmpty == true) {
-        return title!;
-      }
-    } catch (_) {}
-    return videoDetailController.args['title'] ?? '';
-  }
-
-  LoadingState<List<HotVideoItemModel>?>? _relatedVideoStateSnapshot() {
-    if (!videoDetailController.isUgc ||
-        !videoDetailController.showRelatedVideo) {
-      return null;
-    }
-    try {
-      return Get.find<RelatedController>(tag: heroTag).loadingState.value;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  bool canEnterMiniPlayer() {
-    final miniPlayer = MiniPlayerService.ensureInitialized;
-    if (miniPlayer.isActiveOrRestoring) {
-      return false;
-    }
-    final controller = videoDetailController.plPlayerController;
-    return miniPlayer.canStartFrom(
-      context: context,
-      isUgc: videoDetailController.isUgc &&
-          videoDetailController.args['pgcApi'] != true &&
-          videoDetailController.args['pgcItem'] == null,
-      isFileSource: videoDetailController.isFileSource,
-      isFullScreen: controller.isFullScreen.value,
-      isDesktopPip: controller.isDesktopPip,
-      isQuerying: videoDetailController.isQuerying,
-      isInteractive: videoDetailController.graphVersion != null,
-      hasPlayer: controller.videoController != null &&
-          controller.videoPlayerController != null &&
-          videoDetailController.videoState.value,
-    );
-  }
-
-  void enterMiniPlayer() {
-    if (!canEnterMiniPlayer()) {
-      return;
-    }
-
-    final miniPlayer = MiniPlayerService.ensureInitialized;
-    final controller = videoDetailController.plPlayerController;
-    final arguments = <String, dynamic>{
-      ...videoDetailController.args,
-      'aid': videoDetailController.aid,
-      'bvid': videoDetailController.bvid,
-      'cid': videoDetailController.cid.value,
-      'cover': videoDetailController.cover.value,
-      'title': _currentVideoTitle(),
-      'videoType': videoDetailController.videoType,
-      'isVertical': videoDetailController.isVertical.value,
-      'heroTag': heroTag,
-    };
-
-    final didEnter = miniPlayer.enter(
-      MiniPlayerSnapshot(
-        arguments: arguments,
-        plPlayerController: controller,
-        title: arguments['title'] ?? '',
-        cover: arguments['cover'] ?? '',
-        sourceRect: _playerGlobalRect(),
-        data: videoDetailController.data,
-        firstVideo: videoDetailController.firstVideo,
-        currentVideoQa: videoDetailController.currentVideoQa.value,
-        currentAudioQa: videoDetailController.currentAudioQa,
-        currentDecodeFormats: videoDetailController.currentDecodeFormats,
-        videoUrl: videoDetailController.videoUrl,
-        audioUrl: videoDetailController.audioUrl,
-        volume: videoDetailController.volume,
-        ugcVideoDetail: videoDetailController.isUgc
-            ? ugcIntroController.videoDetail.value
-            : null,
-        videoTags: videoDetailController.isUgc
-            ? ugcIntroController.videoTags.value
-            : null,
-        relatedVideoState: _relatedVideoStateSnapshot(),
-        ugcUserStat: videoDetailController.isUgc
-            ? ugcIntroController.userStat.value
-            : null,
-        ugcFollowStatus: videoDetailController.isUgc
-            ? ugcIntroController.followStatus.value
-            : null,
-        ugcStaffRelations: videoDetailController.isUgc
-            ? Map.of(ugcIntroController.staffRelations)
-            : null,
-        ugcStatus: videoDetailController.isUgc
-            ? ugcIntroController.status.value
-            : null,
-      ),
-    );
-    if (!didEnter) {
-      return;
-    }
-
-    videoDetailController.videoState.value = false;
-    controller
-      ..removeStatusLister(playerListener)
-      ..removePositionListener(positionListener);
-  }
-
-  bool _isMiniDragStart(double width, Offset position) {
-    if (!canEnterMiniPlayer()) {
-      return false;
-    }
-    final sectionWidth = width / 3;
-    return position.dx >= sectionWidth && position.dx <= sectionWidth * 2;
-  }
-
-  void _onMiniDragPointerDown(PointerDownEvent event, double width) {
-    if (!_isMiniDragStart(width, event.localPosition)) {
-      _miniDragPointer = null;
-      _miniDragStart = null;
-      _miniDragTriggered = false;
-      return;
-    }
-    _miniDragPointer = event.pointer;
-    _miniDragStart = event.localPosition;
-    _miniDragTriggered = false;
-  }
-
-  void _onMiniDragPointerMove(PointerMoveEvent event) {
-    if (_miniDragPointer != event.pointer ||
-        _miniDragStart == null ||
-        _miniDragTriggered) {
-      return;
-    }
-    final delta = event.localPosition - _miniDragStart!;
-    if (delta.dy > 52 && delta.dy > delta.dx.abs() * 1.25) {
-      _miniDragTriggered = true;
-      _miniDragPointer = null;
-      _miniDragStart = null;
-      enterMiniPlayer();
-    }
-  }
-
-  void _resetMiniDragPointer(PointerEvent event) {
-    if (_miniDragPointer != event.pointer) {
-      return;
-    }
-    _miniDragPointer = null;
-    _miniDragStart = null;
-    _miniDragTriggered = false;
-  }
-
   Widget plPlayer({
     required double width,
     required double height,
@@ -1438,55 +1229,46 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   }) => popScope(
     key: videoDetailController.videoPlayerKey,
     canPop:
-        isOwnedByMiniPlayer ||
-        (!isFullScreen &&
+        !isFullScreen &&
         !videoDetailController.plPlayerController.isDesktopPip &&
-        (videoDetailController.horizontalScreen || isPortrait)),
-    onPopInvokedWithResult:
-        videoDetailController.plPlayerController.onPopInvokedWithResult,
-    child: Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (event) => _onMiniDragPointerDown(event, width),
-      onPointerMove: _onMiniDragPointerMove,
-      onPointerUp: _resetMiniDragPointer,
-      onPointerCancel: _resetMiniDragPointer,
-      child: Obx(
-        () =>
-            !videoDetailController.videoState.value ||
-                !videoDetailController.autoPlay ||
-                plPlayerController?.videoController == null
-            ? const SizedBox.shrink()
-            : PLVideoPlayer(
-                maxWidth: width,
-                maxHeight: height,
-                plPlayerController: plPlayerController!,
-                videoDetailController: videoDetailController,
-                introController: introController,
-                headerControl: HeaderControl(
-                  key: videoDetailController.headerCtrKey,
-                  isPortrait: isPortrait,
-                  controller: videoDetailController.plPlayerController,
-                  videoDetailCtr: videoDetailController,
-                  heroTag: heroTag,
-                ),
-                danmuWidget: isPipMode && pipNoDanmaku
-                    ? null
-                    : Obx(
-                        () => PlDanmaku(
-                          key: ValueKey(videoDetailController.cid.value),
-                          isPipMode: isPipMode,
-                          cid: videoDetailController.cid.value,
-                          playerController: plPlayerController!,
-                          isFullScreen: plPlayerController!.isFullScreen.value,
-                          isFileSource: videoDetailController.isFileSource,
-                          size: Size(width, height),
-                        ),
-                      ),
-                showEpisodes: showEpisodes,
-                showViewPoints: showViewPoints,
-                onEnterMiniPlayer: enterMiniPlayer,
+        (videoDetailController.horizontalScreen || isPortrait),
+    onPopInvokedWithResult: onMiniAwarePopInvoked,
+    child: Obx(
+      () =>
+          !videoDetailController.videoState.value ||
+              !videoDetailController.autoPlay ||
+              plPlayerController?.videoController == null
+          ? const SizedBox.shrink()
+          : PLVideoPlayer(
+              maxWidth: width,
+              maxHeight: height,
+              plPlayerController: plPlayerController!,
+              videoDetailController: videoDetailController,
+              introController: introController,
+              headerControl: HeaderControl(
+                key: videoDetailController.headerCtrKey,
+                isPortrait: isPortrait,
+                controller: videoDetailController.plPlayerController,
+                videoDetailCtr: videoDetailController,
+                heroTag: heroTag,
               ),
-      ),
+              danmuWidget: isPipMode && pipNoDanmaku
+                  ? null
+                  : Obx(
+                      () => PlDanmaku(
+                        key: ValueKey(videoDetailController.cid.value),
+                        isPipMode: isPipMode,
+                        cid: videoDetailController.cid.value,
+                        playerController: plPlayerController!,
+                        isFullScreen: plPlayerController!.isFullScreen.value,
+                        isFileSource: videoDetailController.isFileSource,
+                        size: Size(width, height),
+                      ),
+                    ),
+              showEpisodes: showEpisodes,
+              showViewPoints: showViewPoints,
+              onEnterMiniPlayer: onShrinkToMiniPlayer,
+            ),
     ),
   );
 

@@ -44,11 +44,11 @@ import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/app_bar_ani.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/backward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/bottom_control.dart';
+import 'package:PiliPlus/plugin/pl_player/widgets/bottom_bar.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/forward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/mpv_convert_webp.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/play_pause_btn.dart';
-import 'package:PiliPlus/services/mini_player_service.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -132,6 +132,7 @@ class PLVideoPlayer extends StatefulWidget {
 
 class _PLVideoPlayerState extends State<PLVideoPlayer>
     with WidgetsBindingObserver, TickerProviderStateMixin {
+  static const double _miniPlayerDragDistance = 42;
   late AnimationController _animationController;
   late VideoController videoController;
   late final CommonIntroController introController = widget.introController!;
@@ -344,8 +345,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Keep playing in the PiP window.
     if (Platform.isIOS && IOSPipHelper.isActive) return;
-    if (!plPlayerController.continuePlayInBackground.value &&
-        !MiniPlayerService.isMiniActive) {
+    if (!plPlayerController.continuePlayInBackground.value) {
       late final player = plPlayerController.videoPlayerController;
       if (const <AppLifecycleState>[.paused, .detached].contains(state)) {
         if (player != null && player.state.playing) {
@@ -470,31 +470,6 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
             plPlayerController.duration.value,
           ),
         ),
-      ),
-
-      /// 临时单个循环
-      BottomControlType.temporarySingleCycle => Obx(
-        () {
-          final enabled = plPlayerController.isSingleCycle;
-          return ComBtn(
-            width: double.infinity,
-            height: double.infinity,
-            tooltip: enabled ? '关闭单个循环' : '开启单个循环',
-            icon: Center(
-              child: DisabledIcon(
-                disable: !enabled,
-                iconSize: 22,
-                color: Colors.white,
-                child: const Icon(
-                  Icons.repeat_one_rounded,
-                  size: 22,
-                  color: Colors.white,
-                ),
-              ),
-            ),
-            onTap: plPlayerController.toggleTemporarySingleCycle,
-          );
-        },
       ),
 
       /// 高能进度条
@@ -905,42 +880,20 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
     };
 
     final isNotFileSource = !plPlayerController.isFileSource;
-    final flag =
-        isFullScreen || plPlayerController.isDesktopPip || maxWidth >= 500;
+
     final List<BottomControlType> userSpecifyItemLeft = [
       .playOrPause,
       .time,
-      if (!isNotFileSource || anySeason) ...[.pre, .next],
+      .speed,
       if (isNotFileSource && plPlayerController.showDmChart) .dmChart,
-      if (plPlayerController.isAnim) .superResolution,
       if (isNotFileSource && plPlayerController.showViewPoints) .viewPoints,
-      if (isNotFileSource && anySeason) .episode,
-      if (flag) .fit,
       if (isNotFileSource) .aiTranslate,
       .subtitle,
-      .speed,
-      if (isNotFileSource && flag) .qa,
-      if (!plPlayerController.isDesktopPip) .fullscreen,
     ];
-    return SizedBox(
-      height: 34,
-      child: Row(
-        children: [
-          Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Row(
-                mainAxisSize: .min,
-                children: userSpecifyItemLeft.map(progressWidget).toList(),
-              ),
-            ),
-          ),
-          Expanded(
-            child: progressWidget(BottomControlType.temporarySingleCycle),
-          ),
-        ],
-      ),
+    return PlayerBottomBar(
+      controller: plPlayerController,
+      isFullScreen: isFullScreen,
+      children: userSpecifyItemLeft.map(progressWidget).toList(),
     );
   }
 
@@ -1120,11 +1073,20 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         plPlayerController.triggerFullScreen(status: status);
       }
 
+      // 非全屏下滑进入小窗，下滑已映射为全屏时不处理
       if (!isFullScreen &&
-          widget.onEnterMiniPlayer != null &&
-          cumulativeDy > 42) {
-        _gestureType = .center_down;
-        widget.onEnterMiniPlayer!();
+          !plPlayerController.fullScreenGestureReverse &&
+          cumulativeDy > threshold) {
+        if (widget.onEnterMiniPlayer case final onEnterMiniPlayer?) {
+          if (cumulativeDy > _miniPlayerDragDistance) {
+            _gestureType = .center_down;
+            onEnterMiniPlayer();
+          }
+          return;
+        }
+      }
+
+      if (!plPlayerController.enableSlideFS) {
         return;
       }
 

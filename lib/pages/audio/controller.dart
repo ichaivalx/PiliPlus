@@ -206,11 +206,9 @@ class AudioController extends GetxController
       duration: const Duration(milliseconds: 200),
     );
 
-    if (shutdownTimerService.isActive) {
-      shutdownTimerService
-        ..onPause = onPause
-        ..isPlaying = isPlaying;
-    }
+    shutdownTimerService
+      ..onPause = onPause
+      ..isPlaying = isPlaying;
   }
 
   bool isPlaying() {
@@ -819,10 +817,11 @@ class AudioController extends GetxController
   @override
   void onClose() {
     _stopStatusTimer();
-    shutdownTimerService
-      ..onPause = null
-      ..isPlaying = null
-      ..reset();
+    if (shutdownTimerService.onPause == onPause) {
+      shutdownTimerService
+        ..onPause = null
+        ..isPlaying = null;
+    }
     videoPlayerServiceHandler
       ?..onPlay = null
       ..onPause = null

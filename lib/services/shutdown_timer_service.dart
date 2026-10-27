@@ -1,10 +1,12 @@
 // 定时关闭服务
 
-import 'dart:async' show Timer;
+import 'dart:async' show StreamSubscription, Timer;
 
 import 'package:PiliPlus/models/common/enum_with_label.dart';
+import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/menu_row.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/utils/device_utils.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
@@ -12,6 +14,8 @@ import 'package:PiliPlus/utils/theme_utils.dart';
 import 'package:collection/collection.dart';
 import 'package:cupertino_ui/cupertino_ui.dart' show CupertinoPicker;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
+import 'package:get/get_core/src/get_main.dart';
+import 'package:get/get_instance/src/extension_instance.dart';
 import 'package:get/get_rx/src/rx_types/rx_types.dart';
 import 'package:get/get_state_manager/src/rx_flutter/rx_obx_widget.dart';
 import 'package:material_ui/material_ui.dart';
@@ -34,32 +38,40 @@ final shutdownTimerService = ShutdownTimerService._internal();
 class ShutdownTimerService {
   ShutdownTimerService._internal();
 
+  /// 独立于视频播放器的播放目标（听音频页），随页面生命周期注册
   VoidCallback? onPause;
   ValueGetter<bool>? isPlaying;
 
-  DateTime? _deadline;
-  DateTime? get deadline => _deadline;
+  final Rxn<DateTime> _deadline = Rxn<DateTime>();
+  DateTime? get deadline => _deadline.value;
   Timer? _shutdownTimer;
-  bool get isActive => _shutdownTimer?.isActive ?? false;
+  bool get isActive => deadline != null || isWaiting;
   int _durationInMinutes = 0;
   _ShutdownType _shutdownType = .pause;
 
-  bool _isWaiting = false;
-  bool get isWaiting => _isWaiting;
+  final RxBool _isWaiting = false.obs;
+  bool get isWaiting => _isWaiting.value;
   bool _waitUntilCompleted = false;
+  bool _blockAutoPlay = false;
 
   void _stopTimer() {
-    if (_shutdownTimer != null) {
-      _deadline = null;
-      _shutdownTimer!.cancel();
-      _shutdownTimer = null;
-    }
+    _deadline.value = null;
+    _shutdownTimer?.cancel();
+    _shutdownTimer = null;
   }
 
   void reset([int durationInMinutes = 0]) {
     _stopTimer();
-    _isWaiting = false;
+    _isWaiting.value = false;
+    _blockAutoPlay = false;
     _durationInMinutes = durationInMinutes;
+  }
+
+  /// 到期时正在加载的下一项不再自动开始
+  bool consumeAutoPlayBlock() {
+    final block = _blockAutoPlay;
+    _blockAutoPlay = false;
+    return block;
   }
 
   void _startShutdownTimer(int durationInMinutes) {
@@ -69,47 +81,67 @@ class ShutdownTimerService {
       return;
     }
     SmartDialog.showToast('设置 ${_format(durationInMinutes)} 后定时关闭');
-    _deadline = DateTime.now().add(Duration(minutes: durationInMinutes));
+    _deadline.value = DateTime.now().add(Duration(minutes: durationInMinutes));
     _shutdownTimer = Timer(
       Duration(minutes: durationInMinutes),
       _handleShutdown,
     );
   }
 
-  void _handleShutdown() {
-    switch (_shutdownType) {
-      case .pause:
-        late final player = PlPlayerController.instance;
-        final isPlaying =
-            this.isPlaying?.call() ?? player?.playerStatus.isPlaying ?? false;
-        if (isPlaying) {
-          if (_waitUntilCompleted) {
-            _isWaiting = true;
-          } else {
-            _durationInMinutes = 0;
-            (onPause ?? player?.pause)?.call();
-            SmartDialog.showToast('定时时间已到，已暂停');
-          }
-        }
-      case .exit:
-        if (_waitUntilCompleted) {
-          final isPlaying =
-              this.isPlaying?.call() ??
-              PlPlayerController.instance?.playerStatus.isPlaying ??
-              false;
-          if (isPlaying) {
-            _isWaiting = true;
-            return;
-          }
-        }
-        _syncProgressAndExit();
+  bool get _isPlaying =>
+      (isPlaying?.call() ?? false) ||
+      (PlPlayerController.instance?.playerStatus.isPlaying ?? false);
+
+  bool get _isLoading {
+    final player = PlPlayerController.instance;
+    if (player == null) {
+      return false;
     }
+    if (player.processing || miniPlayerSession.loading.value) {
+      return true;
+    }
+    final tag = PlPlayerController.playOwner?.tag;
+    return tag != null &&
+        Get.isRegistered<VideoDetailController>(tag: tag) &&
+        Get.find<VideoDetailController>(tag: tag).isQuerying;
+  }
+
+  void _pause() {
+    if (isPlaying?.call() ?? false) {
+      onPause?.call();
+    }
+    PlPlayerController.pauseIfExists();
+  }
+
+  void _handleShutdown() {
+    _stopTimer();
+    final isLive = PlPlayerController.instance?.isLive ?? false;
+    final waitUntilCompleted = _waitUntilCompleted && !isLive;
+    if (_isPlaying) {
+      if (waitUntilCompleted) {
+        _isWaiting.value = true;
+        return;
+      }
+      if (_shutdownType == _ShutdownType.exit) {
+        _syncProgressAndExit();
+        return;
+      }
+      _pause();
+      SmartDialog.showToast('定时时间已到，已暂停');
+    } else if (_shutdownType == _ShutdownType.exit) {
+      _syncProgressAndExit();
+      return;
+    } else if (_isLoading) {
+      _blockAutoPlay = true;
+      SmartDialog.showToast('定时时间已到，已暂停');
+    }
+    _durationInMinutes = 0;
   }
 
   void handleWaiting() {
     switch (_shutdownType) {
       case .pause:
-        _isWaiting = false;
+        _isWaiting.value = false;
         _durationInMinutes = 0;
         SmartDialog.showToast('定时时间已到，已暂停');
       case .exit:
@@ -241,9 +273,6 @@ class ShutdownTimerService {
   }) {
     const Set<int> scheduleTimeMinutes = {0, 15, 30, 45, 60};
     const TextStyle titleStyle = TextStyle(fontSize: 14);
-    if (isLive) {
-      _waitUntilCompleted = false;
-    }
 
     final child = ShutdownPanel(
       builder: (context, countdown, onCountdown, setState) {
@@ -399,11 +428,16 @@ class _ShutdownPanelState extends State<ShutdownPanel> with ShutdownMixin {
 mixin ShutdownMixin<T extends StatefulWidget> on State<T> {
   Timer? _countdownTimer;
   final RxnString countdownText = RxnString(null);
+  late final List<StreamSubscription> _subscriptions;
 
   @override
   void initState() {
     super.initState();
     _startTimer();
+    _subscriptions = [
+      shutdownTimerService._deadline.listen((_) => _startTimer()),
+      shutdownTimerService._isWaiting.listen((_) => _startTimer()),
+    ];
   }
 
   void _updateCountdownTextEnd([String? value]) {
@@ -449,6 +483,9 @@ mixin ShutdownMixin<T extends StatefulWidget> on State<T> {
 
   @override
   void dispose() {
+    for (final e in _subscriptions) {
+      e.cancel();
+    }
     _stopTimer();
     super.dispose();
   }

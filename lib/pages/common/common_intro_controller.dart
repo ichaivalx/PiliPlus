@@ -82,14 +82,7 @@ abstract class CommonIntroController extends GetxController
       args['viewLater'] ?? args['sourceType'] == SourceType.watchLater,
     );
 
-    final restoredSnapshot = videoDetailCtr.restoredMiniSnapshot;
-    final restoredVideoDetail = restoredSnapshot?.ugcVideoDetail;
-    if (restoredSnapshot?.bvid == bvid && restoredVideoDetail != null) {
-      videoDetail.value = restoredVideoDetail;
-      videoTags.value = restoredSnapshot?.videoTags;
-    } else {
-      queryVideoIntro();
-    }
+    queryVideoIntro();
     startTimer();
   }
 

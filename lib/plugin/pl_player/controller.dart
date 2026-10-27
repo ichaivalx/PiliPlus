@@ -29,7 +29,10 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/danmaku_options.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/service_locator.dart';
+import 'package:PiliPlus/services/shutdown_timer_service.dart'
+    show shutdownTimerService;
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
@@ -137,7 +140,6 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       Pref.continuePlayInBackground.obs;
 
   bool _autoPlay = false;
-  bool inAppMiniPlayerActive = false;
 
   // 记录历史记录
   int? _aid;
@@ -737,6 +739,10 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     bool autoFullScreenFlag = false,
     int? rotate,
   }) async {
+    if (miniPlayerSession.adopt(bvid: bvid, cid: cid)) {
+      onInit?.call();
+      return;
+    }
     try {
       _processing = true;
       this.isLive = isLive;
@@ -992,7 +998,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     _initVideoFit();
 
     // 自动播放
-    if (_autoPlay) {
+    if (_autoPlay && !shutdownTimerService.consumeAutoPlayBlock()) {
       playIfExists();
     }
   }
@@ -1703,7 +1709,18 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     Get.until((route) => route.isFirst);
   }
 
-  void _disposePlayerResources({required bool clearInstance}) {
+  void dispose() {
+    // 每次减1，最后销毁
+    _resetPlayerOrientationIfNeeded();
+    cancelLongPressTimer();
+    _cancelSubForSeek();
+    if (!_isCloseAll && _playerCount > 1) {
+      _playerCount -= 1;
+      _heartDuration = 0;
+      return;
+    }
+
+    _playerCount = 0;
     if (removeSafeArea) {
       showSystemBar();
     }
@@ -1749,52 +1766,15 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     _videoPlayerController?.dispose();
     _videoPlayerController = null;
     _videoController = null;
-    if (clearInstance) {
-      _instance = null;
-    }
+    _instance = null;
     videoPlayerServiceHandler?.clear();
   }
 
-  void dispose() {
-    // 每次减1，最后销毁
-    _resetPlayerOrientationIfNeeded();
-    cancelLongPressTimer();
-    _cancelSubForSeek();
-    if (!_isCloseAll && _playerCount > 1) {
-      _playerCount -= 1;
-      _heartDuration = 0;
-      return;
-    }
-
-    _playerCount = 0;
-    _disposePlayerResources(clearInstance: true);
-  }
-
-  void disposeMiniPlayer() {
-    _resetPlayerOrientationIfNeeded();
-    cancelLongPressTimer();
-    _cancelSubForSeek();
-    inAppMiniPlayerActive = false;
-    if (_playerCount > 1) {
-      _playerCount -= 1;
-      _heartDuration = 0;
-      _disposePlayerResources(clearInstance: false);
-      return;
-    }
-
-    _playerCount = 0;
-    _disposePlayerResources(clearInstance: true);
-  }
-
   static void updatePlayCount() {
-    final instance = _instance;
-    if (instance == null || instance._playerCount <= 0) {
-      return;
-    }
-    if (instance._playerCount == 1) {
-      instance.dispose();
+    if (_instance?._playerCount == 1) {
+      _instance?.dispose();
     } else {
-      instance._playerCount -= 1;
+      _instance?._playerCount -= 1;
     }
   }
 
@@ -1923,9 +1903,6 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   void onPopInvokedWithResult(bool didPop, Object? result) {
     if (didPop) {
-      if (inAppMiniPlayerActive) {
-        return;
-      }
       if (playerStatus.isPlaying) {
         pause();
       }

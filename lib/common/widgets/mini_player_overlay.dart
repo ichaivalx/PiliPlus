@@ -1,16 +1,21 @@
-import 'dart:async' show Timer, unawaited;
+import 'dart:async' show StreamSubscription, Timer;
+import 'dart:io' show Platform;
 import 'dart:math' show max, min;
-import 'dart:ui';
 
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
+import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
-import 'package:PiliPlus/services/mini_player_service.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
+import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
+import 'package:PiliPlus/utils/ios/pip_helper.dart';
+import 'package:flutter/foundation.dart' show clampDouble;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+/// 应用内小窗，仅负责展示与手势，状态由 [miniPlayerSession] 驱动
 class AppMiniPlayerOverlay extends StatefulWidget {
   const AppMiniPlayerOverlay({
     required this.child,
@@ -24,102 +29,221 @@ class AppMiniPlayerOverlay extends StatefulWidget {
 }
 
 class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  static const double _margin = 16;
   static const double _edgeGestureDistance = 72;
   static const double _flingVelocity = 650;
   static const double _restoreVelocity = 420;
   static const double _snapVelocity = 420;
   static const double _restoreVerticalRatio = 0.75;
 
-  final MiniPlayerService _service = MiniPlayerService.ensureInitialized;
-  late final AnimationController _controller;
+  final _session = miniPlayerSession;
+  late final AnimationController _animation;
+  late final List<StreamSubscription> _subscriptions;
 
-  Rect? _beginRect;
-  Rect? _targetRect;
-  Rect? _lastPaintRect;
-  Rect? _moveStartRect;
-  Rect? _resizeStartRect;
-  Offset? _moveStartPoint;
-  Offset? _resizeStartPoint;
-  bool _restoreAnimating = false;
-  bool _moving = false;
-  bool _resizing = false;
-  String? _restoreAnimatingHeroTag;
-  Timer? _restoreTargetTimer;
+  bool _visible = false;
+  Rect? _from;
+  Rect? _lastRect;
+  Rect? _placement;
+  Rect? _restoreTarget;
+  double? _preferredWidth;
+  Rect? _gestureStartRect;
+  Offset? _gestureStartPoint;
+  bool _pausedInBackground = false;
+  Timer? _restoreTimer;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 260),
-    );
+    _animation =
+        AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 260),
+        )..addStatusListener((status) {
+          if (status.isCompleted) {
+            _finishRestoreIfReady();
+          }
+        });
+    _subscriptions = [
+      _session.mode.listen(_onModeChanged),
+      _session.restoring.listen(_onRestoringChanged),
+      _session.restoreRect.listen(_onRestoreRectChanged),
+    ];
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
-    _restoreTargetTimer?.cancel();
-    _controller.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    for (final e in _subscriptions) {
+      e.cancel();
+    }
+    _restoreTimer?.cancel();
+    _animation.dispose();
     super.dispose();
   }
 
-  double _minMiniWidth(Size size, EdgeInsets padding) {
-    final availableWidth = max(
-      240.0,
-      size.width - padding.left - padding.right - 48,
-    );
-    return min(430.0, availableWidth);
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 有宿主页面时由页面内播放器处理
+    final player = PlPlayerController.instance;
+    if (!_session.isHeadless ||
+        player == null ||
+        player.continuePlayInBackground.value ||
+        (Platform.isIOS && IOSPipHelper.isActive)) {
+      return;
+    }
+    if (state == .paused || state == .detached) {
+      if (player.playerStatus.isPlaying) {
+        _pausedInBackground = true;
+        player.pause(isInterrupt: true);
+      }
+    } else if (state == .resumed && _pausedInBackground) {
+      _pausedInBackground = false;
+      player.play();
+    }
   }
 
-  double _maxMiniWidth(Size size, EdgeInsets padding) {
-    final availableWidth = max(
-      240.0,
-      size.width - padding.left - padding.right - 48,
-    );
-    final availableHeight = max(
-      160.0,
-      size.height - padding.top - padding.bottom - 48,
-    );
-    final maxByHeight = availableHeight * Style.aspectRatio16x9;
+  void _hide() {
+    _visible = false;
+    _from = _lastRect = _restoreTarget = null;
+    _pausedInBackground = false;
+    _restoreTimer?.cancel();
+  }
+
+  void _animateFrom(Rect? from) {
+    _from = from;
+    _animation.forward(from: 0);
+  }
+
+  /// 恢复动画结束且详情页已接管播放器后移除小窗
+  void _finishRestoreIfReady() {
+    if (!mounted ||
+        !_visible ||
+        _session.isActive ||
+        (_restoreTarget != null && _animation.isAnimating)) {
+      return;
+    }
+    setState(_hide);
+    _session.finishRestore();
+  }
+
+  void _onModeChanged(MiniPlayerMode mode) {
+    if (!mounted) return;
+    if (mode != .none) {
+      if (!_visible) {
+        setState(() {
+          _visible = true;
+          _placement = _restoreTarget = null;
+          _animateFrom(_session.enterRect);
+        });
+      }
+    } else if (!_session.restoring.value) {
+      setState(_hide);
+    } else if (_restoreTarget != null) {
+      _finishRestoreIfReady();
+    } else {
+      // 详情页未能提供播放器位置时直接结束
+      _restoreTimer?.cancel();
+      _restoreTimer = Timer(
+        const Duration(seconds: 1),
+        _finishRestoreIfReady,
+      );
+    }
+  }
+
+  void _onRestoringChanged(bool restoring) {
+    if (!mounted || restoring || !_visible) return;
+    setState(() {
+      if (_session.isActive) {
+        if (_restoreTarget != null) {
+          _restoreTarget = null;
+          _animateFrom(_lastRect);
+        }
+      } else {
+        _hide();
+      }
+    });
+  }
+
+  void _onRestoreRectChanged(Rect? rect) {
+    if (!mounted || rect == null || !_visible || !_session.restoring.value) {
+      return;
+    }
+    _restoreTimer?.cancel();
+    setState(() {
+      _restoreTarget = rect;
+      _animateFrom(_lastRect);
+    });
+  }
+
+  ({double left, double top, double right, double bottom}) _bounds(
+    Size size,
+    EdgeInsets padding,
+  ) => (
+    left: padding.left + _margin,
+    top: padding.top + _margin,
+    right: size.width - padding.right - _margin,
+    bottom: size.height - padding.bottom - _margin,
+  );
+
+  double _minWidth(Size size, EdgeInsets padding) =>
+      min(430.0, max(240.0, size.width - padding.horizontal - 48));
+
+  double _maxWidth(Size size, EdgeInsets padding) {
+    final availableWidth = max(240.0, size.width - padding.horizontal - 48);
+    final availableHeight = max(160.0, size.height - padding.vertical - 48);
     return max(
-      _minMiniWidth(size, padding),
-      min(760.0, min(size.width * 0.56, min(availableWidth, maxByHeight))),
-    );
-  }
-
-  Rect _defaultMiniRect(Size size, EdgeInsets padding) {
-    final width = clampDouble(
-      _service.preferredMiniPlayerWidth ?? size.width * 0.36,
-      _minMiniWidth(size, padding),
-      _maxMiniWidth(size, padding),
-    );
-    final height = width / Style.aspectRatio16x9;
-    return Rect.fromLTWH(
-      size.width - padding.right - width - 24,
-      size.height - padding.bottom - height - 24,
-      width,
-      height,
+      _minWidth(size, padding),
+      min(
+        760.0,
+        min(
+          size.width * 0.56,
+          min(availableWidth, availableHeight * Style.aspectRatio16x9),
+        ),
+      ),
     );
   }
 
   Rect _clampRect(Rect rect, Size size, EdgeInsets padding) {
     final width = clampDouble(
       rect.width,
-      _minMiniWidth(size, padding),
-      _maxMiniWidth(size, padding),
+      _minWidth(size, padding),
+      _maxWidth(size, padding),
     );
     final height = width / Style.aspectRatio16x9;
-    final leftLimit = padding.left + 16;
-    final topLimit = padding.top + 16;
-    final rightLimit = size.width - padding.right - 16;
-    final bottomLimit = size.height - padding.bottom - 16;
-    final maxLeft = max(leftLimit, rightLimit - width);
-    final maxTop = max(topLimit, bottomLimit - height);
+    final bounds = _bounds(size, padding);
     return Rect.fromLTWH(
-      clampDouble(rect.left, leftLimit, maxLeft),
-      clampDouble(rect.top, topLimit, maxTop),
+      clampDouble(
+        rect.left,
+        bounds.left,
+        max(bounds.left, bounds.right - width),
+      ),
+      clampDouble(
+        rect.top,
+        bounds.top,
+        max(bounds.top, bounds.bottom - height),
+      ),
       width,
       height,
+    );
+  }
+
+  Rect _miniRect(Size size, EdgeInsets padding) {
+    if (_placement case final placement?) {
+      return _clampRect(placement, size, padding);
+    }
+    final width = _preferredWidth ?? size.width * 0.36;
+    final bounds = _bounds(size, padding);
+    return _clampRect(
+      Rect.fromLTWH(
+        bounds.right - width - 8,
+        bounds.bottom - width / Style.aspectRatio16x9 - 8,
+        width,
+        width / Style.aspectRatio16x9,
+      ),
+      size,
+      padding,
     );
   }
 
@@ -128,451 +252,166 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     Size size,
     EdgeInsets padding,
   ) {
-    final leftLimit = padding.left + 16;
-    final topLimit = padding.top + 16;
-    final rightLimit = size.width - padding.right - 16;
-    final bottomLimit = size.height - padding.bottom - 16;
+    final bounds = _bounds(size, padding);
     return (
-      left: rect.left - leftLimit <= _edgeGestureDistance,
-      right: rightLimit - rect.right <= _edgeGestureDistance,
-      top: rect.top - topLimit <= _edgeGestureDistance,
-      bottom: bottomLimit - rect.bottom <= _edgeGestureDistance,
+      left: rect.left - bounds.left <= _edgeGestureDistance,
+      right: bounds.right - rect.right <= _edgeGestureDistance,
+      top: rect.top - bounds.top <= _edgeGestureDistance,
+      bottom: bounds.bottom - rect.bottom <= _edgeGestureDistance,
     );
   }
 
-  bool _shouldCloseByFling(
-    ({bool left, bool right, bool top, bool bottom}) edge,
-    Velocity velocity,
-  ) {
-    final pixels = velocity.pixelsPerSecond;
-    final dx = pixels.dx;
-    final dy = pixels.dy;
-    final absDx = dx.abs();
-    final absDy = dy.abs();
-    final horizontalIntent = absDx >= absDy;
-    final verticalIntent = absDy > absDx;
-    return (horizontalIntent && edge.left && dx < -_flingVelocity) ||
-        (horizontalIntent && edge.right && dx > _flingVelocity) ||
-        (verticalIntent && edge.top && dy < -_flingVelocity) ||
-        (verticalIntent && edge.bottom && dy > _flingVelocity);
+  void _onMoveStart(DragStartDetails details) {
+    _animation.stop();
+    _gestureStartPoint = details.globalPosition;
+    _gestureStartRect = _lastRect;
   }
 
-  bool _shouldRestoreByFling(
-    ({bool left, bool right, bool top, bool bottom}) edge,
-    Velocity velocity,
-  ) {
-    final pixels = velocity.pixelsPerSecond;
-    final dx = pixels.dx;
-    final dy = pixels.dy;
-    final absDx = dx.abs();
-    final absDy = dy.abs();
-    if (absDy <= absDx * _restoreVerticalRatio) {
-      return false;
-    }
-    return (edge.bottom && dy < -_restoreVelocity) ||
-        (edge.top && dy > _restoreVelocity);
-  }
-
-  Rect _snapRectForFling(
-    Rect rect,
-    Velocity velocity,
-    Size size,
-    EdgeInsets padding,
-  ) {
-    final pixels = velocity.pixelsPerSecond;
-    final dx = pixels.dx;
-    final dy = pixels.dy;
-    final absDx = dx.abs();
-    final absDy = dy.abs();
-    if (max(absDx, absDy) < _snapVelocity) {
-      return rect;
-    }
-
-    final leftLimit = padding.left + 16;
-    final topLimit = padding.top + 16;
-    final rightLimit = size.width - padding.right - 16;
-    final bottomLimit = size.height - padding.bottom - 16;
-    if (absDx >= absDy) {
-      final left = dx < 0 ? leftLimit : rightLimit - rect.width;
-      return _clampRect(
-        Rect.fromLTWH(left, rect.top, rect.width, rect.height),
-        size,
-        padding,
-      );
-    }
-    final top = dy < 0 ? topLimit : bottomLimit - rect.height;
-    return _clampRect(
-      Rect.fromLTWH(rect.left, top, rect.width, rect.height),
-      size,
-      padding,
-    );
-  }
-
-  Rect _normalizeRestoreRect(Rect rect, Size size, EdgeInsets padding) {
-    final fallbackHeight = size.width / Style.aspectRatio16x9;
-    if (rect.isEmpty ||
-        !rect.left.isFinite ||
-        !rect.top.isFinite ||
-        !rect.width.isFinite ||
-        !rect.height.isFinite ||
-        rect.width < 80 ||
-        rect.height < 45) {
-      return Rect.fromLTWH(
-        0,
-        padding.top,
-        size.width,
-        fallbackHeight,
-      );
-    }
-
-    final width = clampDouble(rect.width, 80, size.width);
-    final height = clampDouble(rect.height, 45, size.height - padding.top);
-    final maxLeft = max(0.0, size.width - width);
-    final maxTop = max(padding.top, size.height - padding.bottom - height);
-    return Rect.fromLTWH(
-      clampDouble(rect.left, 0, maxLeft),
-      clampDouble(rect.top, padding.top, maxTop),
-      width,
-      height,
-    );
-  }
-
-  void _snapTo(Rect rect) {
-    if (_controller.isAnimating) {
-      _controller.stop();
-    }
-    _restoreAnimating = false;
-    _restoreAnimatingHeroTag = null;
-    _controller.value = 1;
-    _beginRect = rect;
-    _targetRect = rect;
-    _lastPaintRect = rect;
-  }
-
-  void _resetTransientState() {
-    if (_controller.isAnimating) {
-      _controller.stop();
-    }
-    _beginRect = null;
-    _targetRect = null;
-    _lastPaintRect = null;
-    _moveStartPoint = null;
-    _moveStartRect = null;
-    _resizeStartPoint = null;
-    _resizeStartRect = null;
-    _moving = false;
-    _resizing = false;
-    _restoreAnimating = false;
-    _restoreAnimatingHeroTag = null;
-    _restoreTargetTimer?.cancel();
-    _restoreTargetTimer = null;
-  }
-
-  void _runAnimation({
-    required VoidCallback onCompleted,
-    VoidCallback? onCanceled,
-  }) {
-    unawaited(
-      _controller.forward(from: 0).orCancel.then((_) {
-        if (mounted) {
-          onCompleted();
-        }
-      }).catchError((_) {
-        if (mounted) {
-          onCanceled?.call();
-        }
-      }),
-    );
-  }
-
-  void _ensureForwardAnimation(Rect target, MiniPlayerSnapshot snapshot) {
-    if (_restoreAnimating || _service.restoring.value) {
-      return;
-    }
-    if (_targetRect == target &&
-        (_controller.isAnimating || _controller.value == 1)) {
-      return;
-    }
-    _beginRect = _lastPaintRect ??
-        (snapshot.sourceRect.isEmpty ? target : snapshot.sourceRect);
-    _targetRect = target;
-    unawaited(_service.minimizeCurrentRoute());
-    _runAnimation(
-      onCompleted: () {
-        if (_service.isEntering && !_service.isRestoring) {
-          unawaited(_service.finishEnterAnimation());
-        }
-      },
-      onCanceled: () {
-        if (_service.isEntering && !_service.isRestoring) {
-          unawaited(_service.finishEnterAnimation());
-        }
-      },
-    );
-  }
-
-  Future<void> _restore(Rect current) async {
-    if (_service.isEntering || _restoreAnimating || !_service.beginRestore()) {
-      return;
-    }
-    _beginRect = current;
-    _targetRect = current;
-    _lastPaintRect = current;
-    if (mounted) {
-      _service.restore();
-      _restoreTargetTimer?.cancel();
-      _restoreTargetTimer = Timer(const Duration(seconds: 3), () {
-        if (!mounted ||
-            !_service.isRestoring ||
-            _service.restoreTarget.value != null) {
-          return;
-        }
-        _service.cancelRestore(popRestoredRoute: true);
-        _restoreAnimating = false;
-        _restoreAnimatingHeroTag = null;
+  void _onMoveUpdate(DragUpdateDetails details, Size size, EdgeInsets padding) {
+    if (_gestureStartRect case final start?) {
+      setState(() {
+        _from = null;
+        _animation.value = 1;
+        _placement = _clampRect(
+          start.shift(details.globalPosition - _gestureStartPoint!),
+          size,
+          padding,
+        );
       });
     }
   }
 
-  void _ensureRestoreAnimation(Rect target, String heroTag) {
-    if (_restoreAnimating && _restoreAnimatingHeroTag == heroTag) {
+  void _onMoveEnd(DragEndDetails details, Size size, EdgeInsets padding) {
+    final start = _gestureStartRect;
+    _gestureStartRect = _gestureStartPoint = null;
+    final rect = _lastRect;
+    if (start == null || rect == null) {
       return;
     }
-    _restoreAnimating = true;
-    _restoreAnimatingHeroTag = heroTag;
-    _restoreTargetTimer?.cancel();
-    _restoreTargetTimer = null;
-    _beginRect = _lastPaintRect ?? _service.placement.value ?? target;
-    _targetRect = target;
-    _runAnimation(
-      onCompleted: () {
-        if (_service.isRestoring) {
-          _service.finishRestore(heroTag);
-        }
-        _restoreAnimating = false;
-        _restoreAnimatingHeroTag = null;
-      },
-      onCanceled: () {
-        if (_service.isRestoring) {
-          _service.cancelRestore(popRestoredRoute: true);
-        }
-        _restoreAnimating = false;
-        _restoreAnimatingHeroTag = null;
-      },
-    );
+    final edge = _edgeState(start, size, padding);
+    final velocity = details.velocity.pixelsPerSecond;
+    final dx = velocity.dx;
+    final dy = velocity.dy;
+    final horizontal = dx.abs() >= dy.abs();
+    if ((horizontal && edge.left && dx < -_flingVelocity) ||
+        (horizontal && edge.right && dx > _flingVelocity) ||
+        (!horizontal && edge.top && dy < -_flingVelocity) ||
+        (!horizontal && edge.bottom && dy > _flingVelocity)) {
+      _session.close();
+      return;
+    }
+    if (dy.abs() > dx.abs() * _restoreVerticalRatio &&
+        ((edge.bottom && dy < -_restoreVelocity) ||
+            (edge.top && dy > _restoreVelocity))) {
+      _session.restore();
+      return;
+    }
+    if (max(dx.abs(), dy.abs()) < _snapVelocity) {
+      return;
+    }
+    final bounds = _bounds(size, padding);
+    setState(() {
+      _placement = _clampRect(
+        horizontal
+            ? Rect.fromLTWH(
+                dx < 0 ? bounds.left : bounds.right - rect.width,
+                rect.top,
+                rect.width,
+                rect.height,
+              )
+            : Rect.fromLTWH(
+                rect.left,
+                dy < 0 ? bounds.top : bounds.bottom - rect.height,
+                rect.width,
+                rect.height,
+              ),
+        size,
+        padding,
+      );
+      _animateFrom(rect);
+    });
   }
 
-  Widget _restoreRevealScrim() {
-    return IgnorePointer(
-      child: ColoredBox(
-        color: Colors.black.withValues(
-          alpha: clampDouble(
-            1 - ((_controller.value - 0.62) / 0.38),
-            0,
-            1,
-          ),
+  void _onResizeStart(DragStartDetails details) {
+    _animation.stop();
+    _gestureStartPoint = details.globalPosition;
+    _gestureStartRect = _lastRect;
+  }
+
+  void _onResizeUpdate(
+    DragUpdateDetails details,
+    Size size,
+    EdgeInsets padding,
+  ) {
+    final start = _gestureStartRect;
+    if (start == null) {
+      return;
+    }
+    final delta = details.globalPosition - _gestureStartPoint!;
+    final width = clampDouble(
+      start.width - delta.dx - delta.dy * Style.aspectRatio16x9,
+      _minWidth(size, padding),
+      _maxWidth(size, padding),
+    );
+    setState(() {
+      _from = null;
+      _animation.value = 1;
+      _placement = _clampRect(
+        Rect.fromLTRB(
+          start.right - width,
+          start.bottom - width / Style.aspectRatio16x9,
+          start.right,
+          start.bottom,
         ),
-      ),
-    );
+        size,
+        padding,
+      );
+    });
   }
 
-  void _startMove(DragStartDetails details, Rect current) {
-    if (_service.isEntering || _service.isRestoring) {
-      return;
-    }
-    _moving = true;
-    _moveStartPoint = details.globalPosition;
-    _moveStartRect = _lastPaintRect ?? current;
-    _service.updatePlacement(_moveStartRect!);
-    _snapTo(_moveStartRect!);
-  }
-
-  void _updateMove(
-    DragUpdateDetails details,
-    Size size,
-    EdgeInsets padding,
-  ) {
-    final startPoint = _moveStartPoint;
-    final startRect = _moveStartRect;
-    if (!_moving || startPoint == null || startRect == null) {
-      return;
-    }
-    final rect = _clampRect(
-      startRect.shift(details.globalPosition - startPoint),
-      size,
-      padding,
-    );
-    _service.updatePlacement(rect);
-    _snapTo(rect);
-  }
-
-  void _endMove(
-    DragEndDetails details,
-    Rect current,
-    Size size,
-    EdgeInsets padding,
-  ) {
-    final rect = _lastPaintRect ?? current;
-    final startRect = _moveStartRect ?? rect;
-    final startEdge = _edgeState(startRect, size, padding);
-    _moving = false;
-    _moveStartPoint = null;
-    _moveStartRect = null;
-    if (_shouldCloseByFling(startEdge, details.velocity)) {
-      _service.close();
-      return;
-    }
-    if (_shouldRestoreByFling(startEdge, details.velocity)) {
-      _restore(rect);
-      return;
-    }
-    final snapped = _snapRectForFling(rect, details.velocity, size, padding);
-    if (snapped != rect) {
-      _service.updatePlacement(snapped);
-      _snapTo(snapped);
-    }
-  }
-
-  void _startResize(DragStartDetails details, Rect current) {
-    if (_service.isEntering || _service.isRestoring) {
-      return;
-    }
-    _resizing = true;
-    _resizeStartPoint = details.globalPosition;
-    _resizeStartRect = _lastPaintRect ?? current;
-    _service.updatePlacement(_resizeStartRect!);
-    _snapTo(_resizeStartRect!);
-  }
-
-  void _updateResize(
-    DragUpdateDetails details,
-    Size size,
-    EdgeInsets padding,
-  ) {
-    final startPoint = _resizeStartPoint;
-    final startRect = _resizeStartRect;
-    if (!_resizing || startPoint == null || startRect == null) {
-      return;
-    }
-    final delta = details.globalPosition - startPoint;
-    final width = startRect.width -
-        delta.dx -
-        delta.dy * Style.aspectRatio16x9;
-    final clampedWidth = clampDouble(
-      width,
-      _minMiniWidth(size, padding),
-      _maxMiniWidth(size, padding),
-    );
-    final height = clampedWidth / Style.aspectRatio16x9;
-    final rect = _clampRect(
-      Rect.fromLTRB(
-        startRect.right - clampedWidth,
-        startRect.bottom - height,
-        startRect.right,
-        startRect.bottom,
-      ),
-      size,
-      padding,
-    );
-    _service.updatePlacement(rect);
-    _snapTo(rect);
-  }
-
-  void _endResize(DragEndDetails details) {
-    final rect = _lastPaintRect ?? _service.placement.value;
-    if (rect != null) {
-      _service.updatePreferredMiniPlayerWidth(rect.width);
-    }
-    _resizing = false;
-    _resizeStartPoint = null;
-    _resizeStartRect = null;
+  void _onResizeEnd(DragEndDetails details) {
+    _gestureStartRect = _gestureStartPoint = null;
+    _preferredWidth = _placement?.width ?? _preferredWidth;
   }
 
   @override
   Widget build(BuildContext context) {
+    if (!_visible) {
+      return widget.child;
+    }
+    final mediaQuery = MediaQuery.of(context);
+    final size = mediaQuery.size;
+    final padding = mediaQuery.viewPadding;
+    final target = _restoreTarget ?? _miniRect(size, padding);
+    final restoring = _restoreTarget != null;
     return Stack(
       fit: StackFit.expand,
       children: [
         widget.child,
-        Obx(() {
-          final snapshot = _service.snapshot.value;
-          if (!_service.visible.value || snapshot == null) {
-            _resetTransientState();
-            return const SizedBox.shrink();
-          }
-
-          final mediaQuery = MediaQuery.of(context);
-          final size = mediaQuery.size;
-          final padding = mediaQuery.viewPadding;
-          final miniTarget = _clampRect(
-            _service.placement.value ?? _defaultMiniRect(size, padding),
-            size,
-            padding,
-          );
-          final restoreTarget = _service.restoreTarget.value;
-          final restoreHeroTag = _service.restoringHeroTag;
-          final isRestoreToPage = _service.restoring.value &&
-              restoreTarget != null &&
-              restoreHeroTag != null;
-          final target = isRestoreToPage
-              ? _normalizeRestoreRect(restoreTarget!, size, padding)
-              : miniTarget;
-          final hasManualPlacement =
-              _service.placement.value != null && !_service.restoring.value;
-
-          if (isRestoreToPage) {
-            _ensureRestoreAnimation(target, restoreHeroTag!);
-          } else if (!_service.restoring.value && !hasManualPlacement) {
-            _ensureForwardAnimation(target, snapshot);
-          }
-
-          return AnimatedBuilder(
-            animation: _controller,
-            builder: (context, child) {
-              final progress = Curves.easeOutCubic.transform(
-                _controller.value,
-              );
-              final rect = _service.restoring.value && !isRestoreToPage
-                  ? _lastPaintRect ?? target
-                  : hasManualPlacement
-                  ? target
-                  : Rect.lerp(
-                      _beginRect ?? target,
-                      _targetRect ?? target,
-                      progress,
-                    )!;
-              _lastPaintRect = rect;
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (_service.restoring.value) _restoreRevealScrim(),
-                  Positioned.fromRect(
-                    rect: rect,
-                    child: child!,
-                  ),
-                ],
-              );
-            },
+        AnimatedBuilder(
+          animation: _animation,
+          builder: (context, child) {
+            final rect = _lastRect = Rect.lerp(
+              _from ?? target,
+              target,
+              Curves.easeOutCubic.transform(_animation.value),
+            )!;
+            return Positioned.fromRect(rect: rect, child: child!);
+          },
+          child: IgnorePointer(
+            ignoring: restoring,
             child: _MiniPlayerSurface(
-              key: ValueKey(
-                '${snapshot.heroTag}-${snapshot.cid}-'
-                '${identityHashCode(snapshot.plPlayerController.videoController)}',
-              ),
-              service: _service,
-              onMoveStart: (details) => _startMove(details, target),
-              onMoveUpdate: (details) => _updateMove(details, size, padding),
-              onMoveEnd: (details) => _endMove(
-                details,
-                target,
-                size,
-                padding,
-              ),
-              onResizeStart: (details) => _startResize(details, target),
-              onResizeUpdate: (details) => _updateResize(details, size, padding),
-              onResizeEnd: _endResize,
+              restoring: restoring,
+              onMoveStart: _onMoveStart,
+              onMoveUpdate: (details) => _onMoveUpdate(details, size, padding),
+              onMoveEnd: (details) => _onMoveEnd(details, size, padding),
+              onResizeStart: _onResizeStart,
+              onResizeUpdate: (details) =>
+                  _onResizeUpdate(details, size, padding),
+              onResizeEnd: _onResizeEnd,
             ),
-          );
-        }),
+          ),
+        ),
       ],
     );
   }
@@ -580,17 +419,16 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
 class _MiniPlayerSurface extends StatefulWidget {
   const _MiniPlayerSurface({
-    required this.service,
+    required this.restoring,
     required this.onMoveStart,
     required this.onMoveUpdate,
     required this.onMoveEnd,
     required this.onResizeStart,
     required this.onResizeUpdate,
     required this.onResizeEnd,
-    super.key,
   });
 
-  final MiniPlayerService service;
+  final bool restoring;
   final GestureDragStartCallback onMoveStart;
   final GestureDragUpdateCallback onMoveUpdate;
   final GestureDragEndCallback onMoveEnd;
@@ -603,252 +441,247 @@ class _MiniPlayerSurface extends StatefulWidget {
 }
 
 class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
-  static const Duration _controlsHideDelay = Duration(seconds: 4);
-  static const Duration _controlsFadeDuration = Duration(milliseconds: 160);
+  static const _controlsHideDelay = Duration(seconds: 4);
 
-  Timer? _controlsHideTimer;
+  Timer? _hideTimer;
   bool _controlsVisible = false;
 
   @override
+  void didUpdateWidget(_MiniPlayerSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.restoring) {
+      _hideTimer?.cancel();
+      _controlsVisible = false;
+    }
+  }
+
+  @override
   void dispose() {
-    _controlsHideTimer?.cancel();
+    _hideTimer?.cancel();
     super.dispose();
   }
 
   void _setControlsVisible(bool visible) {
-    if (!mounted || _controlsVisible == visible) {
-      return;
+    if (mounted && _controlsVisible != visible) {
+      setState(() => _controlsVisible = visible);
     }
-    setState(() {
-      _controlsVisible = visible;
-    });
   }
 
-  void _scheduleControlsHide() {
-    _controlsHideTimer?.cancel();
-    if (!_controlsVisible) {
-      return;
+  void _scheduleHide() {
+    _hideTimer?.cancel();
+    if (_controlsVisible) {
+      _hideTimer = Timer(_controlsHideDelay, () => _setControlsVisible(false));
     }
-    _controlsHideTimer = Timer(_controlsHideDelay, () {
-      _setControlsVisible(false);
-    });
   }
 
   void _showControls() {
-    if (widget.service.isEntering || widget.service.isRestoring) {
-      return;
-    }
     _setControlsVisible(true);
-    _scheduleControlsHide();
+    _scheduleHide();
   }
 
   void _togglePlayback() {
-    if (widget.service.isEntering || widget.service.isRestoring) {
-      return;
+    if (PlPlayerController.instance case final player?) {
+      if (player.playerStatus.isPlaying) {
+        player.pause();
+      } else {
+        player.play();
+      }
     }
-    final controller = widget.service.snapshot.value?.plPlayerController;
-    if (controller == null) {
-      return;
-    }
-    if (controller.playerStatus.isPlaying) {
-      controller.pause();
-    } else {
-      controller.play();
-    }
-    _scheduleControlsHide();
+    _scheduleHide();
   }
 
-  void _handleMoveStart(DragStartDetails details) {
-    _controlsHideTimer?.cancel();
-    widget.onMoveStart(details);
-  }
-
-  void _handleMoveUpdate(DragUpdateDetails details) {
-    widget.onMoveUpdate(details);
-  }
-
-  void _handleMoveEnd(DragEndDetails details) {
-    widget.onMoveEnd(details);
-    _scheduleControlsHide();
-  }
-
-  void _handleResizeStart(DragStartDetails details) {
-    _controlsHideTimer?.cancel();
-    widget.onResizeStart(details);
-  }
-
-  void _handleResizeUpdate(DragUpdateDetails details) {
-    widget.onResizeUpdate(details);
-  }
-
-  void _handleResizeEnd(DragEndDetails details) {
-    widget.onResizeEnd(details);
-    _scheduleControlsHide();
-  }
-
-  Widget _buildVideoLayer(MiniPlayerSnapshot snapshot) {
-    final controller = snapshot.plPlayerController;
-    final videoController = controller.videoController;
+  Widget _buildVideo() {
     return Obx(() {
-      if (videoController != null) {
-        final videoFit = controller.videoFit.value;
+      miniPlayerSession.mode.value;
+      final player = PlPlayerController.instance;
+      final videoController = player?.videoController;
+      if (player != null && videoController != null) {
+        final videoFit = player.videoFit.value;
         return FittedBox(
           fit: videoFit.boxFit,
           child: SimpleVideo(
             controller: videoController,
-            fill: Colors.black,
             aspectRatio: videoFit.aspectRatio,
           ),
         );
       }
+      final cover = miniPlayerSession.cover;
+      if (cover.isEmpty) {
+        return const SizedBox.shrink();
+      }
       return LayoutBuilder(
-        builder: (context, constraints) {
-          final width = constraints.maxWidth.isFinite
-              ? constraints.maxWidth
-              : 420.0;
-          final height = constraints.maxHeight.isFinite
-              ? constraints.maxHeight
-              : width / Style.aspectRatio16x9;
-          if (snapshot.cover.isEmpty) {
-            return const ColoredBox(color: Colors.black);
-          }
-          return NetworkImgLayer(
-            src: snapshot.cover,
-            width: width,
-            height: height,
-            quality: 60,
-            borderRadius: BorderRadius.zero,
-          );
-        },
+        builder: (context, constraints) => NetworkImgLayer(
+          src: cover,
+          width: constraints.maxWidth,
+          height: constraints.maxHeight,
+          quality: 60,
+          borderRadius: BorderRadius.zero,
+        ),
       );
     });
   }
 
-  Widget _buildHiddenLoadingLayer(ColorScheme colorScheme) {
-    return IgnorePointer(
-      child: Center(
-        child: Obx(() {
-          if (_controlsVisible ||
-              !widget.service.loading.value ||
-              widget.service.entering.value ||
-              widget.service.restoring.value) {
-            return const SizedBox.shrink();
-          }
-          return SizedBox.square(
-            dimension: 34,
-            child: CircularProgressIndicator(
-              strokeWidth: 3,
-              color: colorScheme.primary,
-            ),
-          );
-        }),
-      ),
-    );
-  }
+  Widget _buildLoading(ColorScheme colorScheme) => SizedBox.square(
+    dimension: 34,
+    child: CircularProgressIndicator(
+      strokeWidth: 3,
+      color: colorScheme.primary,
+    ),
+  );
 
-  Widget _buildControlsLayer(
-    MiniPlayerSnapshot snapshot,
-    ColorScheme colorScheme,
-  ) {
-    final controller = snapshot.plPlayerController;
-    return Obx(() {
-      final transitioning =
-          widget.service.entering.value || widget.service.restoring.value;
-      final visible = _controlsVisible && !transitioning;
-      return IgnorePointer(
-        ignoring: !visible,
-        child: AnimatedOpacity(
-          opacity: visible ? 1 : 0,
-          duration: _controlsFadeDuration,
-          curve: Curves.easeOutCubic,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.black.withValues(alpha: 0.42),
-                        Colors.transparent,
-                        Colors.black.withValues(alpha: 0.72),
-                      ],
-                      stops: const [0, 0.42, 1],
-                    ),
+  Widget _buildControls(ColorScheme colorScheme) {
+    final player = PlPlayerController.instance;
+    return IgnorePointer(
+      ignoring: !_controlsVisible,
+      child: AnimatedOpacity(
+        opacity: _controlsVisible ? 1 : 0,
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.42),
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.72),
+                    ],
+                    stops: const [0, 0.42, 1],
                   ),
                 ),
               ),
-              Positioned(
-                top: 6,
-                left: 6,
-                child: _MiniResizeHandle(
-                  onPanStart: _handleResizeStart,
-                  onPanUpdate: _handleResizeUpdate,
-                  onPanEnd: _handleResizeEnd,
-                ),
-              ),
-              Positioned(
-                top: 6,
-                right: 6,
-                child: _MiniIconButton(
-                  tooltip: '关闭小窗',
-                  icon: Icons.close,
-                  onPressed: () {
-                    _controlsHideTimer?.cancel();
-                    widget.service.close();
+            ),
+            Positioned(
+              top: 6,
+              left: 6,
+              child: Tooltip(
+                message: '拖动调整大小',
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanStart: (details) {
+                    _hideTimer?.cancel();
+                    widget.onResizeStart(details);
                   },
+                  onPanUpdate: widget.onResizeUpdate,
+                  onPanEnd: (details) {
+                    widget.onResizeEnd(details);
+                    _scheduleHide();
+                  },
+                  child: const _MiniButtonBox(icon: Icons.open_in_full),
                 ),
               ),
-              Center(
-                child: Obx(() {
-                  if (widget.service.loading.value) {
-                    return SizedBox.square(
-                      dimension: 34,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 3,
-                        color: colorScheme.primary,
-                      ),
-                    );
-                  }
-                  final isPlaying = controller.playerStatus.isPlaying;
-                  return _MiniIconButton(
-                    tooltip: isPlaying ? '暂停' : '播放',
-                    icon: isPlaying ? Icons.pause : Icons.play_arrow,
-                    size: 40,
-                    iconSize: 26,
-                    onPressed: _togglePlayback,
-                  );
-                }),
+            ),
+            Positioned(
+              top: 6,
+              right: 6,
+              child: Row(
+                spacing: 6,
+                children: [
+                  _MiniIconButton(
+                    tooltip: '返回详情',
+                    icon: Icons.fullscreen,
+                    onPressed: miniPlayerSession.restore,
+                  ),
+                  _MiniIconButton(
+                    tooltip: '关闭小窗',
+                    icon: Icons.close,
+                    onPressed: miniPlayerSession.close,
+                  ),
+                ],
               ),
-              Positioned(
-                left: 12,
-                right: 12,
-                bottom: 10,
-                child: IgnorePointer(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        snapshot.title.isEmpty ? '正在播放' : snapshot.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
+            ),
+            Center(
+              child: Obx(() {
+                if (miniPlayerSession.loading.value) {
+                  return _buildLoading(colorScheme);
+                }
+                final videoPlayer = player?.videoPlayerController;
+                return StreamBuilder<bool>(
+                  stream: videoPlayer?.stream.playing,
+                  initialData: videoPlayer?.state.playing ?? false,
+                  builder: (context, snapshot) {
+                    final isPlaying = snapshot.data ?? false;
+                    return _MiniIconButton(
+                      tooltip: isPlaying ? '暂停' : '播放',
+                      icon: isPlaying ? Icons.pause : Icons.play_arrow,
+                      size: 40,
+                      iconSize: 26,
+                      onPressed: _togglePlayback,
+                    );
+                  },
+                );
+              }),
+            ),
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 10,
+              child: IgnorePointer(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Obx(() {
+                            final title = miniPlayerSession.title;
+                            return Text(
+                              title.isEmpty ? '正在播放' : title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            );
+                          }),
                         ),
-                      ),
-                      const SizedBox(height: 6),
+                        ShutdownPanel(
+                          buildCountdownText: (text) {
+                            final waiting = shutdownTimerService.isWaiting;
+                            if (text == null && !waiting) {
+                              return const SizedBox.shrink();
+                            }
+                            return Padding(
+                              padding: const EdgeInsets.only(left: 8),
+                              child: Row(
+                                spacing: 2,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.schedule,
+                                    size: 13,
+                                    color: Colors.white,
+                                  ),
+                                  Text(
+                                    waiting ? '播完停止' : text!,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                          builder: (_, countdown, _, _) => countdown,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    if (player != null)
                       Obx(() {
-                        final total = controller.duration.value;
-                        final progress = controller.position.value.clamp(
-                          0,
-                          total == 0 ? 0 : total,
-                        );
-                        final fraction = total == 0 ? 0.0 : progress / total;
+                        final total = player.duration.value;
+                        final position = player.position.value
+                            .clamp(0, total)
+                            .toInt();
                         return Row(
                           children: [
                             Expanded(
@@ -858,7 +691,7 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
                                 ),
                                 child: LinearProgressIndicator(
                                   minHeight: 3,
-                                  value: fraction,
+                                  value: total == 0 ? 0 : position / total,
                                   backgroundColor: Colors.white.withValues(
                                     alpha: 0.28,
                                   ),
@@ -868,7 +701,7 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              DurationUtils.formatDuration(progress / 1000),
+                              DurationUtils.formatDuration(position),
                               style: TextStyle(
                                 color: Colors.white.withValues(alpha: 0.88),
                                 fontSize: 11,
@@ -877,54 +710,68 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
                           ],
                         );
                       }),
-                    ],
-                  ),
+                  ],
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
-      );
-    });
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final snapshot = widget.service.snapshot.value!;
     final colorScheme = ColorScheme.of(context);
-
     return Material(
       type: MaterialType.transparency,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: Colors.black,
           borderRadius: const BorderRadius.all(Radius.circular(8)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.28),
-              blurRadius: 24,
-              offset: const Offset(0, 12),
-            ),
-          ],
+          boxShadow: widget.restoring
+              ? null
+              : [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.28),
+                    blurRadius: 24,
+                    offset: const Offset(0, 12),
+                  ),
+                ],
         ),
         child: ClipRRect(
           borderRadius: const BorderRadius.all(Radius.circular(8)),
           child: Stack(
             fit: StackFit.expand,
             children: [
-              _buildVideoLayer(snapshot),
+              _buildVideo(),
               Positioned.fill(
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: _togglePlayback,
                   onLongPress: _showControls,
-                  onPanStart: _handleMoveStart,
-                  onPanUpdate: _handleMoveUpdate,
-                  onPanEnd: _handleMoveEnd,
+                  onPanStart: (details) {
+                    _hideTimer?.cancel();
+                    widget.onMoveStart(details);
+                  },
+                  onPanUpdate: widget.onMoveUpdate,
+                  onPanEnd: (details) {
+                    widget.onMoveEnd(details);
+                    _scheduleHide();
+                  },
                 ),
               ),
-              _buildHiddenLoadingLayer(colorScheme),
-              _buildControlsLayer(snapshot, colorScheme),
+              if (!_controlsVisible)
+                IgnorePointer(
+                  child: Center(
+                    child: Obx(
+                      () => miniPlayerSession.loading.value
+                          ? _buildLoading(colorScheme)
+                          : const SizedBox.shrink(),
+                    ),
+                  ),
+                ),
+              _buildControls(colorScheme),
             ],
           ),
         ),
@@ -933,40 +780,21 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
   }
 }
 
-class _MiniResizeHandle extends StatelessWidget {
-  const _MiniResizeHandle({
-    required this.onPanStart,
-    required this.onPanUpdate,
-    required this.onPanEnd,
-  });
+class _MiniButtonBox extends StatelessWidget {
+  const _MiniButtonBox({required this.icon});
 
-  final GestureDragStartCallback onPanStart;
-  final GestureDragUpdateCallback onPanUpdate;
-  final GestureDragEndCallback onPanEnd;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: '拖动调整大小',
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onPanStart: onPanStart,
-        onPanUpdate: onPanUpdate,
-        onPanEnd: onPanEnd,
-        child: Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.52),
-            borderRadius: const BorderRadius.all(Radius.circular(6)),
-          ),
-          child: const Icon(
-            Icons.open_in_full,
-            size: 17,
-            color: Colors.white,
-          ),
-        ),
+    return Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.52),
+        borderRadius: const BorderRadius.all(Radius.circular(6)),
       ),
+      child: Icon(icon, size: 17, color: Colors.white),
     );
   }
 }

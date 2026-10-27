@@ -18,7 +18,7 @@ import 'package:PiliPlus/pages/common/publish/publish_route.dart';
 import 'package:PiliPlus/pages/contact/view.dart';
 import 'package:PiliPlus/pages/fav_panel/view.dart';
 import 'package:PiliPlus/pages/share/view.dart';
-import 'package:PiliPlus/services/mini_player_service.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/app_scheme.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
@@ -523,10 +523,6 @@ abstract final class PageUtils {
     if (roomId == null) {
       return;
     }
-    if (MiniPlayerService.instanceOrNull case final miniPlayer?
-        when miniPlayer.isActive) {
-      miniPlayer.close();
-    }
     Get.offOrToNamed(
       '/liveRoom',
       arguments: roomId,
@@ -553,8 +549,7 @@ abstract final class PageUtils {
     int? rootRpId,
     int? secondRpId,
   }) {
-    final sourceRouteName = _resolveVideoSourceRoute(extraArguments);
-    final arguments = <String, dynamic>{
+    final arguments = {
       'aid': aid ?? IdUtils.bv2av(bvid!),
       'bvid': bvid ?? IdUtils.av2bv(aid!),
       'cid': cid,
@@ -567,51 +562,14 @@ abstract final class PageUtils {
       'videoType': videoType,
       'isVertical': dimension?.isVertical ?? isVertical,
       'heroTag': Utils.makeHeroTag(cid),
-      'miniSourceRouteName': ?sourceRouteName,
       rootRpIdKey: ?rootRpId,
       secondRpIdKey: ?secondRpId,
       ...?extraArguments,
     };
-    final miniPlayer = MiniPlayerService.instanceOrNull;
-    if (miniPlayer != null && miniPlayer.isActiveOrRestoring) {
-      if (miniPlayer.isRestoring) {
-        return null;
-      }
-      if (!off && miniPlayer.shouldReplaceWith(arguments)) {
-        return miniPlayer.replaceWith(arguments);
-      }
-      miniPlayer.close();
+    if (miniPlayerSession.interceptVideoPage(arguments, off: off)) {
+      return null;
     }
     return PageUtils.toDupNamed('/videoV', arguments: arguments, off: off);
-  }
-
-  static String? _resolveVideoSourceRoute(Map? extraArguments) {
-    final explicit = extraArguments?['miniSourceRouteName'];
-    if (explicit is String &&
-        explicit.isNotEmpty &&
-        explicit != MiniPlayerService.videoDetailRouteName) {
-      return explicit;
-    }
-
-    if (Get.currentRoute == MiniPlayerService.videoDetailRouteName) {
-      final args = Get.arguments;
-      if (args is Map) {
-        final previous = args['miniSourceRouteName'];
-        if (previous is String &&
-            previous.isNotEmpty &&
-            previous != MiniPlayerService.videoDetailRouteName) {
-          return previous;
-        }
-      }
-      return null;
-    }
-
-    final currentRoute = Get.currentRoute;
-    if (currentRoute.isEmpty ||
-        currentRoute == MiniPlayerService.videoDetailRouteName) {
-      return null;
-    }
-    return currentRoute;
   }
 
   static final _pgcRegex = RegExp(r'(ep|ss)(\d+)');

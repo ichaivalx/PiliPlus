@@ -3,7 +3,6 @@ enum BottomControlType {
   pre,
   next,
   time,
-  temporarySingleCycle,
   episode,
   fit,
   subtitle,

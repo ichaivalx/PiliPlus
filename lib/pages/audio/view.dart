@@ -129,13 +129,10 @@ class _AudioPageState extends State<AudioPage> {
           ),
           IconButton(
             tooltip: '定时关闭',
-            onPressed: () => shutdownTimerService
-              ..onPause ??= _controller.onPause
-              ..isPlaying ??= _controller.isPlaying
-              ..showScheduleExitDialog(
-                context,
-                isFullScreen: false,
-              ),
+            onPressed: () => shutdownTimerService.showScheduleExitDialog(
+              context,
+              isFullScreen: false,
+            ),
             icon: const Icon(Icons.schedule, size: 22),
           ),
           if (_controller.isUgc)

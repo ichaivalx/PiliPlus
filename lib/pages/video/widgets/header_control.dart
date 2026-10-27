@@ -38,6 +38,7 @@ import 'package:PiliPlus/pages/video/widgets/header_mixin.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
+import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show shutdownTimerService, ShutdownPanel;
 import 'package:PiliPlus/utils/accounts.dart';
@@ -486,6 +487,25 @@ class HeaderControlState extends State<HeaderControl>
                   ),
                   onSelected: (value, setState) {
                     plPlayerController.setShader(value);
+                    setState();
+                  },
+                  descPosType: .subtitle,
+                  descStyle: subTitleStyle,
+                ),
+                PopupListTile<VideoFitType>(
+                  dense: true,
+                  leading: const Icon(Icons.fit_screen_outlined, size: 20),
+                  title: const Text('画面比例', style: titleStyle),
+                  titleStyle: theme.textTheme.bodyLarge,
+                  value: () {
+                    final value = plPlayerController.videoFit.value;
+                    return (value, value.desc);
+                  },
+                  itemBuilder: (_) => VideoFitType.values
+                      .map((e) => PopupMenuItem(value: e, child: Text(e.desc)))
+                      .toList(),
+                  onSelected: (value, setState) {
+                    plPlayerController.toggleVideoFit(value);
                     setState();
                   },
                   descPosType: .subtitle,

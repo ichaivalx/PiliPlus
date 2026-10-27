@@ -358,28 +358,6 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
-  void onMiniPlayerVideoChange({
-    required int cid,
-    required String heroTag,
-    required String title,
-    required String? cover,
-    Duration? duration,
-  }) {
-    if (!enableBackgroundPlay || !PlPlayerController.instanceExists()) {
-      return;
-    }
-    final mediaItem = MediaItem(
-      id: '$cid$heroTag',
-      title: title,
-      duration: duration,
-      artUri: Uri.parse(ImageUtils.safeThumbnailUrl(cover)),
-    );
-    _item
-      ..removeWhere((item) => item.id.endsWith(heroTag))
-      ..add(mediaItem);
-    setMediaItem(mediaItem);
-  }
-
   void clearIfNeeded() {
     if (!enableBackgroundPlay) return;
     if (_item.isEmpty) clear();
