@@ -212,7 +212,7 @@
             android:permission="android.permission.MANAGE_DOCUMENTS"
             android:enabled="false"
             android:exported="true"
-            android:authorities="com.example.piliplus.MTDataFilesProvider"
+            android:authorities="${applicationId}.MTDataFilesProvider"
             android:grantUriPermissions="true">
             <intent-filter>
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
@@ -248,6 +248,7 @@
     </application>
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

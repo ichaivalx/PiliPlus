@@ -72,6 +72,7 @@ class NetworkImgLayer extends StatelessWidget {
     }
     final imageUrl = ImageUtils.thumbnailUrl(src, quality);
     return CachedNetworkImage(
+      gaplessPlayback: true,
       imageUrl: imageUrl,
       cacheKey: imageUrl,
       width: width,

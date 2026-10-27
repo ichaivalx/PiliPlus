@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:PiliPlus/common/assets.dart';
@@ -142,7 +143,7 @@ class _EpisodePanelState extends State<EpisodePanel>
         widget.initialTabIndex,
         duration: const Duration(milliseconds: 200),
       );
-      Future.delayed(const Duration(milliseconds: 300), jumpToCurrent);
+      Timer(const Duration(milliseconds: 300), jumpToCurrent);
     } else {
       jumpToCurrent();
     }
@@ -209,13 +210,13 @@ class _EpisodePanelState extends State<EpisodePanel>
       widget.type == EpisodeType.season && widget.list.length > 1;
 
   @override
-  Widget buildPage(ThemeData theme) {
+  Widget buildPage() {
     return Material(
       color: showTitle ? theme.colorScheme.surface : null,
       type: showTitle ? MaterialType.canvas : MaterialType.transparency,
       child: Column(
         children: [
-          _buildToolbar(theme),
+          _buildToolbar(),
           if (_isMulti)
             TabBar(
               controller: _tabController,
@@ -225,14 +226,14 @@ class _EpisodePanelState extends State<EpisodePanel>
               dividerHeight: 1,
               dividerColor: theme.dividerColor.withValues(alpha: 0.1),
             ),
-          Expanded(child: enableSlide ? slideList(theme) : buildList(theme)),
+          Expanded(child: enableSlide ? slideList() : buildList()),
         ],
       ),
     );
   }
 
   @override
-  Widget buildList(ThemeData theme) {
+  Widget buildList() {
     if (_isMulti) {
       return TabBarView(
         controller: _tabController,
@@ -241,14 +242,13 @@ class _EpisodePanelState extends State<EpisodePanel>
         children: List.generate(
           widget.list.length,
           (index) => _buildBody(
-            theme,
             index,
             widget.list[index].episodes,
           ),
         ),
       );
     }
-    return _buildBody(theme, 0, _getCurrEpisodes);
+    return _buildBody(0, _getCurrEpisodes);
   }
 
   double _calcItemOffset(int index) {
@@ -272,7 +272,6 @@ class _EpisodePanelState extends State<EpisodePanel>
   }
 
   Widget _buildBody(
-    ThemeData theme,
     int tabIndex,
     List<ugc.BaseEpisodeItem> episodes,
   ) {
@@ -297,7 +296,6 @@ class _EpisodePanelState extends State<EpisodePanel>
                           ? index == _currentItemIndex
                           : false;
                       Widget episodeItem = _buildEpisodeItem(
-                        theme: theme,
                         episode: episode,
                         index: index,
                         length: episodes.length,
@@ -343,7 +341,6 @@ class _EpisodePanelState extends State<EpisodePanel>
                           ? index == _currentItemIndex
                           : false;
                       return _buildEpisodeItem(
-                        theme: theme,
                         episode: episode,
                         index: index,
                         length: episodes.length,
@@ -360,7 +357,6 @@ class _EpisodePanelState extends State<EpisodePanel>
 
   late final int? vipStatus = Pref.userInfoCache?.vipStatus;
   Widget _buildEpisodeItem({
-    required ThemeData theme,
     required ugc.BaseEpisodeItem episode,
     required int index,
     required int length,
@@ -643,7 +639,7 @@ class _EpisodePanelState extends State<EpisodePanel>
     );
   }
 
-  Widget _buildToolbar(ThemeData theme) => Container(
+  Widget _buildToolbar() => Container(
     height: 45,
     padding: EdgeInsets.symmetric(horizontal: showTitle ? 14 : 6),
     decoration: BoxDecoration(
@@ -681,7 +677,7 @@ class _EpisodePanelState extends State<EpisodePanel>
             final currentTabIndex = _currentTabIndex.value;
             if (currentTabIndex != widget.initialTabIndex) {
               _tabController.animateTo(widget.initialTabIndex);
-              await Future.delayed(const Duration(milliseconds: 225));
+              await Future.pause(const Duration(milliseconds: 225));
             }
             _itemScrollController[widget.initialTabIndex].animTo(
               _calcItemOffset(_currentItemIndex),

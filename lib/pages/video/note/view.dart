@@ -55,7 +55,7 @@ class _NoteListPageState extends State<NoteListPage>
   }
 
   @override
-  Widget buildPage(ThemeData theme) {
+  Widget buildPage() {
     return Material(
       child: MiniScaffold(
         body: Column(
@@ -90,7 +90,7 @@ class _NoteListPageState extends State<NoteListPage>
                 ],
               ),
             ),
-            Expanded(child: enableSlide ? slideList(theme) : buildList(theme)),
+            Expanded(child: enableSlide ? slideList() : buildList()),
           ],
         ),
       ),
@@ -107,7 +107,7 @@ class _NoteListPageState extends State<NoteListPage>
   }
 
   @override
-  Widget buildList(ThemeData theme) {
+  Widget buildList() {
     final child = refreshIndicator(
       onRefresh: _controller.onRefresh,
       child: CustomScrollView(
@@ -117,7 +117,7 @@ class _NoteListPageState extends State<NoteListPage>
           SliverPadding(
             padding: const .only(bottom: 100),
             sliver: Obx(
-              () => _buildBody(theme, _controller.loadingState.value),
+              () => _buildBody(_controller.loadingState.value),
             ),
           ),
         ],
@@ -155,17 +155,7 @@ class _NoteListPageState extends State<NoteListPage>
                   borderRadius: BorderRadius.all(Radius.circular(6)),
                 ),
               ),
-              onPressed: () {
-                MiniScaffold.of(context).showBottomSheet(
-                  constraints: const BoxConstraints(),
-                  (context) => WebviewPage(
-                    oid: widget.oid,
-                    title: widget.title,
-                    url:
-                        'https://www.bilibili.com/h5/note-app?oid=${widget.oid}&pagefrom=ugcvideo&is_stein_gate=${widget.isStein ? 1 : 0}',
-                  ),
-                );
-              },
+              onPressed: () => _onTakeNote(context),
               child: const Text('开始记笔记'),
             ),
           ),
@@ -175,7 +165,6 @@ class _NoteListPageState extends State<NoteListPage>
   }
 
   Widget _buildBody(
-    ThemeData theme,
     LoadingState<List<VideoNoteItemModel>?> loadingState,
   ) {
     switch (loadingState) {
@@ -198,7 +187,7 @@ class _NoteListPageState extends State<NoteListPage>
               if (index == response.length - 1) {
                 _controller.onLoadMore();
               }
-              return _itemWidget(theme, response[index]);
+              return _itemWidget(response[index]);
             },
             itemCount: response.length,
             separatorBuilder: (context, index) => divider,
@@ -213,7 +202,7 @@ class _NoteListPageState extends State<NoteListPage>
     }
   }
 
-  Widget _itemWidget(ThemeData theme, VideoNoteItemModel item) {
+  Widget _itemWidget(VideoNoteItemModel item) {
     return Material(
       type: MaterialType.transparency,
       child: InkWell(
@@ -304,6 +293,15 @@ class _NoteListPageState extends State<NoteListPage>
           ),
         ),
       ),
+    );
+  }
+
+  void _onTakeNote(BuildContext context) {
+    final url =
+        'https://www.bilibili.com/h5/note-app?oid=${widget.oid}&pagefrom=ugcvideo&is_stein_gate=${widget.isStein ? 1 : 0}';
+    MiniScaffold.of(context).showBottomSheet(
+      constraints: const BoxConstraints(),
+      (context) => WebviewPage(oid: widget.oid, title: widget.title, url: url),
     );
   }
 }

@@ -8,7 +8,6 @@ import 'package:PiliPlus/common/widgets/button/icon_button.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
 import 'package:PiliPlus/common/widgets/extra_hittest_stack.dart';
 import 'package:PiliPlus/common/widgets/flutter/pop_scope.dart';
-import 'package:PiliPlus/common/widgets/flutter/text_field/controller.dart';
 import 'package:PiliPlus/common/widgets/gesture/horizontal_drag_gesture_recognizer.dart';
 import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 import 'package:PiliPlus/common/widgets/keep_alive_wrapper.dart';
@@ -70,6 +69,7 @@ class LiveRoomPage extends StatefulWidget {
 class _LiveRoomPageState extends State<LiveRoomPage>
     with WidgetsBindingObserver, RouteAware, RouteAwareMixin {
   late final fullScreenSCWidth = Pref.fullScreenSCWidth;
+  PlayOwner get _playOwner => (tag: heroTag, type: null);
   final String heroTag = Utils.generateRandomString(6);
   late final LiveRoomController _liveRoomController;
   late final PlPlayerController plPlayerController;
@@ -90,10 +90,17 @@ class _LiveRoomPageState extends State<LiveRoomPage>
     );
     plPlayerController = _liveRoomController.plPlayerController
       ..addStatusLister(playerListener);
-    PlPlayerController.setPlayCallBack(plPlayerController.play);
+    _setPlayCallBack();
     if (plPlayerController.removeSafeArea) {
       hideSystemBar();
     }
+  }
+
+  void _setPlayCallBack() {
+    PlPlayerController.setPlayCallBack(
+      plPlayerController.play,
+      playOwner: _playOwner,
+    );
   }
 
   @override
@@ -115,16 +122,32 @@ class _LiveRoomPageState extends State<LiveRoomPage>
     plPlayerController.screenRatio = maxHeight / maxWidth;
   }
 
+  void _onPushPopupRoute() {
+    _liveRoomController.isPlaying = plPlayerController.playerStatus.isPlaying;
+  }
+
+  void _onPopPopupRoute() {
+    if (!mounted) return;
+    if (PlPlayerController.playOwner != _playOwner) {
+      _onPopNext();
+    }
+  }
+
   @override
-  Future<void> didPopNext() async {
+  void didPopNext() {
     addObserverMobile(this);
+    _onPopNext();
+    super.didPopNext();
+  }
+
+  Future<void> _onPopNext() async {
     if (!plPlayerController.isLive) {
       plPlayerController.isLive = true;
       _liveRoomController.isLoaded.refresh();
     }
     plPlayerController.danmakuController =
         _liveRoomController.danmakuController;
-    PlPlayerController.setPlayCallBack(plPlayerController.play);
+    _setPlayCallBack();
     _liveRoomController.startLiveTimer();
     if (plPlayerController.playerStatus.isPlaying &&
         plPlayerController.cid == null) {
@@ -142,7 +165,6 @@ class _LiveRoomPageState extends State<LiveRoomPage>
     }
     if (!mounted) return;
     plPlayerController.addStatusLister(playerListener);
-    super.didPopNext();
   }
 
   @override
@@ -250,7 +272,9 @@ class _LiveRoomPageState extends State<LiveRoomPage>
     Alignment alignment = Alignment.center,
     bool needDm = true,
   }) {
-    if (!isFullScreen && !plPlayerController.isDesktopPip) {
+    if (_liveRoomController.enableFSSC &&
+        !isFullScreen &&
+        !plPlayerController.isDesktopPip) {
       _liveRoomController.fsSC.value = null;
     }
     _liveRoomController.isFullScreen = isFullScreen;
@@ -296,6 +320,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
       },
     );
     if (_liveRoomController.showSuperChat &&
+        _liveRoomController.enableFSSC &&
         (isFullScreen || plPlayerController.isDesktopPip)) {
       player = Stack(
         clipBehavior: Clip.none,
@@ -336,7 +361,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
                 return const SizedBox.shrink();
               }
               try {
-                return ExtraHitTestStack(
+                Widget child = ExtraHitTestStack(
                   key: ValueKey(item.id),
                   clipBehavior: Clip.none,
                   children: [
@@ -359,6 +384,20 @@ class _LiveRoomPageState extends State<LiveRoomPage>
                     ),
                   ],
                 );
+                if (_liveRoomController.fsSCOpacity != 1.0) {
+                  child = Opacity(
+                    opacity: _liveRoomController.fsSCOpacity,
+                    child: child,
+                  );
+                }
+                if (_liveRoomController.fsSCScale != 1.0) {
+                  child = Transform.scale(
+                    alignment: .bottomLeft,
+                    scale: _liveRoomController.fsSCScale,
+                    child: child,
+                  );
+                }
+                return child;
               } catch (_) {
                 if (kDebugMode) rethrow;
                 return const SizedBox.shrink();
@@ -396,6 +435,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
                     fit: BoxFit.cover,
                     width: maxWidth,
                     height: maxHeight,
+                    gaplessPlayback: true,
                     memCacheWidth: maxWidth.cacheSize(context),
                     imageUrl: ImageUtils.safeThumbnailUrl(appBackground),
                     placeholder: (_, _) => const SizedBox.shrink(),
@@ -406,6 +446,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
                     fit: BoxFit.cover,
                     width: maxWidth,
                     height: maxHeight,
+                    gaplessPlayback: true,
                     cacheWidth: maxWidth.cacheSize(context),
                   );
                 }
@@ -511,10 +552,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
       if (_liveRoomController.onlineCount.value case final onlineCount?) {
         return Text(
           '高能观众($onlineCount)',
-          style: const TextStyle(
-            fontSize: 12,
-            color: Colors.white,
-          ),
+          style: const TextStyle(fontSize: 12, color: Colors.white),
         );
       }
       return const SizedBox.shrink();
@@ -523,6 +561,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
 
   void _showRank() {
     if (_liveRoomController.ruid case final ruid?) {
+      _onPushPopupRoute();
       final heightFactor = PlatformUtils.isMobile && !isPortrait ? 1.0 : 0.7;
       showModalBottomSheet(
         context: context,
@@ -538,7 +577,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
             roomId: _liveRoomController.roomId,
           ),
         ),
-      );
+      ).whenComplete(_onPopPopupRoute);
     }
   }
 
@@ -747,18 +786,7 @@ class _LiveRoomPageState extends State<LiveRoomPage>
     Widget chat() => LiveRoomChatPanel(
       key: chatKey,
       isPP: isPP,
-      roomId: _liveRoomController.roomId,
       liveRoomController: _liveRoomController,
-      onAtUser: (item) => _liveRoomController
-        ..savedDanmaku = [
-          RichTextItem.fromStart(
-            '@${item.name} ',
-            rawText: item.extra.mid.toString(),
-            type: .at,
-            id: item.extra.id.toString(),
-          ),
-        ]
-        ..onSendDanmaku(),
     );
     return Padding(
       padding: .only(bottom: 12, top: isPortrait ? 12 : 0),
@@ -837,25 +865,32 @@ class _LiveRoomPageState extends State<LiveRoomPage>
                   },
                 ),
                 const Expanded(
-                  child: Text(
-                    '发送弹幕',
-                    style: TextStyle(color: baseWhite),
-                  ),
+                  child: Text('发送弹幕', style: TextStyle(color: baseWhite)),
                 ),
                 Builder(
                   builder: (context) {
-                    final colorScheme = Theme.of(context).colorScheme;
+                    final isLogin = kDebugMode || _liveRoomController.isLogin;
+                    final colorScheme = ColorScheme.of(context);
                     return Material(
                       type: MaterialType.transparency,
                       child: Stack(
                         clipBehavior: Clip.none,
                         children: [
                           InkWell(
-                            overlayColor: overlayColor(colorScheme),
+                            overlayColor: _overlayColor(colorScheme),
                             customBorder: const CircleBorder(),
-                            onTapDown: _liveRoomController.onLikeTapDown,
-                            onTapUp: _liveRoomController.onLikeTapUp,
-                            onTapCancel: _liveRoomController.onLikeTapUp,
+                            onTap: isLogin
+                                ? null
+                                : _liveRoomController.toastNotLogin,
+                            onTapDown: isLogin
+                                ? _liveRoomController.onLikeTapDown
+                                : null,
+                            onTapUp: isLogin
+                                ? _liveRoomController.onLikeTapUp
+                                : null,
+                            onTapCancel: isLogin
+                                ? _liveRoomController.onLikeTapUp
+                                : null,
                             child: const SizedBox.square(
                               dimension: 34,
                               child: Icon(
@@ -940,29 +975,20 @@ class _LiveRoomPageState extends State<LiveRoomPage>
     return child;
   }
 
-  WidgetStateProperty<Color?>? overlayColor(ColorScheme theme) =>
+  WidgetStateProperty<Color?>? _overlayColor(ColorScheme colorScheme) =>
       WidgetStateProperty.resolveWith((Set<WidgetState> states) {
-        if (states.contains(WidgetState.selected)) {
-          if (states.contains(WidgetState.pressed)) {
-            return theme.primary.withValues(alpha: 0.1);
-          }
-          if (states.contains(WidgetState.hovered)) {
-            return theme.primary.withValues(alpha: 0.08);
-          }
-          if (states.contains(WidgetState.focused)) {
-            return theme.primary.withValues(alpha: 0.1);
-          }
-        }
+        final color = states.contains(WidgetState.selected)
+            ? colorScheme.primary
+            : colorScheme.onSurfaceVariant;
         if (states.contains(WidgetState.pressed)) {
-          return theme.onSurfaceVariant.withValues(alpha: 0.1);
+          return color.withValues(alpha: 0.1);
+        } else if (states.contains(WidgetState.hovered)) {
+          return color.withValues(alpha: 0.08);
+        } else if (states.contains(WidgetState.focused)) {
+          return color.withValues(alpha: 0.1);
+        } else {
+          return Colors.transparent;
         }
-        if (states.contains(WidgetState.hovered)) {
-          return theme.onSurfaceVariant.withValues(alpha: 0.08);
-        }
-        if (states.contains(WidgetState.focused)) {
-          return theme.onSurfaceVariant.withValues(alpha: 0.1);
-        }
-        return Colors.transparent;
       });
 }
 
