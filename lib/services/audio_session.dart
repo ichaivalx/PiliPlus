@@ -16,11 +16,11 @@ class AudioSessionHandler {
     if (playing) {
       PlPlayerController.pauseIfExists(isInterrupt: true);
     }
-    if (_interruptResume == null) {
-      shutdownTimerService.holdPendingAutoplay();
-      _interruptResume = shutdownTimerService.beginLoad();
-      _interruptedPlayback = playing;
-    }
+    // 永久失去焦点时没有结束事件，旧的待恢复以本次打断为准
+    _takeInterruptResume();
+    shutdownTimerService.holdPendingAutoplay();
+    _interruptResume = shutdownTimerService.beginLoad();
+    _interruptedPlayback = playing;
   }
 
   ShutdownLoad? _takeInterruptResume() {

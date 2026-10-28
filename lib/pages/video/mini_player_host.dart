@@ -70,7 +70,10 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   void onLeaveWithoutMiniPlayer() {
     _cancelContinuation();
     _takeReturnResume();
-    _returnResume = shutdownTimerService.beginLoad();
+    // 与 didPushNext 保存、didPopNext 据以恢复的播放状态一致
+    if (plPlayerController?.playerStatus.isPlaying ?? false) {
+      _returnResume = shutdownTimerService.beginLoad();
+    }
     plPlayerController?.cancelBackgroundResume();
     if (PlPlayerController.playOwner?.tag == miniHeroTag) {
       PlPlayerController.setPlayCallBack(null);
