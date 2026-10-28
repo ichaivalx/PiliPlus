@@ -71,7 +71,7 @@ class AudioController extends GetxController
 
   final audioItem = Rxn<DetailItem>();
 
-  bool _hasInit = false;
+  Future<void>? _initFuture;
   @override
   Player? player;
   late int cacheAudioQa;
@@ -383,7 +383,7 @@ class AudioController extends GetxController
     try {
       await _initPlayerIfNeeded();
       final player = this.player;
-      if (player == null) {
+      if (player == null || !identical(_openingLoad, load)) {
         return;
       }
       final extras = audioFilterExtras(volume);
@@ -422,9 +422,10 @@ class AudioController extends GetxController
     );
   }
 
-  Future<void> _initPlayerIfNeeded() async {
-    if (_hasInit) return;
-    _hasInit = true;
+  /// 并发请求共用同一次播放器创建
+  Future<void> _initPlayerIfNeeded() => _initFuture ??= _initPlayer();
+
+  Future<void> _initPlayer() async {
     assert(player == null, _subscriptions = null);
     player = await Player.create(
       configuration: PlayerConfiguration(
