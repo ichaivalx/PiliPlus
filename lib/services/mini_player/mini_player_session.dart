@@ -730,7 +730,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
       restore();
       return true;
     }
-    if (restoring.value) {
+    // 指定进度打开其他视频按普通方式打开；同一视频的进度（如历史记录）不如小窗新
+    if (restoring.value || args['progress'] != null) {
       close();
       return false;
     }
@@ -738,11 +739,9 @@ class MiniPlayerSession with WidgetsBindingObserver {
     return true;
   }
 
-  /// 定位评论、指定进度的请求按普通方式打开详情页
+  /// 定位评论的请求按普通方式打开详情页
   static bool _hasIntent(Map args) =>
-      args[rootRpIdKey] != null ||
-      args[secondRpIdKey] != null ||
-      args['progress'] != null;
+      args[rootRpIdKey] != null || args[secondRpIdKey] != null;
 
   /// 决定播放列表来源与顺序的参数
   static const _listKeys = [
