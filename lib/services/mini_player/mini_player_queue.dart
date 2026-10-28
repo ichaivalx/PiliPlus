@@ -2,10 +2,14 @@ import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/user.dart';
 import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/common/video/source_type.dart';
+import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models_new/media_list/media_list.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/models_new/video/video_detail/episode.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
+import 'package:PiliPlus/utils/id_utils.dart';
+import 'package:PiliPlus/utils/reply_scheme_helper.dart';
+import 'package:PiliPlus/utils/utils.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 
 /// 播完后的下一步
@@ -20,9 +24,10 @@ final class MiniPlayerReplay extends MiniPlayerNext {
 
 /// 切换视频，[inList] 为 false 时脱离当前列表（相关视频）
 final class MiniPlayerSwitch extends MiniPlayerNext {
-  const MiniPlayerSwitch(this.item, {required this.inList});
+  const MiniPlayerSwitch(this.args, {required this.inList});
 
-  final BaseEpisodeItem item;
+  /// 与 `PageUtils.toVideoPage` 一样的完整参数，可直接用于打开详情页
+  final Map<String, dynamic> args;
   final bool inList;
 }
 
@@ -146,8 +151,8 @@ class MiniPlayerQueue {
   /// 播放全部的列表到末尾时先加载下一页，返回 null 表示停止
   ///
   /// 详情或列表获取失败时重试一次，仍失败则停止，避免误判为没有列表
-  Future<MiniPlayerNext?> next({
-    required int cid,
+  Future<MiniPlayerNext?> next(
+    Map<String, dynamic> current, {
     required PlayRepeat repeat,
     required bool showRelated,
   }) async {
@@ -162,26 +167,27 @@ class MiniPlayerQueue {
         await (_mediaLoading = _loadMedia()) == _PageResult.failed) {
       return null;
     }
-    return _next(cid, repeat, showRelated, false);
+    return _next(current, repeat, showRelated, false);
   }
 
   Future<MiniPlayerNext?> _next(
-    int cid,
+    Map<String, dynamic> current,
     PlayRepeat repeat,
     bool showRelated,
     bool skipPart,
   ) async {
-    final detail = _detail;
-    final pages = detail?.bvid == _bvid ? detail!.pages : null;
-    final season = detail?.ugcSeason;
+    final cid = current['cid'] as int;
+    final detail = _detail!;
+    final season = detail.ugcSeason;
     final mediaList = _mediaList;
 
     final List<BaseEpisodeItem> episodes;
     var isPart = false;
-    if (!skipPart && pages != null && pages.length > 1) {
+    if (!skipPart && detail.hasParts) {
       isPart = true;
-      episodes = pages;
+      episodes = detail.pages!;
     } else if (mediaList != null) {
+      // 直接引用列表，加载下一页后的新增项随之可见
       episodes = mediaList;
     } else if (season?.sections case final sections?) {
       episodes = [for (final section in sections) ...?section.episodes];
@@ -194,15 +200,15 @@ class MiniPlayerQueue {
         return const MiniPlayerReplay();
       }
       if (repeat == PlayRepeat.autoPlayRelated && showRelated) {
-        return _related();
+        return _related(current);
       }
       return null;
     }
 
     final currentCid = skipPart
-        ? detail!.isPageReversed
-              ? pages!.last.cid
-              : pages!.first.cid
+        ? detail.isPageReversed
+              ? detail.pages!.last.cid
+              : detail.pages!.first.cid
         : cid;
     final currentIndex = episodes.indexWhere((e) => e.cid == currentCid);
     var nextIndex = currentIndex + 1;
@@ -216,12 +222,12 @@ class MiniPlayerQueue {
 
     if (nextIndex >= episodes.length) {
       if (isPart && (mediaList != null || season != null)) {
-        return _next(cid, repeat, showRelated, true);
+        return _next(current, repeat, showRelated, true);
       }
       if (repeat == PlayRepeat.listCycle) {
         nextIndex = 0;
       } else if (repeat == PlayRepeat.autoPlayRelated && showRelated) {
-        return _related();
+        return _related(current);
       } else {
         return null;
       }
@@ -237,11 +243,14 @@ class MiniPlayerQueue {
     if (nextCid == cid) {
       return null;
     }
-    return MiniPlayerSwitch(episodes[nextIndex], inList: true);
+    return MiniPlayerSwitch(
+      _argsFor(current, episodes[nextIndex], inList: true),
+      inList: true,
+    );
   }
 
   /// 对应上游 `UgcIntroController.playRelated`
-  Future<MiniPlayerNext?> _related() async {
+  Future<MiniPlayerNext?> _related(Map<String, dynamic> current) async {
     final res = await VideoHttp.relatedVideoList(bvid: _bvid);
     if (res case Success(:final response)) {
       final item = response?.firstOrNull;
@@ -249,18 +258,55 @@ class MiniPlayerQueue {
         SmartDialog.showToast('暂无相关视频，停止连播');
         return null;
       }
+      if (item.cid == null) {
+        return null;
+      }
       return MiniPlayerSwitch(
-        BaseEpisodeItem(
-          aid: item.aid,
-          bvid: item.bvid,
-          cid: item.cid,
-          cover: item.cover,
-          title: item.title,
+        _argsFor(
+          current,
+          BaseEpisodeItem(
+            aid: item.aid,
+            bvid: item.bvid,
+            cid: item.cid,
+            cover: item.cover,
+            title: item.title,
+          ),
+          inList: false,
         ),
         inList: false,
       );
     }
     res.toast();
     return null;
+  }
+
+  /// 列表内的下一项沿用当前列表参数，恢复时详情页以同一列表模式打开
+  static Map<String, dynamic> _argsFor(
+    Map<String, dynamic> current,
+    BaseEpisodeItem item, {
+    required bool inList,
+  }) {
+    final bvid = item.bvid ?? current['bvid'] as String;
+    final aid = item.aid ?? IdUtils.bv2av(bvid);
+    final cid = item.cid!;
+    final sameVideo = bvid == current['bvid'];
+    return {
+      if (inList) ...current,
+      'aid': aid,
+      'bvid': bvid,
+      'cid': cid,
+      'videoType': VideoType.ugc,
+      'heroTag': Utils.makeHeroTag(cid),
+      'title': sameVideo ? current['title'] : item.title,
+      'cover': sameVideo ? current['cover'] : item.cover,
+      if (inList && isPlayAll(current)) ...{
+        'oid': aid,
+        'isContinuePlaying': true,
+      },
+    }
+      ..remove('progress')
+      ..remove('isVertical')
+      ..remove(rootRpIdKey)
+      ..remove(secondRpIdKey);
   }
 }

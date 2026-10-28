@@ -4,19 +4,17 @@ import 'dart:io' show Platform;
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
-import 'package:PiliPlus/models_new/video/video_detail/episode.dart';
-import 'package:PiliPlus/models_new/video/video_detail/page.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_media.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_queue.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_source.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
-import 'package:PiliPlus/utils/id_utils.dart';
 import 'package:PiliPlus/utils/ios/pip_helper.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
@@ -37,8 +35,8 @@ abstract interface class MiniPlayerHost {
   Map<String, dynamic> get miniArgs;
   PlayUrlModel get miniPlayUrl;
 
-  /// 页面当前的播放列表，小窗播完后按同样的顺序续播
-  MiniPlayerQueue get miniQueue;
+  /// 页面当前的播放列表，小窗播完后按同样的顺序续播；可能发起请求
+  MiniPlayerQueue createMiniQueue();
 
   /// 页面被内容页覆盖，播放转入小窗
   void onMiniCovered();
@@ -91,7 +89,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
   int _epoch = 0;
   bool _settling = false;
   Future<void>? _switching;
-  _MediaControls? _savedControls;
+  final _media = MiniPlayerMedia(_ownerTag);
   bool _pausedInBackground = false;
 
   bool get isActive => mode.value != .none;
@@ -124,7 +122,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
     if (isHeadless) {
       // 页面销毁时会把系统媒体状态置为暂停
-      Future.microtask(_syncMediaState);
+      Future.microtask(_media.syncState);
     }
   }
 
@@ -282,7 +280,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       return;
     }
     _args = host.miniArgs;
-    _queue = host.miniQueue;
+    _queue = host.createMiniQueue();
     _playUrl = host.miniPlayUrl;
     _title.value = host.miniTitle;
     _cover.value = host.miniCover;
@@ -290,7 +288,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     if (_player == null) {
       _player = PlPlayerController.getInstance()
         ..addStatusLister(_onPlayerStatus);
-      _takeMediaControls();
+      _media.takeControls();
       WidgetsBinding.instance.addObserver(this);
     }
     final player = _player!;
@@ -375,8 +373,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 对应详情页播放完成时调用的 `UgcIntroController.nextPlay`
   Future<void> _playNext(PlPlayerController player) async {
     final queue = _queue;
-    final cid = _args['cid'];
-    if (queue == null || cid is! int) {
+    final args = _args;
+    if (queue == null || args['cid'] is! int) {
       return;
     }
     final epoch = _epoch;
@@ -384,7 +382,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     final load = shutdownTimerService.beginLoad();
     try {
       final next = await queue.next(
-        cid: cid,
+        args,
         repeat: player.effectivePlayRepeat,
         showRelated: player.showRelatedVideo,
       );
@@ -399,14 +397,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
           if (shutdownTimerService.canAutoplay(load)) {
             player.play(repeat: true);
           }
-        case MiniPlayerSwitch(:final item, :final inList):
-          if (item.cid != null) {
-            await _replace(
-              _argsFor(item, inList: inList),
-              queue: inList ? queue : null,
-              load: load,
-            );
-          }
+        case MiniPlayerSwitch(args: final nextArgs, :final inList):
+          await _replace(nextArgs, queue: inList ? queue : null, load: load);
         case null:
       }
     } finally {
@@ -414,103 +406,12 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
   }
 
-  /// 列表内的下一项沿用当前列表参数，恢复时详情页以同一列表模式打开
-  ///
-  /// 与 `PageUtils.toVideoPage` 一样提供完整参数，可直接用于打开详情页
-  Map<String, dynamic> _argsFor(BaseEpisodeItem item, {required bool inList}) {
-    final bvid = item.bvid ?? _args['bvid'] as String;
-    final aid = item.aid ?? IdUtils.bv2av(bvid);
-    final cid = item.cid!;
-    final sameVideo = bvid == _args['bvid'];
-    return {
-      if (inList) ..._args,
-      'aid': aid,
-      'bvid': bvid,
-      'cid': cid,
-      'videoType': VideoType.ugc,
-      'heroTag': Utils.makeHeroTag(cid),
-      'title': sameVideo ? _args['title'] : item.title,
-      'cover': sameVideo ? _args['cover'] : item.cover,
-      if (inList && MiniPlayerQueue.isPlayAll(_args)) ...{
-        'oid': aid,
-        'isContinuePlaying': true,
-      },
-    }
-      ..remove('progress')
-      ..remove('isVertical')
-      ..remove(rootRpIdKey)
-      ..remove(secondRpIdKey);
-  }
-
-  void _updateMediaItem() {
-    final handler = videoPlayerServiceHandler;
-    final cid = _args['cid'];
-    if (handler == null || cid is! int) {
-      return;
-    }
-    handler
-      ..onVideoDetailDispose(_ownerTag)
-      ..onVideoDetailChange(
-        Part(
-          cid: cid,
-          part: _title.value,
-          duration: (_playUrl?.timeLength ?? 0) ~/ 1000,
-        ),
-        cid,
-        _ownerTag,
-        cover: _cover.value,
-      );
-    _syncMediaState();
-  }
-
-  /// 按实际播放状态刷新系统媒体状态
-  void _syncMediaState() {
-    final player = PlPlayerController.instance;
-    if (player == null || player.videoPlayerController == null) {
-      return;
-    }
-    videoPlayerServiceHandler?.onUpdateState(
-      player.playerStatus,
-      player.isBuffering.value,
-      player.isLive,
-      position: Duration(milliseconds: player.positionInMilliseconds),
-      speed: player.playbackSpeed,
-    );
-  }
-
-  /// 会话持有播放器期间，系统媒体控制由会话处理
-  void _takeMediaControls() {
-    final handler = videoPlayerServiceHandler;
-    if (handler == null || _savedControls != null) {
-      return;
-    }
-    _savedControls = (
-      onPlay: handler.onPlay,
-      onPause: handler.onPause,
-      onSeek: handler.onSeek,
-      onSkipToNext: handler.onSkipToNext,
-      onSkipToPrevious: handler.onSkipToPrevious,
-    );
-    handler
-      ..onPlay = null
-      ..onPause = null
-      ..onSeek = null
-      ..onSkipToNext = null
-      ..onSkipToPrevious = null;
-  }
-
-  void _restoreMediaControls() {
-    final controls = _savedControls;
-    _savedControls = null;
-    if (controls != null) {
-      videoPlayerServiceHandler
-        ?..onPlay = controls.onPlay
-        ..onPause = controls.onPause
-        ..onSeek = controls.onSeek
-        ..onSkipToNext = controls.onSkipToNext
-        ..onSkipToPrevious = controls.onSkipToPrevious;
-    }
-  }
+  void _updateMediaItem() => _media.updateItem(
+    cid: _args['cid'],
+    title: _title.value,
+    cover: _cover.value,
+    timeLength: _playUrl?.timeLength,
+  );
 
   void _release() {
     _player
@@ -520,7 +421,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _queue = null;
     _pausedInBackground = false;
     WidgetsBinding.instance.removeObserver(this);
-    _restoreMediaControls();
+    _media.restoreControls();
     videoPlayerServiceHandler?.onVideoDetailDispose(_ownerTag);
   }
 
@@ -533,7 +434,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _queue = null;
     _pausedInBackground = false;
     WidgetsBinding.instance.removeObserver(this);
-    _restoreMediaControls();
+    _media.restoreControls();
     mode.value = .none;
   }
 
@@ -631,7 +532,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _restoreTag = null;
     _release();
     mode.value = .none;
-    _syncMediaState();
+    _media.syncState();
     return true;
   }
 
@@ -811,11 +712,3 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
   }
 }
-
-typedef _MediaControls = ({
-  Future<void>? Function()? onPlay,
-  Future<void>? Function()? onPause,
-  Future<void>? Function(Duration position)? onSeek,
-  void Function()? onSkipToNext,
-  void Function()? onSkipToPrevious,
-});

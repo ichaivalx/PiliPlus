@@ -145,7 +145,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   }
 
   @override
-  MiniPlayerQueue get miniQueue {
+  MiniPlayerQueue createMiniQueue() {
     final ctr = videoDetailController;
     return MiniPlayerQueue.snapshot(
       bvid: ctr.bvid,
