@@ -26,6 +26,7 @@ import 'package:PiliPlus/utils/reply_scheme_helper.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
+import 'package:get/get_navigation/src/router_report.dart';
 
 /// 视频详情页提供给小窗的能力
 abstract interface class MiniPlayerHost {
@@ -416,12 +417,22 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
   }
 
-  /// GetX 在路由被移除后把当前路由记为其下一层，即使被移除的不是栈顶；
-  /// 这里改回实际的栈顶，依赖 Get.routing 的页面（如面板注册本地历史）才正确
+  /// GetX 在路由被移除后只把当前路由记为其下一层（即使被移除的不是栈顶），
+  /// 不更新路由名、参数与依赖归属；这里按实际的栈顶同步，对应
+  /// `GetObserver.didPop` 对露出路由的处理，依赖 Get.routing 与
+  /// Get.arguments 的页面（如面板注册本地历史、导航去重）才正确
   void _removeRoute(Route<dynamic> route) {
     route.navigator?.removeRoute(route);
     if (_routes.lastOrNull case final top?) {
-      Get.routing.route = top;
+      RouterReportManager.reportCurrentRoute(top);
+      final routing = Get.routing
+        ..route = top
+        ..args = top.settings.arguments;
+      if (top is PageRoute) {
+        final name =
+            top.settings.name ?? (top is GetPageRoute ? top.routeName : null);
+        routing.current = routing.previous = name ?? '';
+      }
     }
   }
 

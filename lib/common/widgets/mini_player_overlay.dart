@@ -79,6 +79,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 展开的起点，即开始展开时小窗的位置
   Rect? _expandFrom;
 
+  /// 起点时页面的缩放与偏移：页面中的视频画面与小窗中的重合
+  ({double scale, Offset origin})? _expandStart;
+
   /// 展开的背景，为恢复前的画面
   ui.Image? _backdrop;
   final _childKey = GlobalKey();
@@ -131,7 +134,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 结束或撤销展开，详情页回到原样
   void _stopExpanding() {
     _expanding = false;
-    _expandFrom = null;
+    _expandFrom = _expandStart = null;
     _disposeAfterFrame(_backdrop);
     _backdrop = null;
   }
@@ -284,7 +287,16 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       _frozenTarget = null;
       if (_expanding) {
         // 小窗在此交给展开中的详情页
-        _expandFrom = _lastRect ?? rect;
+        final from = _expandFrom = _lastRect ?? rect;
+        final dpr = MediaQuery.devicePixelRatioOf(context);
+        final mini = _videoRect(from, dpr);
+        final page = _videoRect(rect, dpr);
+        // 保持比例的 fit 两者宽高比相同，拉伸时退化为整体 contain
+        final scale = min(mini.width / page.width, mini.height / page.height);
+        _expandStart = (
+          scale: scale,
+          origin: mini.center - page.center * scale,
+        );
         _animation.forward(from: 0);
       } else {
         _animateFrom(_lastRect);
@@ -292,38 +304,53 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     });
   }
 
+  /// 视频画面在 [box] 中的位置，对应播放器与小窗中居中的 `FittedBox`：
+  /// 按画面实际宽高比与 fit 计算，超出 [box] 的部分（如裁剪）一并计入
+  static Rect _videoRect(Rect box, double devicePixelRatio) {
+    final player = PlPlayerController.instance;
+    final video = player?.videoController?.rect.value;
+    if (player == null || video == null || video.isEmpty || box.isEmpty) {
+      return box;
+    }
+    final fit = player.videoFit.value;
+    final size =
+        Size(
+          fit.aspectRatio == null
+              ? video.width
+              : video.height * fit.aspectRatio!,
+          video.height,
+        ) /
+        devicePixelRatio;
+    final sizes = applyBoxFit(fit.boxFit, size, box.size);
+    return Rect.fromCenter(
+      center: box.center,
+      width: size.width * sizes.destination.width / sizes.source.width,
+      height: size.height * sizes.destination.height / sizes.source.height,
+    );
+  }
+
   /// 展开过程中详情页的变换与可见范围（屏幕坐标），不在展开时为 null
   ///
-  /// 页面整体等比缩放，起点时播放器以 contain 方式对齐小窗；
-  /// 可见范围从页面中的播放器扩展到整个页面
-  ({Matrix4 transform, RRect clip, double t})? _expansion(Size size) {
+  /// 页面整体等比缩放，起点时页面中的视频画面与小窗中的重合；
+  /// 可见范围从小窗扩展到整个屏幕
+  ({Matrix4 transform, RRect? frame, double t})? _expansion(Size size) {
     if (!_expanding) {
       return null;
     }
-    final target = _restoreTarget;
+    final start = _expandStart;
     final from = _expandFrom;
-    if (target == null || from == null) {
+    if (start == null || from == null) {
       // 首次构建期间不可见
-      return (transform: Matrix4.identity(), clip: RRect.zero, t: 0);
+      return (transform: Matrix4.identity(), frame: null, t: 0);
     }
     final t = _progress;
-    final startScale = min(
-      from.width / target.width,
-      from.height / target.height,
-    );
-    final scale = ui.lerpDouble(startScale, 1, t)!;
-    final origin = (from.center - target.center * startScale) * (1 - t);
-    final visible = Rect.lerp(target, Offset.zero & size, t)!;
+    final scale = ui.lerpDouble(start.scale, 1, t)!;
+    final origin = start.origin * (1 - t);
     return (
       transform: Matrix4.diagonal3Values(scale, scale, 1)
         ..setTranslationRaw(origin.dx, origin.dy, 0),
-      clip: RRect.fromRectAndRadius(
-        Rect.fromLTWH(
-          origin.dx + visible.left * scale,
-          origin.dy + visible.top * scale,
-          visible.width * scale,
-          visible.height * scale,
-        ),
+      frame: RRect.fromRectAndRadius(
+        Rect.lerp(from, Offset.zero & size, t)!,
         Radius.circular(ui.lerpDouble(_radius, 0, t)!),
       ),
       t: t,
@@ -339,15 +366,15 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
           : _ExpandBackdropPainter(
               image: _backdrop,
               color: ColorScheme.of(context).surface,
-              dim: _backdropDim * expansion.t,
-              from: _restoreTarget == null ? null : _expandFrom,
-              clip: expansion.clip,
+              frame: expansion.frame,
               t: expansion.t,
             ),
       child: IgnorePointer(
         ignoring: _expanding,
         child: ClipRRect(
-          clipper: expansion == null ? null : _RRectClipper(expansion.clip),
+          clipper: expansion == null
+              ? null
+              : _RRectClipper(expansion.frame ?? RRect.zero),
           clipBehavior: expansion == null ? Clip.none : Clip.antiAlias,
           child: Transform(
             transform: expansion?.transform ?? Matrix4.identity(),
@@ -659,22 +686,20 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 }
 
-/// 展开的背景与外框的阴影；起点时保留小窗的底色，展开前段淡去
+/// 展开的背景与外框的阴影，背景随进度轻微变暗
 class _ExpandBackdropPainter extends CustomPainter {
   _ExpandBackdropPainter({
     required this.image,
     required this.color,
-    required this.dim,
-    required this.from,
-    required this.clip,
+    required this.frame,
     required this.t,
   });
 
   final ui.Image? image;
   final Color color;
-  final double dim;
-  final Rect? from;
-  final RRect clip;
+
+  /// 外框，null 表示尚未开始展开
+  final RRect? frame;
   final double t;
 
   @override
@@ -691,34 +716,30 @@ class _ExpandBackdropPainter extends CustomPainter {
     } else {
       canvas.drawRect(rect, Paint()..color = color);
     }
-    canvas.drawRect(rect, Paint()..color = Colors.black.withValues(alpha: dim));
-    final from = this.from;
-    if (from == null) {
-      return;
-    }
-    final shadow = BoxShadow(
-      color: Colors.black.withValues(alpha: 0.28 * (1 - t)),
-      blurRadius: 24,
-      offset: const Offset(0, 12),
-    );
-    canvas
-      ..drawRRect(clip.shift(shadow.offset), shadow.toPaint())
-      ..drawRRect(
-        RRect.fromRectAndRadius(
-          from,
-          const Radius.circular(_AppMiniPlayerOverlayState._radius),
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..color = Colors.black.withValues(
+          alpha: _AppMiniPlayerOverlayState._backdropDim * t,
         ),
-        Paint()..color = Colors.black.withValues(alpha: 1 - t),
+    );
+    if (frame case final frame?) {
+      // 与小窗相同的阴影，随圆角一同消失
+      final shadow = BoxShadow(
+        color: Colors.black.withValues(alpha: 0.28 * (1 - t)),
+        blurRadius: 24,
+        offset: const Offset(0, 12),
       );
+      canvas.drawRRect(frame.shift(shadow.offset), shadow.toPaint());
+    }
   }
 
   @override
   bool shouldRepaint(_ExpandBackdropPainter oldDelegate) =>
       oldDelegate.image != image ||
       oldDelegate.color != color ||
-      oldDelegate.dim != dim ||
-      oldDelegate.from != from ||
-      oldDelegate.clip != clip;
+      oldDelegate.frame != frame ||
+      oldDelegate.t != t;
 }
 
 class _RRectClipper extends CustomClipper<RRect> {

@@ -337,6 +337,10 @@ class MyApp extends StatelessWidget {
     final uiScale = Pref.uiScale;
     final mediaQuery = MediaQuery.of(context);
     final textScaler = TextScaler.linear(Pref.defaultTextScale);
+    if (!PlatformUtils.isDesktop) {
+      // 小窗层与页面使用同一套修正后的尺寸
+      child = AppMiniPlayerOverlay(child: child!);
+    }
     if (uiScale != 1.0) {
       child = MediaQuery(
         data: mediaQuery.copyWith(
@@ -365,7 +369,7 @@ class MyApp extends StatelessWidget {
         child: child,
       );
     }
-    return AppMiniPlayerOverlay(child: child);
+    return child;
   }
 
   /// from [DynamicColorBuilderState.initPlatformState]
