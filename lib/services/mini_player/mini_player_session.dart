@@ -270,6 +270,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
         _routes[index] = newRoute;
       }
       _onPush(newRoute);
+      // 替换时 RouteObserver 不通知下方页面（如弹窗被替换为页面）
+      _hideHostBelow(newRoute, null);
     } else if (index != -1) {
       _routes.removeAt(index);
     }
