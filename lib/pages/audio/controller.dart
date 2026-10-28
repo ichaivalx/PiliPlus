@@ -29,6 +29,7 @@ import 'package:PiliPlus/pages/video/introduction/ugc/widgets/triple_mixin.dart'
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/services/playback_focus.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
@@ -198,6 +199,7 @@ class AudioController extends GetxController
       }
     });
     claimMediaControls();
+    playbackFocus.addListener(_onVideoPlayback);
 
     animController = AnimationController(
       vsync: this,
@@ -226,7 +228,14 @@ class AudioController extends GetxController
       ..onSkipToPrevious = playPrev;
   }
 
-  /// 被其他播放页面覆盖时交出系统媒体控制
+  /// 视频开始播放时暂停本页并交出系统媒体控制，返回本页时取回
+  void _onVideoPlayback() {
+    if (isPlaying()) {
+      onPause();
+    }
+    yieldMediaControls();
+  }
+
   void yieldMediaControls() {
     final handler = videoPlayerServiceHandler;
     if (handler != null && handler.onPlay == onPlay) {
@@ -239,7 +248,7 @@ class AudioController extends GetxController
     }
   }
 
-  /// 返回本页面时取回系统媒体控制与媒体信息
+  /// 返回本页面时取回系统媒体控制与媒体信息，覆盖页面未播放视频时不变
   void reclaimMediaControls() {
     claimMediaControls();
     if (audioItem.value case final item?) {
@@ -900,6 +909,7 @@ class AudioController extends GetxController
   void onClose() {
     _stopStatusTimer();
     shutdownTimerService.removeTarget(_shutdownTarget);
+    playbackFocus.removeListener(_onVideoPlayback);
     yieldMediaControls();
     videoPlayerServiceHandler
       ?..onVideoDetailDispose(hashCode.toString())

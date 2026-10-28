@@ -89,12 +89,6 @@ class _AudioPageState extends State<AudioPage>
   );
 
   @override
-  void didPushNext() {
-    super.didPushNext();
-    _controller.yieldMediaControls();
-  }
-
-  @override
   void didPopNext() {
     super.didPopNext();
     _controller.reclaimMediaControls();

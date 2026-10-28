@@ -34,11 +34,15 @@ final shutdownTimerService = ShutdownTimerService._internal();
 /// 独立于视频播放器的播放目标（听音频页）
 typedef ShutdownTarget = ({VoidCallback pause, ValueGetter<bool> isPlaying});
 
-/// 一次播放源加载或进入后台时的暂停，定时关闭到期时阻止其之后自动播放
+/// 一次播放源加载或待恢复的暂停（后台、被打断），之后是否自动播放
 final class ShutdownLoad {
   ShutdownLoad._();
 
+  /// 定时关闭到期或停止播放，不可撤销
   bool _blocked = false;
+
+  /// 用户暂停，再次播放时撤销
+  bool _held = false;
 }
 
 class ShutdownTimerService {
@@ -84,10 +88,23 @@ class ShutdownTimerService {
   /// 由创建者在加载结束（成功、失败或被取代）时调用
   void endLoad(ShutdownLoad load) => _loads.remove(load);
 
-  bool canAutoplay(ShutdownLoad load) => !load._blocked;
+  bool canAutoplay(ShutdownLoad load) => !load._blocked && !load._held;
 
-  /// 用户主动停止播放（如关闭小窗）时，正在进行的加载完成后不再自动播放
+  /// 停止播放（如关闭小窗、拔出耳机）时，进行中的加载与待恢复的暂停不再自动播放
   void cancelPendingAutoplay() => _blockLoads();
+
+  /// 用户暂停：进行中的加载完成后保持暂停，直到用户再次播放
+  void holdPendingAutoplay() {
+    for (final load in _loads) {
+      load._held = true;
+    }
+  }
+
+  void releasePendingAutoplay() {
+    for (final load in _loads) {
+      load._held = false;
+    }
+  }
 
   /// 阻止正在进行的加载自动播放，返回是否存在这样的加载
   bool _blockLoads() {

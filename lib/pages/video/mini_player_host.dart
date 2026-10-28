@@ -94,20 +94,22 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
         PlPlayerController.playOwner?.tag == ctr.heroTag &&
         MiniPlayerPolicy.isTabletLandscape(MediaQuery.sizeOf(context)) &&
         canHandOffToMini &&
-        !ctr.isQuerying &&
         ctr.autoPlay &&
         ctr.videoState.value &&
         player.videoController != null &&
         !player.isDesktopPip;
   }
 
-  /// 互动视频的剧情图需另行请求，简介中的标记先于其可用
+  /// 互动视频的剧情图需另行请求，简介中的标记先于其可用；
+  /// 切换分P等加载期间页面信息与播放源不一致，不能交给小窗
   @override
   bool get canHandOffToMini {
     final ctr = videoDetailController;
     return MiniPlayerPolicy.canLoadInMini(ctr.args) &&
         ctr.graphVersion == null &&
-        introController.videoDetail.value.rights?.isSteinGate != 1;
+        introController.videoDetail.value.rights?.isSteinGate != 1 &&
+        !ctr.isQuerying &&
+        ctr.plPlayerController.cid == ctr.cid.value;
   }
 
   /// 相对页面根节点计算，转场缩放期间也是页面静止时的位置
@@ -207,6 +209,10 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     didPushNext();
     if (!resumeOnReturn) {
       videoDetailController.playerStatus = PlayerStatus.paused;
+    }
+    // 隐藏期间续播等不再加载播放器，重新露出时由 didPopNext 重新获取
+    if (PlPlayerController.playOwner?.tag == miniHeroTag) {
+      PlPlayerController.setPlayCallBack(null);
     }
   }
 

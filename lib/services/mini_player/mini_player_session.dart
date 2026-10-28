@@ -103,7 +103,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
   int _epoch = 0;
   bool _settling = false;
   Future<void>? _switching;
-  late final _media = MiniPlayerMedia(_ownerTag, onPause: pause);
+  late final _media = MiniPlayerMedia(_ownerTag, onPlay: play, onPause: pause);
 
   /// 加载期间请求恢复详情页，加载结束后执行
   bool _restorePending = false;
@@ -327,9 +327,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _media.takeControls();
       WidgetsBinding.instance.addObserver(this);
     }
-    final player = _player!;
     PlPlayerController.setPlayCallBack(
-      player.play,
+      play,
       playOwner: (tag: _ownerTag, type: null),
     );
     _updateMediaItem();
@@ -378,6 +377,18 @@ class MiniPlayerSession with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_player case final player? when player.pausesInBackground) {
       player.pauseForBackground();
+    }
+    if (state == .resumed && !loading.value) {
+      _runPendingRestore();
+    }
+  }
+
+  /// 恢复详情页需要渲染帧，后台期间保持延后
+  void _runPendingRestore() {
+    if (_restorePending &&
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+      _restorePending = false;
+      restore();
     }
   }
 
@@ -447,16 +458,19 @@ class MiniPlayerSession with WidgetsBindingObserver {
     if (_queue?.detail case final detail?) {
       _exitIfInteractive(detail);
     }
-    if (_restorePending) {
-      _restorePending = false;
-      restore();
-    }
+    _runPendingRestore();
   }
 
   /// 用户在小窗中暂停：进行中的加载完成后同样保持暂停
   Future<void>? pause() {
-    shutdownTimerService.cancelPendingAutoplay();
+    shutdownTimerService.holdPendingAutoplay();
     return PlPlayerController.instance?.pause();
+  }
+
+  /// 用户在小窗中播放：撤销暂停对进行中加载的影响
+  Future<void>? play() {
+    shutdownTimerService.releasePendingAutoplay();
+    return PlPlayerController.instance?.play();
   }
 
   void _updateMediaItem() => _media.updateItem(
@@ -571,7 +585,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     restoreRect.value = null;
     if (isHeadless) {
       PlPlayerController.setPlayCallBack(
-        _player!.play,
+        play,
         playOwner: (tag: _ownerTag, type: null),
       );
     }

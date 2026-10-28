@@ -66,7 +66,7 @@ class AudioSessionHandler {
             break;
           case AudioInterruptionType.pause:
             if (resume != null && shutdownTimerService.canAutoplay(resume)) {
-              PlPlayerController.playIfExists();
+              PlPlayerController.resumeIfExists();
             }
             //player.play();
             break;
@@ -78,6 +78,8 @@ class AudioSessionHandler {
 
     // 耳机拔出暂停
     session.becomingNoisyEventStream.listen((_) {
+      // 已暂停时同样取消回到前台、打断结束后的自动恢复
+      shutdownTimerService.cancelPendingAutoplay();
       PlPlayerController.pauseIfExists();
       // final player = PlPlayerController.getInstance();
       // if (player.playerStatus.playing) {

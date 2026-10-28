@@ -30,6 +30,7 @@ import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/danmaku_options.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
+import 'package:PiliPlus/services/playback_focus.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show ShutdownLoad, shutdownTimerService;
@@ -156,6 +157,17 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     if (_videoPlayerController?.state.playing ?? false) {
       _resumeInForeground();
       pause(isInterrupt: true);
+    }
+  }
+
+  /// 恢复被打断的播放，在后台时等回到前台
+  static void resumeIfExists() {
+    if (_instance case final player?) {
+      if (player.pausesInBackground) {
+        player._resumeInForeground();
+      } else {
+        playIfExists();
+      }
     }
   }
 
@@ -1113,6 +1125,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       /// playing
       stream.playing.listen((bool playing) {
         if (playing) {
+          playbackFocus.takenByVideo();
           playerStatus = .playing;
           _stopWakeLockTimer();
           _updatePlaybackState();

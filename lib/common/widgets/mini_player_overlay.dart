@@ -586,7 +586,7 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
       if (player.playerStatus.isPlaying) {
         miniPlayerSession.pause();
       } else {
-        player.play();
+        miniPlayerSession.play();
       }
     }
     _scheduleHide();
