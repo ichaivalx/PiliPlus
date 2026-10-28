@@ -45,9 +45,10 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
   }
 
+  /// 覆盖中被移除时先由会话接续等待中的续播
   void disposeMiniPlayerHost() {
-    _cancelContinuation();
     miniPlayerSession.detach(this);
+    _cancelContinuation();
   }
 
   /// 页面正常离开（未交给小窗）：交出播放所有权并作废续播，进行中的加载
@@ -207,16 +208,18 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
   }
 
-  /// 作废页面进行中的自动续播，避免之后操作已交出的播放器
-  void _cancelContinuation() {
+  /// 作废页面进行中的自动续播，避免之后操作已交出的播放器；
+  /// 返回是否有等待中的续播
+  bool _cancelContinuation() {
     if (introController case final UgcIntroController controller) {
-      controller.continuation++;
+      return controller.cancelContinuation();
     }
+    return false;
   }
 
   @override
-  void onMiniDetached() {
-    _cancelContinuation();
+  bool onMiniDetached() {
+    final continuing = _cancelContinuation();
     introController.cancelTimer();
     videoDetailController
       ..cancelBlockListener()
@@ -224,6 +227,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     plPlayerController
       ?..removeStatusLister(playerListener)
       ..removePositionListener(positionListener);
+    return continuing;
   }
 
   @override

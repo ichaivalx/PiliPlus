@@ -51,6 +51,17 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
   /// 小窗结束或页面交出播放时递增，作废进行中的自动续播
   int continuation = 0;
 
+  /// 续播正在等待请求结果
+  bool _continuing = false;
+
+  /// 作废进行中的自动续播，返回是否有等待中的续播
+  bool cancelContinuation() {
+    continuation++;
+    final continuing = _continuing;
+    _continuing = false;
+    return continuing;
+  }
+
   late final RxBool expand;
   final RxBool status = true.obs;
 
@@ -477,6 +488,7 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
       Dimension? dimension;
       if (cid == null) {
         final generation = continuation;
+        _continuing = true;
         if (await SearchHttp.ab2cWithDimension(aid: aid, bvid: bvid)
             case final res?) {
           cid = res.cid;
@@ -485,6 +497,7 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
         if (generation != continuation) {
           return false;
         }
+        _continuing = false;
       }
       if (cid == null) {
         return false;
@@ -737,12 +750,14 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
       relatedCtr = Get.find<RelatedController>(tag: heroTag);
     } else {
       final generation = continuation;
+      _continuing = true;
       relatedCtr = Get.put(
         RelatedController(autoQuery: false, bvid: bvid),
         tag: heroTag,
       )
         ..queryData().whenComplete(() {
           if (generation == continuation) {
+            _continuing = false;
             playRelated();
           }
         });

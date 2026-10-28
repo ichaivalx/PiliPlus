@@ -50,8 +50,8 @@ abstract interface class MiniPlayerHost {
   /// 页面被内容页覆盖，播放转入小窗
   void onMiniCovered();
 
-  /// 页面不再拥有播放内容
-  void onMiniDetached();
+  /// 页面不再拥有播放内容，返回页面播完后是否有等待中的续播需由会话接续
+  bool onMiniDetached();
 
   /// 覆盖期间会话结束，页面按离开处理
   void onMiniStopped({required bool resumeOnReturn});
@@ -338,9 +338,12 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 覆盖中的宿主页面离开栈：内容可继续时转入无宿主，否则结束会话
   void _takeOverCovered(MiniPlayerHost host) {
     if (host.canHandOffToMini) {
-      host.onMiniDetached();
+      final continuing = host.onMiniDetached();
       _becomeHeadless(host);
       Future.microtask(_removeVideoRoutes);
+      if (continuing) {
+        _takeOverCompletion();
+      }
     } else {
       _start();
       _host = null;
@@ -409,6 +412,13 @@ class MiniPlayerSession with WidgetsBindingObserver {
       player.autoplay(repeat: true);
     } else if (player.effectivePlayRepeat != PlayRepeat.pause) {
       unawaited(_playNext(player));
+    }
+  }
+
+  /// 页面播完后等待中的续播已作废，由会话按播放完成重新处理一次
+  void _takeOverCompletion() {
+    if (_player case final player? when player.playerStatus.isCompleted) {
+      _onPlayerStatus(PlayerStatus.completed);
     }
   }
 
@@ -482,6 +492,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
   );
 
   void _release() {
+    // 先移除自己的媒体信息，播放器销毁时据此决定是否清空系统媒体
+    videoPlayerServiceHandler?.onVideoDetailDispose(_ownerTag);
     _player
       ?..removeStatusLister(_onPlayerStatus)
       ..dispose();
@@ -489,7 +501,6 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _queue = null;
     WidgetsBinding.instance.removeObserver(this);
     _media.restoreControls();
-    videoPlayerServiceHandler?.onVideoDetailDispose(_ownerTag);
   }
 
   /// 播放器已被外部销毁，直接结束会话
@@ -514,11 +525,14 @@ class MiniPlayerSession with WidgetsBindingObserver {
     enterRect = host.miniPlayerRect;
     _enterSnapshot?.dispose();
     _enterSnapshot = host.captureMiniSnapshot();
-    host.onMiniDetached();
+    final continuing = host.onMiniDetached();
     _becomeHeadless(host);
     // 先移除其他详情页，避免出栈时露出的详情页重新获取播放器
     _removeVideoRoutes(except: host);
     _dismissHostRoute(host);
+    if (continuing) {
+      _takeOverCompletion();
+    }
   }
 
   /// 隐藏详情页，改由截图淡出，下方页面照常播放返回转场；

@@ -1858,7 +1858,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     _videoPlayerController = null;
     _videoController = null;
     _instance = null;
-    videoPlayerServiceHandler?.clear();
+    // 各页面已移除自己的媒体信息，其他页面（如听音频）的保留
+    if (_isCloseAll) {
+      videoPlayerServiceHandler?.clear();
+    } else {
+      videoPlayerServiceHandler?.clearIfNeeded();
+    }
   }
 
   static void updatePlayCount() {
