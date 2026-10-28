@@ -430,7 +430,25 @@ class VideoDetailController extends GetxController
     );
   }
 
+  /// 进行中的向后加载，同时到来的调用共用，避免以同一位置重复追加
+  Future<void>? _loadingMore;
+
   Future<void> getMediaList({
+    bool isReverse = false,
+    bool isLoadPrevious = false,
+  }) {
+    if (isReverse || isLoadPrevious) {
+      return _getMediaList(
+        isReverse: isReverse,
+        isLoadPrevious: isLoadPrevious,
+      );
+    }
+    return _loadingMore ??= _getMediaList().whenComplete(
+      () => _loadingMore = null,
+    );
+  }
+
+  Future<void> _getMediaList({
     bool isReverse = false,
     bool isLoadPrevious = false,
   }) async {
