@@ -43,6 +43,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 展开结束时背景变暗的程度
   static const double _backdropDim = 0.24;
 
+  /// 小窗黑边处的遮罩在展开进度达到此值时完全淡去
+  static const double _maskFadeEnd = 0.4;
+
   final _session = miniPlayerSession;
 
   /// 唯一的动画驱动：小窗的位置、大小、圆角，截图淡出与详情页展开共用同一进度
@@ -79,8 +82,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 展开的起点，即开始展开时小窗的位置
   Rect? _expandFrom;
 
-  /// 起点时页面的缩放与偏移：页面中的视频画面与小窗中的重合
-  ({double scale, Offset origin})? _expandStart;
+  /// 起点时页面的缩放与偏移：页面中的视频画面与小窗中的重合；
+  /// [mask] 为起点时小窗中播放器以外的部分（页面坐标），仅在播放器
+  /// 不能完全覆盖小窗时存在
+  ({double scale, Offset origin, Rect? mask})? _expandStart;
 
   /// 展开的背景，为恢复前的画面
   ui.Image? _backdrop;
@@ -293,9 +298,16 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         final page = _videoRect(rect, dpr);
         // 保持比例的 fit 两者宽高比相同，拉伸时退化为整体 contain
         final scale = min(mini.width / page.width, mini.height / page.height);
+        final origin = mini.center - page.center * scale;
+        final player = _mapRect(rect, scale, origin);
         _expandStart = (
           scale: scale,
-          origin: mini.center - page.center * scale,
+          origin: origin,
+          // 留出半个像素的舍入误差
+          mask: player.inflate(0.5).contains(from.topLeft) &&
+                  player.inflate(0.5).contains(from.bottomRight)
+              ? null
+              : _mapRect(from.shift(-origin), 1 / scale, Offset.zero),
         );
         _animation.forward(from: 0);
       } else {
@@ -329,23 +341,42 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     );
   }
 
+  static Rect _mapRect(Rect rect, double scale, Offset origin) =>
+      Rect.fromLTWH(
+        origin.dx + rect.left * scale,
+        origin.dy + rect.top * scale,
+        rect.width * scale,
+        rect.height * scale,
+      );
+
   /// 展开过程中详情页的变换与可见范围（屏幕坐标），不在展开时为 null
   ///
   /// 页面整体等比缩放，起点时页面中的视频画面与小窗中的重合；
-  /// 可见范围从小窗扩展到整个屏幕
-  ({Matrix4 transform, RRect? frame, double t})? _expansion(Size size) {
+  /// 可见范围从小窗扩展到整个屏幕。播放器不能完全覆盖小窗时，
+  /// 起点时小窗黑边处的页面内容以随页面移动的黑色遮罩盖住，展开前段淡去
+  ({Matrix4 transform, RRect? frame, Path? mask, double maskOpacity, double t})?
+  _expansion(Size size) {
     if (!_expanding) {
       return null;
     }
     final start = _expandStart;
     final from = _expandFrom;
-    if (start == null || from == null) {
+    final player = _restoreTarget;
+    if (start == null || from == null || player == null) {
       // 首次构建期间不可见
-      return (transform: Matrix4.identity(), frame: null, t: 0);
+      return (
+        transform: Matrix4.identity(),
+        frame: null,
+        mask: null,
+        maskOpacity: 0,
+        t: 0,
+      );
     }
     final t = _progress;
     final scale = ui.lerpDouble(start.scale, 1, t)!;
     final origin = start.origin * (1 - t);
+    final maskOpacity = clampDouble(1 - t / _maskFadeEnd, 0, 1);
+    final mask = start.mask;
     return (
       transform: Matrix4.diagonal3Values(scale, scale, 1)
         ..setTranslationRaw(origin.dx, origin.dy, 0),
@@ -353,6 +384,14 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         Rect.lerp(from, Offset.zero & size, t)!,
         Radius.circular(ui.lerpDouble(_radius, 0, t)!),
       ),
+      mask: mask == null || maskOpacity == 0
+          ? null
+          : Path.combine(
+              PathOperation.difference,
+              Path()..addRect(_mapRect(mask, scale, origin)),
+              Path()..addRect(_mapRect(player, scale, origin)),
+            ),
+      maskOpacity: maskOpacity,
       t: t,
     );
   }
@@ -368,6 +407,13 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
               color: ColorScheme.of(context).surface,
               frame: expansion.frame,
               t: expansion.t,
+            ),
+      foregroundPainter: expansion?.mask == null
+          ? null
+          : _ExpandMaskPainter(
+              frame: expansion!.frame!,
+              mask: expansion.mask!,
+              opacity: expansion.maskOpacity,
             ),
       child: IgnorePointer(
         ignoring: _expanding,
@@ -740,6 +786,31 @@ class _ExpandBackdropPainter extends CustomPainter {
       oldDelegate.color != color ||
       oldDelegate.frame != frame ||
       oldDelegate.t != t;
+}
+
+/// 起点时小窗黑边处的遮罩，限制在外框内
+class _ExpandMaskPainter extends CustomPainter {
+  _ExpandMaskPainter({
+    required this.frame,
+    required this.mask,
+    required this.opacity,
+  });
+
+  final RRect frame;
+  final Path mask;
+  final double opacity;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas
+      ..save()
+      ..clipRRect(frame)
+      ..drawPath(mask, Paint()..color = Colors.black.withValues(alpha: opacity))
+      ..restore();
+  }
+
+  @override
+  bool shouldRepaint(_ExpandMaskPainter oldDelegate) => true;
 }
 
 class _RRectClipper extends CustomClipper<RRect> {
