@@ -38,6 +38,12 @@ abstract final class MiniPlayerPolicy {
     '/dlna',
   };
 
+  /// 以 platform view 显示内容的页面，截图不含其内容
+  static const _platformViewRoutes = {'/webview'};
+
+  static bool hasPlatformView(Route<dynamic> route) =>
+      _platformViewRoutes.contains(_routeName(route));
+
   static String? _routeName(Route<dynamic> route) =>
       route.settings.name?.split('?').first;
 

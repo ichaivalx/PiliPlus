@@ -216,13 +216,17 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 
   /// 恢复开始时截取当前画面（路由变化前的最后一帧），
-  /// 小窗停在原处，等详情页给出目标位置后与截图淡出一同开始
+  /// 小窗停在原处，等详情页给出目标位置后与截图淡出一同开始；
+  /// 会话判断不宜截图时只停住小窗
   void _captureScreen() {
     _releaseSnapshot();
     _animation.stop();
     _from = _lastRect;
     _fromRadius = _lastRadius;
     _animation.value = 0;
+    if (!_session.snapshotRestore) {
+      return;
+    }
     final boundary = _childKey.currentContext?.findRenderObject();
     if (boundary is! RenderRepaintBoundary) {
       return;

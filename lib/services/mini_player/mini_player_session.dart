@@ -112,6 +112,11 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 加载期间请求恢复详情页，加载结束后执行
   bool _restorePending = false;
 
+  /// 恢复时以截图遮住路由变化：最上层页面含 platform view（如网页）时截图不含其内容；
+  /// 返回键回到覆盖中的详情页时保留其出栈转场
+  bool _snapshotRestore = false;
+  bool get snapshotRestore => _snapshotRestore;
+
   bool get isActive => mode.value != .none;
   bool get isCovered => mode.value == .covered;
   bool get isHeadless => mode.value == .headless;
@@ -302,6 +307,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       if (route == null || !_routes.contains(route)) {
         _takeOverCovered(host);
       } else if (identical(_topPage(), route)) {
+        _snapshotRestore = false;
         restoring.value = true;
         restoreRect.value = host.miniPlayerRect;
         _host = null;
@@ -585,6 +591,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _restorePending = true;
       return;
     }
+    _snapshotRestore = switch (_topPage()) {
+      final page? => !MiniPlayerPolicy.hasPlatformView(page),
+      null => true,
+    };
     switch (mode.value) {
       case .none:
         return;
