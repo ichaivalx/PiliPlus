@@ -705,7 +705,8 @@ class VideoDetailController extends GetxController
   /// 更新画质、音质
   void updatePlayer() {
     final currentVideoQa = this.currentVideoQa.value;
-    if (currentVideoQa == null) return;
+    // 请求播放地址期间现有数据属于旧视频，新的偏好由请求结果采用
+    if (currentVideoQa == null || isQuerying) return;
     _autoPlay.value = true;
     playedTime = plPlayerController.videoPlayerController?.state.position;
     plPlayerController
@@ -849,9 +850,10 @@ class VideoDetailController extends GetxController
 
   Volume? volume;
 
-  /// 请求期间切换视频时递增，作废进行中的请求，结束后按最新视频重新请求
+  /// 请求期间切换视频时递增，作废进行中的请求，结束后按最新视频重新请求；
+  /// 排队的请求在切换时即开始加载，其后的停止、暂停同样作用于它
   int _urlQuery = 0;
-  ({bool fromReset, bool autoFullScreenFlag})? _pendingQuery;
+  ({bool fromReset, bool autoFullScreenFlag, ShutdownLoad load})? _pendingQuery;
 
   // 视频链接
   /// TODO: merge [DownloadHttp.getVideoUrl].
@@ -864,14 +866,29 @@ class VideoDetailController extends GetxController
     }
     if (isQuerying) {
       _urlQuery++;
+      if (_pendingQuery case final pending?) {
+        shutdownTimerService.endLoad(pending.load);
+      }
       _pendingQuery = (
         fromReset: fromReset,
         autoFullScreenFlag: autoFullScreenFlag,
+        load: shutdownTimerService.beginLoad(),
       );
       return;
     }
+    return _runVideoUrlQuery(
+      fromReset,
+      autoFullScreenFlag,
+      shutdownTimerService.beginLoad(),
+    );
+  }
+
+  Future<void> _runVideoUrlQuery(
+    bool fromReset,
+    bool autoFullScreenFlag,
+    ShutdownLoad load,
+  ) async {
     isQuerying = true;
-    final load = shutdownTimerService.beginLoad();
     try {
       await _queryVideoUrl(fromReset, autoFullScreenFlag, load);
     } finally {
@@ -879,15 +896,21 @@ class VideoDetailController extends GetxController
       shutdownTimerService.endLoad(load);
       if (_pendingQuery case final pending?) {
         _pendingQuery = null;
-        if (!isClosed) {
-          queryVideoUrl(
-            fromReset: pending.fromReset,
-            autoFullScreenFlag: pending.autoFullScreenFlag,
+        if (isClosed) {
+          shutdownTimerService.endLoad(pending.load);
+        } else {
+          _runVideoUrlQuery(
+            pending.fromReset,
+            pending.autoFullScreenFlag,
+            pending.load,
           );
         }
       }
     }
   }
+
+  /// 离开的页面请求失败时不操作其他页面正在使用的播放器
+  bool get _ownsPlayer => PlPlayerController.playOwner?.tag == heroTag;
 
   @pragma('vm:prefer-inline')
   Future<void> _queryVideoUrl(
@@ -995,7 +1018,7 @@ class VideoDetailController extends GetxController
           SmartDialog.showToast('视频资源不存在');
           _autoPlay.value = false;
           videoState.value = false;
-          if (plPlayerController.isFullScreen.value) {
+          if (_ownsPlayer && plPlayerController.isFullScreen.value) {
             plPlayerController.triggerFullScreen(status: false);
           }
           return;
@@ -1037,7 +1060,7 @@ class VideoDetailController extends GetxController
     } else {
       _autoPlay.value = false;
       videoState.value = false;
-      if (plPlayerController.isFullScreen.value) {
+      if (_ownsPlayer && plPlayerController.isFullScreen.value) {
         plPlayerController.triggerFullScreen(status: false);
       }
       result.toast();
