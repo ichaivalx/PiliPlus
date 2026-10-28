@@ -614,6 +614,14 @@ class MiniPlayerSession with WidgetsBindingObserver {
       return null;
     }
     final detail = _queue?.detail;
+    _media.handOverItem(
+      host.miniHeroTag,
+      cid: _args['cid'],
+      detail: detail?.bvid == _args['bvid'] ? detail : null,
+      title: _title.value,
+      cover: _cover.value,
+      timeLength: playUrl.timeLength,
+    );
     _handover = (
       host: host,
       bvid: _args['bvid'],

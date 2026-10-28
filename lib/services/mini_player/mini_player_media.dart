@@ -1,3 +1,4 @@
+import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/models_new/video/video_detail/page.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/services/service_locator.dart';
@@ -40,6 +41,27 @@ class MiniPlayerMedia {
         cover: cover,
       );
     syncState();
+  }
+
+  /// 恢复的详情页接管时先以其身份发布媒体信息，页面简介请求完成前不中断
+  void handOverItem(
+    String heroTag, {
+    required Object? cid,
+    required VideoDetailData? detail,
+    required String title,
+    required String cover,
+    int? timeLength,
+  }) {
+    if (cid is! int) {
+      return;
+    }
+    videoPlayerServiceHandler?.onVideoDetailChange(
+      detail ??
+          Part(cid: cid, part: title, duration: (timeLength ?? 0) ~/ 1000),
+      cid,
+      heroTag,
+      cover: cover,
+    );
   }
 
   /// 按实际播放状态刷新系统媒体状态

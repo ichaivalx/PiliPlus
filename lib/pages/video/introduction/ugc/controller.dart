@@ -480,7 +480,12 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
   Future<bool> onChangeEpisode(
     BaseEpisodeItem episode, {
     bool isStein = false,
+    bool continued = false,
   }) async {
+    // 用户选择时作废等待中的自动续播
+    if (!continued) {
+      cancelContinuation();
+    }
     try {
       final String bvid = episode.bvid ?? this.bvid;
       final int aid = episode.aid ?? IdUtils.bv2av(bvid);
@@ -734,7 +739,7 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
       }
 
       if (cid != this.cid.value) {
-        onChangeEpisode(episodes[nextIndex]);
+        onChangeEpisode(episodes[nextIndex], continued: true);
         return true;
       } else {
         return false;
@@ -777,6 +782,7 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
           cid: firstItem.cid,
           cover: firstItem.cover,
         ),
+        continued: true,
       );
       return true;
     }
