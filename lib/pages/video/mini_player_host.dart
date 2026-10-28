@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
+import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
 import 'package:PiliPlus/pages/video/view.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
@@ -193,8 +194,16 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
   }
 
+  /// 作废页面进行中的自动续播，避免之后操作已交出的播放器
+  void _cancelContinuation() {
+    if (introController case final UgcIntroController controller) {
+      controller.continuation++;
+    }
+  }
+
   @override
   void onMiniDetached() {
+    _cancelContinuation();
     introController.cancelTimer();
     videoDetailController
       ..cancelBlockListener()
@@ -206,6 +215,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
 
   @override
   void onMiniStopped({required bool resumeOnReturn}) {
+    _cancelContinuation();
     didPushNext();
     if (!resumeOnReturn) {
       videoDetailController.playerStatus = PlayerStatus.paused;

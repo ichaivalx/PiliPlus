@@ -48,6 +48,9 @@ import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
 class UgcIntroController extends CommonIntroController with ReloadMixin {
+  /// 小窗结束或页面交出播放时递增，作废进行中的自动续播
+  int continuation = 0;
+
   late final RxBool expand;
   final RxBool status = true.obs;
 
@@ -473,10 +476,14 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
       int? cid = episode.cid;
       Dimension? dimension;
       if (cid == null) {
+        final generation = continuation;
         if (await SearchHttp.ab2cWithDimension(aid: aid, bvid: bvid)
             case final res?) {
           cid = res.cid;
           dimension = res.dimension;
+        }
+        if (generation != continuation) {
+          return false;
         }
       }
       if (cid == null) {
@@ -729,11 +736,16 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
     if (Get.isRegistered<RelatedController>(tag: heroTag)) {
       relatedCtr = Get.find<RelatedController>(tag: heroTag);
     } else {
+      final generation = continuation;
       relatedCtr = Get.put(
         RelatedController(autoQuery: false, bvid: bvid),
         tag: heroTag,
       )
-        ..queryData().whenComplete(playRelated);
+        ..queryData().whenComplete(() {
+          if (generation == continuation) {
+            playRelated();
+          }
+        });
       return false;
     }
 

@@ -176,6 +176,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     _resumeListener ??= AppLifecycleListener(onResume: _resumeFromBackground);
   }
 
+  /// 页面离开且未交给小窗时撤销
+  void cancelBackgroundResume() => _clearBackgroundResume();
+
   void _clearBackgroundResume() {
     _resumeListener?.dispose();
     _resumeListener = null;
@@ -188,7 +191,10 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   void _resumeFromBackground() {
     final resume = _backgroundResume;
     _clearBackgroundResume();
-    if (resume != null && shutdownTimerService.canAutoplay(resume)) {
+    // 播放器仍由可见页面或小窗持有时才恢复
+    if (resume != null &&
+        _playOwner != null &&
+        shutdownTimerService.canAutoplay(resume)) {
       play();
     }
   }

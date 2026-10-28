@@ -228,8 +228,13 @@ class AudioController extends GetxController
       ..onSkipToPrevious = playPrev;
   }
 
+  /// 已让出给视频播放：返回本页前不自动播放，也不更新系统媒体信息
+  bool _yielded = false;
+
   /// 视频开始播放时暂停本页并交出系统媒体控制，返回本页时取回
   void _onVideoPlayback() {
+    _yielded = true;
+    _stopStatusTimer();
     if (isPlaying()) {
       onPause();
     }
@@ -250,6 +255,7 @@ class AudioController extends GetxController
 
   /// 返回本页面时取回系统媒体控制与媒体信息，覆盖页面未播放视频时不变
   void reclaimMediaControls() {
+    _yielded = false;
     claimMediaControls();
     if (audioItem.value case final item?) {
       _updateCurrItem(item);
@@ -277,11 +283,13 @@ class AudioController extends GetxController
     hasLike.value = item.stat.hasLike_7;
     coinNum.value = item.stat.hasCoin_8 ? 2 : 0;
     hasFav.value = item.stat.hasFav;
-    videoPlayerServiceHandler?.onVideoDetailChange(
-      item,
-      (subId.firstOrNull ?? oid).toInt(),
-      hashCode.toString(),
-    );
+    if (!_yielded) {
+      videoPlayerServiceHandler?.onVideoDetailChange(
+        item,
+        (subId.firstOrNull ?? oid).toInt(),
+        hashCode.toString(),
+      );
+    }
   }
 
   Future<void> _queryPlayList({
@@ -454,14 +462,17 @@ class AudioController extends GetxController
         !identical(this.player, player)) {
       return;
     }
-    // 定时关闭在加载期间到期时不再播放
-    if (shutdownTimerService.canAutoplay(load)) {
+    // 定时关闭在加载期间到期或已让出给视频时不再播放
+    if (!_yielded && shutdownTimerService.canAutoplay(load)) {
       player.play();
     }
   }
 
   PlayerStatus _playerStatus = .paused;
   void _updatePlaybackState({Duration? position, String? debugLabel}) {
+    if (_yielded) {
+      return;
+    }
     videoPlayerServiceHandler?.onUpdateState(
       _playerStatus,
       false,
