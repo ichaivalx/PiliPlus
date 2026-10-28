@@ -40,15 +40,18 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   static const double _restoreVerticalRatio = 0.75;
   static const _fadeOutDuration = Duration(milliseconds: 120);
 
+  /// 展开结束时背景变暗的程度
+  static const double _backdropDim = 0.24;
+
   final _session = miniPlayerSession;
 
-  /// 唯一的动画驱动：位置、大小、圆角与截图淡出共用同一进度
+  /// 唯一的动画驱动：小窗的位置、大小、圆角，截图淡出与详情页展开共用同一进度
   late final AnimationController _animation;
   late final List<StreamSubscription> _subscriptions;
 
   bool _visible = false;
 
-  /// 恢复完成后淡出小窗
+  /// 小窗飞到播放器的位置后淡出
   bool _fadingOut = false;
 
   /// 过渡起点，null 表示静止
@@ -66,10 +69,18 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   Offset? _gestureStartPoint;
   Timer? _restoreTimer;
 
-  /// 过渡期间淡出的截图：缩小时为详情页（并留出播放器的位置），
-  /// 恢复时为恢复前的画面，详情页在其下完成首次构建
+  /// 缩小时淡出的详情页截图，并留出播放器的位置
   ui.Image? _snapshot;
   Rect? _snapshotHole;
+
+  /// 主动恢复：详情页从小窗的位置展开，[_restoreTarget] 为页面中播放器的位置
+  bool _expanding = false;
+
+  /// 展开的起点，即开始展开时小窗的位置
+  Rect? _expandFrom;
+
+  /// 展开的背景，为恢复前的画面
+  ui.Image? _backdrop;
   final _childKey = GlobalKey();
 
   double get _progress => MiniPlayerMotion.curve.transform(_animation.value);
@@ -101,15 +112,28 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _restoreTimer?.cancel();
     _animation.dispose();
     _snapshot?.dispose();
+    _backdrop?.dispose();
     super.dispose();
   }
 
-  void _releaseSnapshot() {
-    final snapshot = _snapshot;
-    _snapshot = _snapshotHole = null;
-    if (snapshot != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => snapshot.dispose());
+  /// 本帧仍在使用，绘制后再释放
+  static void _disposeAfterFrame(ui.Image? image) {
+    if (image != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => image.dispose());
     }
+  }
+
+  void _releaseSnapshot() {
+    _disposeAfterFrame(_snapshot);
+    _snapshot = _snapshotHole = null;
+  }
+
+  /// 结束或撤销展开，详情页回到原样
+  void _stopExpanding() {
+    _expanding = false;
+    _expandFrom = null;
+    _disposeAfterFrame(_backdrop);
+    _backdrop = null;
   }
 
   void _hide() {
@@ -117,6 +141,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _from = _frozenTarget = _lastRect = _restoreTarget = null;
     _restoreTimer?.cancel();
     _releaseSnapshot();
+    _stopExpanding();
   }
 
   void _animateFrom(Rect? from, {double? radius}) {
@@ -148,7 +173,8 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     });
   }
 
-  /// 恢复动画结束且详情页已接管播放器后淡出小窗
+  /// 恢复动画结束且详情页已接管播放器后结束：展开时直接移除，
+  /// 小窗飞回时淡出小窗
   void _finishRestoreIfReady() {
     if (!mounted ||
         !_visible ||
@@ -158,7 +184,12 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       return;
     }
     _restoreTimer?.cancel();
-    setState(() => _fadingOut = true);
+    if (_expanding) {
+      setState(_hide);
+      _session.finishRestore();
+    } else {
+      setState(() => _fadingOut = true);
+    }
   }
 
   void _onFadeOutEnd() {
@@ -203,10 +234,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     if (!mounted || !_visible || _fadingOut) return;
     setState(() {
       if (restoring) {
-        _captureScreen();
+        _beginRestore();
       } else if (_session.isActive) {
         // 恢复被取消，回到小窗位置
-        _releaseSnapshot();
+        _stopExpanding();
         _restoreTarget = null;
         _animateFrom(_lastRect);
       } else {
@@ -215,16 +246,17 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     });
   }
 
-  /// 恢复开始时截取当前画面（路由变化前的最后一帧），
-  /// 小窗停在原处，等详情页给出目标位置后与截图淡出一同开始；
-  /// 会话判断不宜截图时只停住小窗
-  void _captureScreen() {
+  /// 恢复开始时小窗停在原处，等详情页给出播放器位置后开始过渡；
+  /// 展开时截取当前画面（路由变化前的最后一帧）作为背景，
+  /// 详情页在其上不可见地完成首次构建；会话判断不宜截图时以纯色为背景
+  void _beginRestore() {
     _releaseSnapshot();
     _animation.stop();
     _from = _lastRect;
     _fromRadius = _lastRadius;
     _animation.value = 0;
-    if (!_session.snapshotRestore) {
+    _expanding = _session.expandRestore;
+    if (!_expanding || !_session.snapshotRestore) {
       return;
     }
     final boundary = _childKey.currentContext?.findRenderObject();
@@ -232,7 +264,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       return;
     }
     try {
-      _snapshot = boundary.toImageSync(
+      _backdrop = boundary.toImageSync(
         pixelRatio: MediaQuery.devicePixelRatioOf(context),
       );
     } catch (_) {}
@@ -250,8 +282,80 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     setState(() {
       _restoreTarget = rect;
       _frozenTarget = null;
-      _animateFrom(_lastRect);
+      if (_expanding) {
+        // 小窗在此交给展开中的详情页
+        _expandFrom = _lastRect ?? rect;
+        _animation.forward(from: 0);
+      } else {
+        _animateFrom(_lastRect);
+      }
     });
+  }
+
+  /// 展开过程中详情页的变换与可见范围（屏幕坐标），不在展开时为 null
+  ///
+  /// 页面整体等比缩放，起点时播放器以 contain 方式对齐小窗；
+  /// 可见范围从页面中的播放器扩展到整个页面
+  ({Matrix4 transform, RRect clip, double t})? _expansion(Size size) {
+    if (!_expanding) {
+      return null;
+    }
+    final target = _restoreTarget;
+    final from = _expandFrom;
+    if (target == null || from == null) {
+      // 首次构建期间不可见
+      return (transform: Matrix4.identity(), clip: RRect.zero, t: 0);
+    }
+    final t = _progress;
+    final startScale = min(
+      from.width / target.width,
+      from.height / target.height,
+    );
+    final scale = ui.lerpDouble(startScale, 1, t)!;
+    final origin = (from.center - target.center * startScale) * (1 - t);
+    final visible = Rect.lerp(target, Offset.zero & size, t)!;
+    return (
+      transform: Matrix4.diagonal3Values(scale, scale, 1)
+        ..setTranslationRaw(origin.dx, origin.dy, 0),
+      clip: RRect.fromRectAndRadius(
+        Rect.fromLTWH(
+          origin.dx + visible.left * scale,
+          origin.dy + visible.top * scale,
+          visible.width * scale,
+          visible.height * scale,
+        ),
+        Radius.circular(ui.lerpDouble(_radius, 0, t)!),
+      ),
+      t: t,
+    );
+  }
+
+  /// 页面层的结构保持不变，避免 Navigator 被重新挂载
+  Widget _buildPage(BuildContext context, Widget child) {
+    final expansion = _expansion(MediaQuery.sizeOf(context));
+    return CustomPaint(
+      painter: expansion == null
+          ? null
+          : _ExpandBackdropPainter(
+              image: _backdrop,
+              color: ColorScheme.of(context).surface,
+              dim: _backdropDim * expansion.t,
+              from: _restoreTarget == null ? null : _expandFrom,
+              clip: expansion.clip,
+              t: expansion.t,
+            ),
+      child: IgnorePointer(
+        ignoring: _expanding,
+        child: ClipRRect(
+          clipper: expansion == null ? null : _RRectClipper(expansion.clip),
+          clipBehavior: expansion == null ? Clip.none : Clip.antiAlias,
+          child: Transform(
+            transform: expansion?.transform ?? Matrix4.identity(),
+            child: child,
+          ),
+        ),
+      ),
+    );
   }
 
   ({double left, double top, double right, double bottom}) _bounds(
@@ -456,9 +560,13 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   @override
   Widget build(BuildContext context) {
-    final child = RepaintBoundary(key: _childKey, child: widget.child);
+    final page = AnimatedBuilder(
+      animation: _animation,
+      builder: (context, child) => _buildPage(context, child!),
+      child: RepaintBoundary(key: _childKey, child: widget.child),
+    );
     if (!_visible) {
-      return child;
+      return Stack(fit: StackFit.expand, children: [page]);
     }
     final mediaQuery = MediaQuery.of(context);
     final size = mediaQuery.size;
@@ -469,7 +577,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     return Stack(
       fit: StackFit.expand,
       children: [
-        child,
+        page,
         if (_snapshot case final snapshot?)
           IgnorePointer(
             child: AnimatedBuilder(
@@ -494,6 +602,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         AnimatedBuilder(
           animation: _animation,
           builder: (context, child) {
+            if (_expanding && restoring) {
+              // 已交给展开中的详情页
+              return const SizedBox.shrink();
+            }
             final t = _progress;
             final from = _from;
             final rect = _lastRect = from == null
@@ -529,9 +641,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
             );
           },
           child: IgnorePointer(
-            ignoring: restoring || _fadingOut,
+            ignoring: restoring || _expanding || _fadingOut,
             child: _MiniPlayerSurface(
-              restoring: restoring,
+              restoring: restoring || _expanding,
               onMoveStart: _onGestureStart,
               onMoveUpdate: (details) => _onMoveUpdate(details, size, padding),
               onMoveEnd: (details) => _onMoveEnd(details, size, padding),
@@ -545,6 +657,80 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       ],
     );
   }
+}
+
+/// 展开的背景与外框的阴影；起点时保留小窗的底色，展开前段淡去
+class _ExpandBackdropPainter extends CustomPainter {
+  _ExpandBackdropPainter({
+    required this.image,
+    required this.color,
+    required this.dim,
+    required this.from,
+    required this.clip,
+    required this.t,
+  });
+
+  final ui.Image? image;
+  final Color color;
+  final double dim;
+  final Rect? from;
+  final RRect clip;
+  final double t;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    if (image case final image?) {
+      paintImage(
+        canvas: canvas,
+        rect: rect,
+        image: image,
+        fit: BoxFit.fill,
+        filterQuality: FilterQuality.low,
+      );
+    } else {
+      canvas.drawRect(rect, Paint()..color = color);
+    }
+    canvas.drawRect(rect, Paint()..color = Colors.black.withValues(alpha: dim));
+    final from = this.from;
+    if (from == null) {
+      return;
+    }
+    final shadow = BoxShadow(
+      color: Colors.black.withValues(alpha: 0.28 * (1 - t)),
+      blurRadius: 24,
+      offset: const Offset(0, 12),
+    );
+    canvas
+      ..drawRRect(clip.shift(shadow.offset), shadow.toPaint())
+      ..drawRRect(
+        RRect.fromRectAndRadius(
+          from,
+          const Radius.circular(_AppMiniPlayerOverlayState._radius),
+        ),
+        Paint()..color = Colors.black.withValues(alpha: 1 - t),
+      );
+  }
+
+  @override
+  bool shouldRepaint(_ExpandBackdropPainter oldDelegate) =>
+      oldDelegate.image != image ||
+      oldDelegate.color != color ||
+      oldDelegate.dim != dim ||
+      oldDelegate.from != from ||
+      oldDelegate.clip != clip;
+}
+
+class _RRectClipper extends CustomClipper<RRect> {
+  const _RRectClipper(this.rrect);
+
+  final RRect rrect;
+
+  @override
+  RRect getClip(Size size) => rrect;
+
+  @override
+  bool shouldReclip(_RRectClipper oldClipper) => oldClipper.rrect != rrect;
 }
 
 class _MiniPlayerSurface extends StatefulWidget {

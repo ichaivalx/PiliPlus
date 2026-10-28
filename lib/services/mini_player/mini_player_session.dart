@@ -116,8 +116,13 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 加载期间请求恢复详情页，加载结束后执行
   bool _restorePending = false;
 
-  /// 恢复时以截图遮住路由变化：最上层页面含 platform view（如网页）时截图不含其内容；
-  /// 返回键回到覆盖中的详情页时保留其出栈转场
+  /// 主动恢复时详情页从小窗展开；返回键回到覆盖中的详情页时保留其出栈转场，
+  /// 小窗飞回播放器的位置
+  bool _expandRestore = false;
+  bool get expandRestore => _expandRestore;
+
+  /// 展开时以恢复前的画面截图为背景：最上层页面含 platform view（如网页）时
+  /// 截图不含其内容
   bool _snapshotRestore = false;
   bool get snapshotRestore => _snapshotRestore;
 
@@ -311,8 +316,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
       if (route == null || !_routes.contains(route)) {
         _takeOverCovered(host);
       } else if (identical(_topPage(), route)) {
-        _snapshotRestore = false;
-        restoring.value = true;
+        if (!restoring.value) {
+          _expandRestore = false;
+          restoring.value = true;
+        }
         restoreRect.value = host.miniPlayerRect;
         _host = null;
         mode.value = .none;
@@ -395,6 +402,17 @@ class MiniPlayerSession with WidgetsBindingObserver {
       if (host.miniRoute case final route? when route.isActive) {
         _removeRoute(route);
       }
+    }
+  }
+
+  /// 立即移除 [route] 之上的路由，不播放转场
+  void _removeRoutesAbove(Route<dynamic>? route) {
+    final index = route == null ? -1 : _routes.indexOf(route);
+    if (index == -1) {
+      return;
+    }
+    for (final above in _routes.sublist(index + 1).reversed) {
+      _removeRoute(above);
     }
   }
 
@@ -598,6 +616,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _restorePending = true;
       return;
     }
+    _expandRestore = true;
     _snapshotRestore = switch (_topPage()) {
       final page? => !MiniPlayerPolicy.hasPlatformView(page),
       null => true,
@@ -606,13 +625,11 @@ class MiniPlayerSession with WidgetsBindingObserver {
       case .none:
         return;
       case .covered:
-        final host = _host!;
-        final route = host.miniRoute;
+        final route = _host!.miniRoute;
         restoring.value = true;
-        restoreRect.value = host.miniPlayerRect;
-        Future.microtask(
-          () => route?.navigator?.popUntil((e) => e == route),
-        );
+        // 上层页面的出栈转场会出现在展开的详情页中，直接移除；
+        // 回到详情页后由 [_scheduleSettle] 给出展开的终点
+        Future.microtask(() => _removeRoutesAbove(route));
       case .headless:
         final cid = _args['cid'];
         final tag = _restoreTag = Utils.makeHeroTag(cid);
