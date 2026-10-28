@@ -42,7 +42,7 @@ abstract interface class MiniPlayerHost {
   /// 播放器在页面中的位置，尚未完成布局时为 null
   Rect? get miniPlayerRect;
 
-  /// 缩小时页面淡出所用的截图
+  /// 收起到小窗时代替页面绘制的截图
   ui.Image? captureMiniSnapshot();
   String get miniTitle;
   String get miniCover;
@@ -176,7 +176,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     return true;
   }
 
-  /// 缩小时的页面截图，由小窗取走并负责释放
+  /// 收起时的页面截图，由小窗取走并负责释放
   ui.Image? takeEnterSnapshot() {
     final snapshot = _enterSnapshot;
     _enterSnapshot = null;
@@ -239,7 +239,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
         if (host != null &&
             host.canEnterMiniPlayer &&
             (PlPlayerController.instance?.playerStatus.isPlaying ?? false)) {
-          _enterCovered(host);
+          _enterCovered(host, route);
         }
     }
   }
@@ -339,9 +339,12 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _restoreTag = null;
   }
 
-  void _enterCovered(MiniPlayerHost host) {
+  void _enterCovered(MiniPlayerHost host, Route<dynamic> cover) {
     _start();
     enterRect = host.miniPlayerRect;
+    _enterSnapshot?.dispose();
+    _enterSnapshot = host.captureMiniSnapshot();
+    _hideHostDuring(host, cover);
     _host = host;
     mode.value = .covered;
     host.onMiniCovered();
@@ -372,6 +375,27 @@ class MiniPlayerSession with WidgetsBindingObserver {
     );
     _updateMediaItem();
     mode.value = .headless;
+  }
+
+  /// 详情页由小窗层以截图收起，覆盖它的页面入场期间不再绘制详情页，
+  /// 入场结束或取消后恢复
+  void _hideHostDuring(MiniPlayerHost host, Route<dynamic> cover) {
+    final route = host.miniRoute;
+    final animation = cover is TransitionRoute ? cover.animation : null;
+    if (route is! ModalRoute || animation == null || animation.isCompleted) {
+      return;
+    }
+    route.offstage = true;
+    void onStatus(AnimationStatus status) {
+      if (status.isCompleted || status.isDismissed) {
+        animation.removeStatusListener(onStatus);
+        if (route.isActive) {
+          route.offstage = false;
+        }
+      }
+    }
+
+    animation.addStatusListener(onStatus);
   }
 
   /// 覆盖中的宿主页面离开栈：内容可继续时转入无宿主，否则结束会话
@@ -411,6 +435,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
     final index = route == null ? -1 : _routes.indexOf(route);
     if (index == -1) {
       return;
+    }
+    // 上层页面入场中被移除时不再通知其结束
+    if (route is ModalRoute) {
+      route.offstage = false;
     }
     for (final above in _routes.sublist(index + 1).reversed) {
       _removeRoute(above);
@@ -601,7 +629,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
   }
 
-  /// 隐藏详情页，改由截图淡出，下方页面照常播放返回转场；
+  /// 隐藏详情页，改由小窗层以截图收起，下方页面照常播放返回转场；
   /// 按实例出栈，页面内面板等本地历史一并弹出
   void _dismissHostRoute(MiniPlayerHost host) {
     final route = host.miniRoute;

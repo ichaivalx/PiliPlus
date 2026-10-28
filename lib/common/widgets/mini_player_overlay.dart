@@ -48,7 +48,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   final _session = miniPlayerSession;
 
-  /// 唯一的动画驱动：小窗的位置、大小、圆角，截图淡出与详情页展开共用同一进度
+  /// 唯一的动画驱动：小窗的位置、大小、圆角与详情页的展开、收起共用同一进度
   late final AnimationController _animation;
   late final List<StreamSubscription> _subscriptions;
 
@@ -72,12 +72,11 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   Offset? _gestureStartPoint;
   Timer? _restoreTimer;
 
-  /// 缩小时淡出的详情页截图，并留出播放器的位置
-  ui.Image? _snapshot;
-  Rect? _snapshotHole;
-
   /// 主动恢复：详情页从小窗的位置展开，[_restoreTarget] 为页面中播放器的位置
   bool _expanding = false;
+
+  /// 进入小窗：详情页收起到小窗的位置，下方露出实时页面
+  bool _collapsing = false;
 
   /// 详情页与小窗之间的过渡，null 表示尚未开始
   _Container? _container;
@@ -90,6 +89,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   final _childKey = GlobalKey();
 
   double get _progress => MiniPlayerMotion.curve.transform(_animation.value);
+
+  /// 过渡的进度，0 为小窗，1 为整页；收起为展开的逆过程
+  double get _containerProgress => _collapsing ? 1 - _progress : _progress;
 
   @override
   void initState() {
@@ -117,7 +119,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     }
     _restoreTimer?.cancel();
     _animation.dispose();
-    _snapshot?.dispose();
     _pageImage?.dispose();
     _backdrop?.dispose();
     super.dispose();
@@ -130,14 +131,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     }
   }
 
-  void _releaseSnapshot() {
-    _disposeAfterFrame(_snapshot);
-    _snapshot = _snapshotHole = null;
-  }
-
-  /// 结束或撤销展开，详情页回到原样
-  void _stopExpanding() {
-    _expanding = false;
+  /// 结束或撤销展开、收起
+  void _stopContainer() {
+    _expanding = _collapsing = false;
     _container = null;
     _disposeAfterFrame(_pageImage);
     _disposeAfterFrame(_backdrop);
@@ -148,8 +144,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _visible = _fadingOut = false;
     _from = _frozenTarget = _lastRect = _restoreTarget = null;
     _restoreTimer?.cancel();
-    _releaseSnapshot();
-    _stopExpanding();
+    _stopContainer();
   }
 
   void _animateFrom(Rect? from, {double? radius}) {
@@ -169,7 +164,8 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     setState(() {
       _from = null;
       _fromRadius = _radius;
-      _releaseSnapshot();
+      // 收起结束，交给小窗
+      _stopContainer();
       if (_frozenTarget case final target?) {
         _frozenTarget = null;
         // 过渡期间布局发生变化时平滑移到新的位置
@@ -218,11 +214,18 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
           _hide();
           _visible = true;
           _placement = null;
-          _snapshot = _session.takeEnterSnapshot();
-          final enterRect = _session.enterRect;
-          _snapshotHole = enterRect;
-          _frozenTarget = _miniRect(mediaQuery.size, mediaQuery.viewPadding);
-          _animateFrom(enterRect, radius: 0);
+          final mini = _frozenTarget = _miniRect(
+            mediaQuery.size,
+            mediaQuery.viewPadding,
+          );
+          final snapshot = _session.takeEnterSnapshot();
+          final player = _session.enterRect;
+          if (snapshot != null && player != null && !player.isEmpty) {
+            _beginCollapse(snapshot, mini, player);
+          } else {
+            snapshot?.dispose();
+            _animateFrom(player, radius: 0);
+          }
         });
       }
     } else if (!_session.restoring.value) {
@@ -246,7 +249,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         _beginRestore();
       } else if (_session.isActive) {
         // 恢复被取消，回到小窗位置
-        _stopExpanding();
+        _stopContainer();
         _restoreTarget = null;
         _animateFrom(_lastRect);
       } else {
@@ -259,7 +262,11 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 展开时截取当前画面（路由变化前的最后一帧）作为背景，
   /// 详情页不可见地完成首次构建；会话判断不宜截图时以纯色为背景
   void _beginRestore() {
-    _releaseSnapshot();
+    if (_collapsing) {
+      // 收起尚未结束时小窗停在收起的终点
+      _stopContainer();
+      _lastRect ??= _frozenTarget;
+    }
     _animation.stop();
     _from = _lastRect;
     _fromRadius = _lastRadius;
@@ -314,6 +321,20 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       return;
     }
     final container = _container;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(_container, container)) {
+        _animation.forward(from: 0);
+      }
+    });
+  }
+
+  /// 以详情页截图收起，页面在其下照常离开或被覆盖；与展开一样先以起点画面
+  /// 静止一帧，截图的首次绘制不落在动画中
+  void _beginCollapse(ui.Image snapshot, Rect mini, Rect player) {
+    _collapsing = true;
+    _pageImage = snapshot;
+    final container = _container = _containerFor(mini, player);
+    _animation.value = 0;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && identical(_container, container)) {
         _animation.forward(from: 0);
@@ -422,27 +443,34 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     );
   }
 
-  /// 页面层的结构保持不变，避免 Navigator 被重新挂载；展开期间页面
-  /// 不可见，由截图与实时视频绘制
+  /// 页面层的结构保持不变，避免 Navigator 被重新挂载；过渡中的详情页
+  /// 由截图与实时视频绘制，展开期间页面本身不可见，收起期间下方为实时页面
   Widget _buildPage(BuildContext context, Widget child) {
     final container = _container;
     final frame = container == null
         ? null
-        : _frameOf(container, MediaQuery.sizeOf(context), _progress);
+        : _frameOf(
+            container,
+            MediaQuery.sizeOf(context),
+            _containerProgress,
+          );
+    final surface = ColorScheme.of(context).surface;
     return Stack(
       fit: StackFit.expand,
       children: [
         CustomPaint(
-          foregroundPainter: _expanding
+          // 收起的详情页不再绘制，下方页面转场未覆盖的部分
+          painter: _collapsing ? _FillPainter(surface) : null,
+          foregroundPainter: _expanding || _collapsing
               ? _ContainerPainter(
                   backdrop: _backdrop,
-                  backdropColor: ColorScheme.of(context).surface,
+                  backdropColor: _expanding ? surface : null,
                   page: _pageImage,
                   frame: frame,
                 )
               : null,
           child: IgnorePointer(
-            ignoring: _expanding,
+            ignoring: _expanding || _collapsing,
             child: ClipRect(
               clipper: _expanding ? const _EmptyClipper() : null,
               clipBehavior: _expanding ? Clip.hardEdge : Clip.none,
@@ -567,7 +595,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   void _placeAt(Rect placement) {
     _from = _frozenTarget = null;
     _fromRadius = _radius;
-    _releaseSnapshot();
     _animation.value = 1;
     _placement = placement;
   }
@@ -694,27 +721,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       fit: StackFit.expand,
       children: [
         page,
-        if (_snapshot case final snapshot?)
-          IgnorePointer(
-            child: AnimatedBuilder(
-              animation: _animation,
-              builder: (context, child) => Opacity(
-                opacity: 1 - _progress,
-                child: child,
-              ),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  RawImage(image: snapshot, fit: BoxFit.fill),
-                  if (_snapshotHole case final hole?)
-                    Positioned.fromRect(
-                      rect: hole,
-                      child: const ColoredBox(color: Colors.black),
-                    ),
-                ],
-              ),
-            ),
-          ),
         AnimatedBuilder(
           animation: _animation,
           builder: (context, child) {
@@ -873,6 +879,19 @@ class _ContainerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ContainerPainter oldDelegate) => true;
+}
+
+class _FillPainter extends CustomPainter {
+  const _FillPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) =>
+      canvas.drawRect(Offset.zero & size, Paint()..color = color);
+
+  @override
+  bool shouldRepaint(_FillPainter oldDelegate) => oldDelegate.color != color;
 }
 
 class _EmptyClipper extends CustomClipper<Rect> {
