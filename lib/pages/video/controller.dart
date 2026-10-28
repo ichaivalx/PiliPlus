@@ -108,6 +108,7 @@ class VideoDetailController extends GetxController
   @override
   late bool isFileSource;
   late bool _mediaDesc = false;
+  bool get mediaDesc => _mediaDesc;
   late final RxList<MediaListItemModel> mediaList = <MediaListItemModel>[].obs;
   late String watchLaterTitle;
 

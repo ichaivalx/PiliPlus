@@ -5,6 +5,7 @@ import 'package:PiliPlus/pages/video/view.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_queue.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
@@ -122,6 +123,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   @override
   String get miniCover => videoDetailController.cover.value;
 
+  /// 播放全部时以当前项续接列表，恢复时详情页从当前项加载
   @override
   Map<String, dynamic> get miniArgs {
     final ctr = videoDetailController;
@@ -134,7 +136,23 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       'title': miniTitle,
       'videoType': ctr.videoType,
       'isVertical': ctr.isVertical.value,
+      if (ctr.isPlayAll) ...{
+        'oid': ctr.aid,
+        'isContinuePlaying': true,
+        'desc': ctr.mediaDesc,
+      },
     };
+  }
+
+  @override
+  MiniPlayerQueue get miniQueue {
+    final ctr = videoDetailController;
+    return MiniPlayerQueue.snapshot(
+      bvid: ctr.bvid,
+      detail: introController.videoDetail.value,
+      mediaList: ctr.isPlayAll ? ctr.mediaList.toList() : null,
+      args: miniArgs,
+    );
   }
 
   @override

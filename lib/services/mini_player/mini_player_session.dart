@@ -4,15 +4,19 @@ import 'dart:io' show Platform;
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
+import 'package:PiliPlus/models_new/video/video_detail/episode.dart';
 import 'package:PiliPlus/models_new/video/video_detail/page.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
+import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_queue.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_source.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
+import 'package:PiliPlus/utils/id_utils.dart';
 import 'package:PiliPlus/utils/ios/pip_helper.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
@@ -32,6 +36,9 @@ abstract interface class MiniPlayerHost {
   String get miniCover;
   Map<String, dynamic> get miniArgs;
   PlayUrlModel get miniPlayUrl;
+
+  /// 页面当前的播放列表，小窗播完后按同样的顺序续播
+  MiniPlayerQueue get miniQueue;
 
   /// 页面被内容页覆盖，播放转入小窗
   void onMiniCovered();
@@ -76,6 +83,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
   MiniPlayerHost? _host;
   PlPlayerController? _player;
   Map<String, dynamic> _args = const {};
+  MiniPlayerQueue? _queue;
   PlayUrlModel? _playUrl;
   final RxString _title = ''.obs;
   final RxString _cover = ''.obs;
@@ -274,6 +282,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       return;
     }
     _args = host.miniArgs;
+    _queue = host.miniQueue;
     _playUrl = host.miniPlayUrl;
     _title.value = host.miniTitle;
     _cover.value = host.miniCover;
@@ -349,11 +358,80 @@ class MiniPlayerSession with WidgetsBindingObserver {
         _hosts.any((host) => isRestoreTarget(host.miniHeroTag))) {
       return;
     }
+    final player = _player!;
     if (shutdownTimerService.isWaiting) {
       shutdownTimerService.handleWaiting();
-    } else if (_player?.isSingleCycle ?? false) {
-      _player!.play(repeat: true);
+    } else if (player.isSingleCycle) {
+      player.play(repeat: true);
+    } else if (player.effectivePlayRepeat != PlayRepeat.pause) {
+      unawaited(_playNext(player));
     }
+  }
+
+  /// 对应详情页播放完成时调用的 `UgcIntroController.nextPlay`
+  Future<void> _playNext(PlPlayerController player) async {
+    final queue = _queue;
+    final cid = _args['cid'];
+    if (queue == null || cid is! int) {
+      return;
+    }
+    final epoch = _epoch;
+    // 获取下一项期间定时关闭到期时，同样不再自动播放
+    final load = shutdownTimerService.beginLoad();
+    try {
+      final next = await queue.next(
+        cid: cid,
+        repeat: player.effectivePlayRepeat,
+        showRelated: player.showRelatedVideo,
+      );
+      if (epoch != _epoch ||
+          !isHeadless ||
+          _restoreTag != null ||
+          !identical(_player, player)) {
+        return;
+      }
+      switch (next) {
+        case MiniPlayerReplay():
+          if (shutdownTimerService.canAutoplay(load)) {
+            player.play(repeat: true);
+          }
+        case MiniPlayerSwitch(:final item, :final inList):
+          if (item.cid != null) {
+            await _replace(
+              _argsFor(item, inList: inList),
+              queue: inList ? queue : null,
+              load: load,
+            );
+          }
+        case null:
+      }
+    } finally {
+      shutdownTimerService.endLoad(load);
+    }
+  }
+
+  /// 列表内的下一项沿用当前列表参数，恢复时详情页以同一列表模式打开
+  Map<String, dynamic> _argsFor(BaseEpisodeItem item, {required bool inList}) {
+    final bvid = item.bvid ?? _args['bvid'] as String;
+    final aid = item.aid ?? IdUtils.bv2av(bvid);
+    final sameVideo = bvid == _args['bvid'];
+    return {
+      if (inList) ..._args,
+      'aid': aid,
+      'bvid': bvid,
+      'cid': item.cid!,
+      'videoType': VideoType.ugc,
+      'title': sameVideo ? _args['title'] : item.title,
+      'cover': sameVideo ? _args['cover'] : item.cover,
+      if (inList && MiniPlayerQueue.isPlayAll(_args)) ...{
+        'oid': aid,
+        'isContinuePlaying': true,
+      },
+    }
+      ..remove('progress')
+      ..remove('isVertical')
+      ..remove(rootRpIdKey)
+      ..remove(secondRpIdKey);
   }
 
   void _updateMediaItem() {
@@ -431,6 +509,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       ?..removeStatusLister(_onPlayerStatus)
       ..dispose();
     _player = null;
+    _queue = null;
     _pausedInBackground = false;
     WidgetsBinding.instance.removeObserver(this);
     _restoreMediaControls();
@@ -443,6 +522,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _host = null;
     _player?.removeStatusLister(_onPlayerStatus);
     _player = null;
+    _queue = null;
     _pausedInBackground = false;
     WidgetsBinding.instance.removeObserver(this);
     _restoreMediaControls();
@@ -604,7 +684,13 @@ class MiniPlayerSession with WidgetsBindingObserver {
     return true;
   }
 
-  Future<void> _replace(Map<String, dynamic> args) async {
+  /// 未提供 [queue] 时按新视频的参数获取播放列表，与开始播放并行
+  Future<void> _replace(
+    Map<String, dynamic> args, {
+    MiniPlayerQueue? queue,
+    ShutdownLoad? load,
+  }) async {
+    queue ??= MiniPlayerQueue.fetch(args);
     if (_host case final host?) {
       _start();
       host.onMiniDetached();
@@ -625,11 +711,14 @@ class MiniPlayerSession with WidgetsBindingObserver {
       return;
     }
     loading.value = true;
-    final load = shutdownTimerService.beginLoad();
+    // 调用方未提供时自行创建并负责结束
+    final ownLoad = load == null ? shutdownTimerService.beginLoad() : null;
     try {
-      await _switchTo(args, player, epoch, load);
+      await _switchTo(args, queue, player, epoch, load ?? ownLoad!);
     } finally {
-      shutdownTimerService.endLoad(load);
+      if (ownLoad != null) {
+        shutdownTimerService.endLoad(ownLoad);
+      }
       if (epoch == _epoch) {
         loading.value = false;
       }
@@ -638,6 +727,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
 
   Future<void> _switchTo(
     Map<String, dynamic> args,
+    MiniPlayerQueue queue,
     PlPlayerController player,
     int epoch,
     ShutdownLoad load,
@@ -668,6 +758,9 @@ class MiniPlayerSession with WidgetsBindingObserver {
           final data = response.data;
           final progress =
               args.remove('progress') as int? ?? data.lastPlayTime;
+          final video = response.video;
+          final isVertical = args['isVertical'] ??=
+              (video.height ?? 0) > (video.width ?? 0);
           await player.setDataSource(
             NetworkSource(
               videoSource: response.videoUrl,
@@ -677,19 +770,20 @@ class MiniPlayerSession with WidgetsBindingObserver {
             duration: data.timeLength == null
                 ? null
                 : Duration(milliseconds: data.timeLength!),
-            isVertical: args['isVertical'] ?? false,
+            isVertical: isVertical,
             aid: aid,
             bvid: bvid,
             cid: cid,
             videoType: VideoType.ugc,
-            width: response.video.width,
-            height: response.video.height,
+            width: video.width,
+            height: video.height,
             volume: data.volume,
             autoplay: !_shouldPauseInBackground,
             load: load,
           );
           if (isOwner()) {
             _args = args;
+            _queue = queue..select(bvid);
             _playUrl = data;
             _title.value = args['title'] ?? '';
             _cover.value = args['cover'] ?? '';
