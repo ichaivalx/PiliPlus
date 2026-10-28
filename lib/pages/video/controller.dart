@@ -849,6 +849,10 @@ class VideoDetailController extends GetxController
 
   Volume? volume;
 
+  /// 请求期间切换视频时递增，作废进行中的请求，结束后按最新视频重新请求
+  int _urlQuery = 0;
+  ({bool fromReset, bool autoFullScreenFlag})? _pendingQuery;
+
   // 视频链接
   /// TODO: merge [DownloadHttp.getVideoUrl].
   Future<void> queryVideoUrl({
@@ -859,6 +863,11 @@ class VideoDetailController extends GetxController
       return initPlayerIfNeeded(autoFullScreenFlag);
     }
     if (isQuerying) {
+      _urlQuery++;
+      _pendingQuery = (
+        fromReset: fromReset,
+        autoFullScreenFlag: autoFullScreenFlag,
+      );
       return;
     }
     isQuerying = true;
@@ -868,6 +877,15 @@ class VideoDetailController extends GetxController
     } finally {
       isQuerying = false;
       shutdownTimerService.endLoad(load);
+      if (_pendingQuery case final pending?) {
+        _pendingQuery = null;
+        if (!isClosed) {
+          queryVideoUrl(
+            fromReset: pending.fromReset,
+            autoFullScreenFlag: pending.autoFullScreenFlag,
+          );
+        }
+      }
     }
   }
 
@@ -895,14 +913,21 @@ class VideoDetailController extends GetxController
     }
 
     // 小窗交接的播放源已补全画质，直接接管
+    final query = _urlQuery;
     final handedOver = miniPlayerSession.playUrlFor(cid.value);
     final result =
         handedOver ?? await _getVideoUrl(VideoQuality.hdrVivid.code);
+    if (query != _urlQuery) {
+      return;
+    }
 
     if (result case Success(:final response)) {
       data = response;
       if (data.dash != null && handedOver == null) {
         await _supplementVideoQualities();
+        if (query != _urlQuery) {
+          return;
+        }
       }
 
       languages.value = data.language?.items;
