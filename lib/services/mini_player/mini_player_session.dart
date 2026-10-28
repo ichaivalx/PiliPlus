@@ -721,6 +721,12 @@ class MiniPlayerSession with WidgetsBindingObserver {
     final content = _content;
     if (content['bvid'] == args['bvid'] && content['cid'] == args['cid']) {
       if (!_isSameList(args, content)) {
+        // 换列表按普通方式打开，指定的进度（如历史记录）改为小窗的当前进度
+        if (args['progress'] != null) {
+          if (PlPlayerController.instance case final player?) {
+            args['progress'] = player.positionInMilliseconds;
+          }
+        }
         close();
         return false;
       }
