@@ -91,10 +91,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
         isShowing &&
         PlPlayerController.playOwner?.tag == ctr.heroTag &&
         MiniPlayerPolicy.isTabletLandscape(MediaQuery.sizeOf(context)) &&
-        ctr.isUgc &&
-        !ctr.isFileSource &&
-        ctr.args['pgcApi'] != true &&
-        ctr.args['pgcItem'] == null &&
+        MiniPlayerPolicy.canLoadInMini(ctr.args) &&
         ctr.graphVersion == null &&
         !ctr.isQuerying &&
         ctr.autoPlay &&

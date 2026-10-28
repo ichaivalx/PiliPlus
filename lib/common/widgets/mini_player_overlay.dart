@@ -234,7 +234,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     );
   }
 
-  void _onMoveStart(DragStartDetails details) {
+  void _onGestureStart(DragStartDetails details) {
     _animation.stop();
     _gestureStartPoint = details.globalPosition;
     _gestureStartRect = _lastRect;
@@ -305,12 +305,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     });
   }
 
-  void _onResizeStart(DragStartDetails details) {
-    _animation.stop();
-    _gestureStartPoint = details.globalPosition;
-    _gestureStartRect = _lastRect;
-  }
-
   void _onResizeUpdate(
     DragUpdateDetails details,
     Size size,
@@ -375,10 +369,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
             ignoring: restoring,
             child: _MiniPlayerSurface(
               restoring: restoring,
-              onMoveStart: _onMoveStart,
+              onMoveStart: _onGestureStart,
               onMoveUpdate: (details) => _onMoveUpdate(details, size, padding),
               onMoveEnd: (details) => _onMoveEnd(details, size, padding),
-              onResizeStart: _onResizeStart,
+              onResizeStart: _onGestureStart,
               onResizeUpdate: (details) =>
                   _onResizeUpdate(details, size, padding),
               onResizeEnd: _onResizeEnd,
@@ -618,8 +612,7 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
                         ),
                         ShutdownPanel(
                           buildCountdownText: (text) {
-                            final waiting = shutdownTimerService.isWaiting;
-                            if (text == null && !waiting) {
+                            if (text == null) {
                               return const SizedBox.shrink();
                             }
                             return Padding(
@@ -634,7 +627,9 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
                                     color: Colors.white,
                                   ),
                                   Text(
-                                    waiting ? '播完停止' : text!,
+                                    shutdownTimerService.isWaiting
+                                        ? '播完停止'
+                                        : text,
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 11,
@@ -644,7 +639,6 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
                               ),
                             );
                           },
-                          builder: (_, countdown, _, _) => countdown,
                         ),
                       ],
                     ),
@@ -789,24 +783,22 @@ class _MiniIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: SizedBox.square(
-        dimension: size,
-        child: IconButton.filledTonal(
-          style: IconButton.styleFrom(
-            padding: EdgeInsets.zero,
-            backgroundColor: Colors.black.withValues(alpha: 0.52),
-            foregroundColor: Colors.white,
-            hoverColor: Colors.white.withValues(alpha: 0.12),
-            shape: const RoundedRectangleBorder(
-              borderRadius: BorderRadius.all(Radius.circular(6)),
-            ),
+    return SizedBox.square(
+      dimension: size,
+      child: IconButton.filledTonal(
+        tooltip: tooltip,
+        style: IconButton.styleFrom(
+          padding: EdgeInsets.zero,
+          backgroundColor: Colors.black.withValues(alpha: 0.52),
+          foregroundColor: Colors.white,
+          hoverColor: Colors.white.withValues(alpha: 0.12),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(6)),
           ),
-          iconSize: iconSize,
-          onPressed: onPressed,
-          icon: Icon(icon),
         ),
+        iconSize: iconSize,
+        onPressed: onPressed,
+        icon: Icon(icon),
       ),
     );
   }

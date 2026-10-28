@@ -751,42 +751,48 @@ class VideoDetailController extends GetxController
     Duration? seek = defaultST ?? playedTime;
     if (seek == .zero) seek = null;
     seek ??= getFirstSegment();
-    await plPlayerController.setDataSource(
-      isFileSource
-          ? FileSource(
-              dir: args['dirPath'],
-              typeTag: entry.typeTag!,
-              isMp4: entry.mediaType == 1,
-              hasDashAudio: entry.hasDashAudio,
-            )
-          : NetworkSource(
-              videoSource: videoUrl!,
-              audioSource: audioUrl,
-            ),
-      seekTo: seek,
-      duration: data.timeLength == null
-          ? null
-          : Duration(milliseconds: data.timeLength!),
-      isVertical: isVertical.value,
-      aid: aid,
-      bvid: bvid,
-      cid: cid.value,
-      autoplay: autoplay ?? _autoPlay.value,
-      epid: isUgc ? null : epId,
-      seasonId: isUgc ? null : seasonId,
-      pgcType: isUgc ? null : pgcType,
-      videoType: videoType,
-      onInit: () {
-        videoState.value = true;
-        setSubtitle(vttSubtitlesIndex.value);
-      },
-      width: firstVideo.width,
-      height: firstVideo.height,
-      volume: volume,
-      autoFullScreenFlag: autoFullScreenFlag,
-      rotate: _rotate,
-      load: load,
-    );
+    // 恢复小窗时接管正在播放的资源，不重新加载
+    if (miniPlayerSession.adopt(bvid: bvid, cid: cid.value)) {
+      videoState.value = true;
+      setSubtitle(vttSubtitlesIndex.value);
+    } else {
+      await plPlayerController.setDataSource(
+        isFileSource
+            ? FileSource(
+                dir: args['dirPath'],
+                typeTag: entry.typeTag!,
+                isMp4: entry.mediaType == 1,
+                hasDashAudio: entry.hasDashAudio,
+              )
+            : NetworkSource(
+                videoSource: videoUrl!,
+                audioSource: audioUrl,
+              ),
+        seekTo: seek,
+        duration: data.timeLength == null
+            ? null
+            : Duration(milliseconds: data.timeLength!),
+        isVertical: isVertical.value,
+        aid: aid,
+        bvid: bvid,
+        cid: cid.value,
+        autoplay: autoplay ?? _autoPlay.value,
+        epid: isUgc ? null : epId,
+        seasonId: isUgc ? null : seasonId,
+        pgcType: isUgc ? null : pgcType,
+        videoType: videoType,
+        onInit: () {
+          videoState.value = true;
+          setSubtitle(vttSubtitlesIndex.value);
+        },
+        width: firstVideo.width,
+        height: firstVideo.height,
+        volume: volume,
+        autoFullScreenFlag: autoFullScreenFlag,
+        rotate: _rotate,
+        load: load,
+      );
+    }
 
     if (isClosed) return;
 

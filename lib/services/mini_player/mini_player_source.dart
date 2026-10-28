@@ -19,6 +19,11 @@ typedef MiniPlayerSource = ({
 });
 
 /// 按详情页相同的画质、音质、编码偏好选取播放源
+///
+/// 对应上游 `VideoDetailController._queryVideoUrl`、
+/// `VideoDetailController._supplementVideoQualities` 与
+/// `VideoUtils.findTargetVideo` / `VideoUtils.findTargetAudio`，
+/// 合并上游时需同步检查
 abstract final class MiniPlayerSourceResolver {
   /// 返回 null 表示仅有 durl 等需要详情页处理的资源
   static Future<LoadingState<MiniPlayerSource?>> resolve(

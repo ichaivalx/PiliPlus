@@ -181,14 +181,15 @@ class AudioController extends GetxController
     final hasAudioUrl = audioUrl != null;
     if (hasAudioUrl) {
       _querySponsorBlock();
+      final load = shutdownTimerService.beginLoad();
       _onOpenMedia(
         audioUrl,
         ua: BrowserUa.pc,
         referer: HttpString.baseUrl,
         volume: _videoDetailController?.volume,
         start: _takeStart(),
-        load: shutdownTimerService.beginLoad(),
-      );
+        load: load,
+      ).whenComplete(() => shutdownTimerService.endLoad(load));
     }
     ConnectivityUtils.isWiFi.then((isWiFi) {
       cacheAudioQa = isWiFi ? Pref.defaultAudioQa : Pref.defaultAudioQaCellular;
@@ -320,9 +321,11 @@ class AudioController extends GetxController
       subId: subId,
     );
     if (res case Success(:final response)) {
-      if (!_onPlay(response, load, start)) {
-        shutdownTimerService.endLoad(load);
-      }
+      _onPlay(
+        response,
+        load,
+        start,
+      ).whenComplete(() => shutdownTimerService.endLoad(load));
       return true;
     } else {
       shutdownTimerService.endLoad(load);
@@ -331,8 +334,11 @@ class AudioController extends GetxController
     }
   }
 
-  /// 返回是否开始打开播放源
-  bool _onPlay(PlayURLResp data, ShutdownLoad load, Duration? start) {
+  Future<void> _onPlay(
+    PlayURLResp data,
+    ShutdownLoad load,
+    Duration? start,
+  ) async {
     final PlayInfo? playInfo = data.playerInfo.values.firstOrNull;
     if (playInfo != null) {
       http_model.Volume? volume;
@@ -352,35 +358,32 @@ class AudioController extends GetxController
         final playDash = playInfo.playDash;
         final audios = playDash.audio;
         if (audios.isEmpty) {
-          return false;
+          return;
         }
         position.value = 0;
         final audio = audios.findTargetMedia((e) => e.id, cacheAudioQa);
-        _onOpenMedia(
+        return _onOpenMedia(
           VideoUtils.getCdnUrl(audio.playUrls),
           volume: volume,
           start: start,
           load: load,
         );
-        return true;
       } else if (playInfo.hasPlayUrl()) {
         final playUrl = playInfo.playUrl;
         final durls = playUrl.durl;
         if (durls.isEmpty) {
-          return false;
+          return;
         }
         final durl = durls.first;
         position.value = 0;
-        _onOpenMedia(
+        return _onOpenMedia(
           VideoUtils.getCdnUrl(durl.playUrls),
           volume: volume,
           start: start,
           load: load,
         );
-        return true;
       }
     }
-    return false;
   }
 
   /// 最近一次打开播放源的请求
@@ -395,31 +398,27 @@ class AudioController extends GetxController
     required ShutdownLoad load,
   }) async {
     _openingLoad = load;
-    try {
-      await _initPlayerIfNeeded();
-      final player = this.player;
-      if (player == null || !identical(_openingLoad, load)) {
-        return;
-      }
-      final extras = audioFilterExtras(volume);
-      player.setMediaHeader(
-        userAgent: ua,
-        // mpv cannot clear referer option
-        headers: {'Referer': ?referer},
-      );
-      await player.open(Media(url, start: start, extras: extras), play: false);
-      // 已被新请求取代或页面已关闭时不播放
-      if (isClosed ||
-          !identical(_openingLoad, load) ||
-          !identical(this.player, player)) {
-        return;
-      }
-      // 定时关闭在加载期间到期时不再播放
-      if (shutdownTimerService.endLoad(load)) {
-        player.play();
-      }
-    } finally {
-      shutdownTimerService.endLoad(load);
+    await _initPlayerIfNeeded();
+    final player = this.player;
+    if (player == null || !identical(_openingLoad, load)) {
+      return;
+    }
+    final extras = audioFilterExtras(volume);
+    player.setMediaHeader(
+      userAgent: ua,
+      // mpv cannot clear referer option
+      headers: {'Referer': ?referer},
+    );
+    await player.open(Media(url, start: start, extras: extras), play: false);
+    // 已被新请求取代或页面已关闭时不播放
+    if (isClosed ||
+        !identical(_openingLoad, load) ||
+        !identical(this.player, player)) {
+      return;
+    }
+    // 定时关闭在加载期间到期时不再播放
+    if (shutdownTimerService.canAutoplay(load)) {
+      player.play();
     }
   }
 

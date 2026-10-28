@@ -81,11 +81,10 @@ class ShutdownTimerService {
     return load;
   }
 
-  /// 结束加载（成功、失败或被取代），返回是否允许自动播放
-  bool endLoad(ShutdownLoad load) {
-    _loads.remove(load);
-    return !load._blocked;
-  }
+  /// 由创建者在加载结束（成功、失败或被取代）时调用
+  void endLoad(ShutdownLoad load) => _loads.remove(load);
+
+  bool canAutoplay(ShutdownLoad load) => !load._blocked;
 
   /// 阻止正在进行的加载自动播放，返回是否存在这样的加载
   bool _blockLoads() {
@@ -411,11 +410,12 @@ typedef ShutdownStatefulWidgetBuilder = Widget Function(
 class ShutdownPanel extends StatefulWidget {
   const ShutdownPanel({
     super.key,
-    required this.builder,
+    this.builder,
     this.buildCountdownText = _kBuildCountdownText,
   });
 
-  final ShutdownStatefulWidgetBuilder builder;
+  /// 为空时仅显示倒计时
+  final ShutdownStatefulWidgetBuilder? builder;
   final Widget Function(String? text) buildCountdownText;
 
   static Widget _kBuildCountdownText(String? text) {
@@ -433,7 +433,8 @@ class _ShutdownPanelState extends State<ShutdownPanel> with ShutdownMixin {
   @override
   Widget build(BuildContext context) {
     final countdown = Obx(() => widget.buildCountdownText(countdownText.value));
-    return widget.builder(context, countdown, _startTimer, setState);
+    return widget.builder?.call(context, countdown, _startTimer, setState) ??
+        countdown;
   }
 }
 

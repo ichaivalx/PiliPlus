@@ -28,17 +28,14 @@ abstract final class MiniPlayerPolicy {
     '/dlna',
   };
 
-  static String? routeName(Route<dynamic> route) =>
+  static String? _routeName(Route<dynamic> route) =>
       route.settings.name?.split('?').first;
-
-  static bool isVideoRoute(Route<dynamic> route) =>
-      routeName(route) == videoRoute;
 
   static MiniRouteKind classify(Route<dynamic> route) {
     if (route is! PageRoute || !route.opaque) {
       return .overlay;
     }
-    final name = routeName(route);
+    final name = _routeName(route);
     if (name == videoRoute) {
       return .video;
     }

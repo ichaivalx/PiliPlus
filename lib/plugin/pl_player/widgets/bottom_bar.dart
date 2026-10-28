@@ -26,8 +26,6 @@ class PlayerBottomBar extends StatelessWidget {
 
   Widget _timerButton(BuildContext context) => ShutdownPanel(
     buildCountdownText: (text) {
-      final waiting = shutdownTimerService.isWaiting;
-      final active = waiting || text != null;
       return ComBtn(
         width: double.infinity,
         height: _height,
@@ -45,12 +43,14 @@ class PlayerBottomBar extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  active ? Icons.timer : Icons.timer_outlined,
+                  text != null ? Icons.timer : Icons.timer_outlined,
                   size: 18,
                   color: Colors.white,
                 ),
                 Text(
-                  waiting ? '播完停止' : text ?? '定时关闭',
+                  shutdownTimerService.isWaiting
+                      ? '播完停止'
+                      : text ?? '定时关闭',
                   maxLines: 1,
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                 ),
@@ -60,7 +60,6 @@ class PlayerBottomBar extends StatelessWidget {
         ),
       );
     },
-    builder: (_, countdown, _, _) => countdown,
   );
 
   Widget get _loopButton => Obx(() {

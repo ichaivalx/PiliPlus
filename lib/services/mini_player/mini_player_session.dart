@@ -551,31 +551,27 @@ class MiniPlayerSession with WidgetsBindingObserver {
     if (!isActive) {
       return;
     }
-    final current = mode.value;
+    final host = _host;
     _start();
-    switch (current) {
-      case .none:
-        return;
-      case .covered:
-        final host = _host!;
-        _host = null;
-        mode.value = .none;
-        host.onMiniStopped(resumeOnReturn: !pause);
-      case .headless:
-        final player = _player!;
-        player.makeHeartBeat(
-          player.position.value,
-          type: HeartBeatType.status,
-          isManual: true,
-        );
-        if (pause) {
-          player.pause();
-        }
-        if (PlPlayerController.playOwner?.tag == _ownerTag) {
-          PlPlayerController.setPlayCallBack(null);
-        }
-        mode.value = .none;
-        _release();
+    if (host != null) {
+      _host = null;
+      mode.value = .none;
+      host.onMiniStopped(resumeOnReturn: !pause);
+    } else {
+      final player = _player!;
+      player.makeHeartBeat(
+        player.position.value,
+        type: HeartBeatType.status,
+        isManual: true,
+      );
+      if (pause) {
+        player.pause();
+      }
+      if (PlPlayerController.playOwner?.tag == _ownerTag) {
+        PlPlayerController.setPlayCallBack(null);
+      }
+      mode.value = .none;
+      _release();
     }
   }
 

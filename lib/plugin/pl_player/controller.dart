@@ -29,7 +29,6 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/danmaku_options.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
-import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show ShutdownLoad, shutdownTimerService;
@@ -740,12 +739,8 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     int? rotate,
     ShutdownLoad? load,
   }) async {
-    final shutdownLoad = load ?? shutdownTimerService.beginLoad();
-    if (miniPlayerSession.adopt(bvid: bvid, cid: cid)) {
-      shutdownTimerService.endLoad(shutdownLoad);
-      onInit?.call();
-      return;
-    }
+    // 调用方未提供时自行创建并负责结束
+    final ownLoad = load == null ? shutdownTimerService.beginLoad() : null;
     try {
       _processing = true;
       this.isLive = isLive;
@@ -797,7 +792,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         triggerFullScreen(status: true);
       }
 
-      await _initializePlayer(shutdownLoad);
+      await _initializePlayer(load ?? ownLoad!);
       onInit?.call();
     } catch (err, stackTrace) {
       dataStatus.value = DataStatus.error;
@@ -806,7 +801,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         debugPrint('plPlayer err:  $err');
       }
     } finally {
-      shutdownTimerService.endLoad(shutdownLoad);
+      if (ownLoad != null) {
+        shutdownTimerService.endLoad(ownLoad);
+      }
       _processing = false;
     }
   }
@@ -1002,7 +999,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     _initVideoFit();
 
     // 自动播放，定时关闭在加载期间到期时不再播放
-    if (_autoPlay && shutdownTimerService.endLoad(load)) {
+    if (_autoPlay && shutdownTimerService.canAutoplay(load)) {
       playIfExists();
     }
   }
