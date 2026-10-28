@@ -224,7 +224,7 @@ class LiveRoomController extends GetxController {
     bool autoplay = true,
     bool autoFullScreenFlag = false,
   }) {
-    if (videoUrl == null) {
+    if (isClosed || videoUrl == null) {
       return null;
     }
     return plPlayerController.setDataSource(

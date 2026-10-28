@@ -412,6 +412,10 @@ class VideoDetailController extends GetxController
       if (miniPlayerSession.mediaListFor(heroTag) case final list?
           when list.isNotEmpty) {
         mediaList.addAll(list);
+        // 已错过详情页在倒数第二项时的预取
+        if (list.last.aid == aid) {
+          getMediaList();
+        }
       } else {
         getMediaList();
       }
