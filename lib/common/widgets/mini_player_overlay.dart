@@ -430,7 +430,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       ),
       scale: scale,
       origin: origin,
-      player: _mapRect(container.player, scale, origin),
       mask: mask == null || maskOpacity == 0
           ? null
           : Path.combine(
@@ -478,28 +477,34 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
             ),
           ),
         ),
-        if (frame != null) _buildContainerVideo(frame),
+        if (frame != null) _buildContainerVideo(container!, frame),
       ],
     );
   }
 
-  /// 过渡中播放器位置的实时视频，与详情页播放器同样以 `FittedBox` 布局
-  Widget _buildContainerVideo(_ContainerFrame frame) => IgnorePointer(
-    child: ClipRRect(
-      clipper: _RRectClipper(frame.frame),
-      child: Stack(
-        children: [
-          Positioned.fromRect(
-            rect: frame.player,
-            child: const ColoredBox(
-              color: Colors.black,
-              child: ClipRect(child: _MiniVideo()),
+  /// 过渡中播放器位置的实时视频：按详情页播放器的原始尺寸以同样的
+  /// `FittedBox` 布局，再与截图一同缩放，各种 fit 下都与截图一致
+  Widget _buildContainerVideo(_Container container, _ContainerFrame frame) =>
+      IgnorePointer(
+        child: ClipRRect(
+          clipper: _RRectClipper(frame.frame),
+          child: Transform(
+            transform: Matrix4.diagonal3Values(frame.scale, frame.scale, 1)
+              ..setTranslationRaw(frame.origin.dx, frame.origin.dy, 0),
+            child: Stack(
+              children: [
+                Positioned.fromRect(
+                  rect: container.player,
+                  child: const ColoredBox(
+                    color: Colors.black,
+                    child: ClipRect(child: _MiniVideo()),
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
-      ),
-    ),
-  );
+        ),
+      );
 
   ({double left, double top, double right, double bottom}) _bounds(
     Size size,
@@ -793,7 +798,6 @@ typedef _ContainerFrame = ({
   RRect frame,
   double scale,
   Offset origin,
-  Rect player,
   Path? mask,
   double maskOpacity,
   double t,

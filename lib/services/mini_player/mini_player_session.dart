@@ -379,9 +379,15 @@ class MiniPlayerSession with WidgetsBindingObserver {
 
   /// 详情页由小窗层以截图收起，覆盖它的页面入场期间不再绘制详情页，
   /// 入场结束或取消后恢复
+  ///
+  /// 监听驱动入场的控制器：路由公开的 `animation` 在其 offstage 期间
+  /// （如 Hero 首帧测量）被替换为已完成的动画，会提前给出终态
   void _hideHostDuring(MiniPlayerHost host, Route<dynamic> cover) {
     final route = host.miniRoute;
-    final animation = cover is TransitionRoute ? cover.animation : null;
+    final animation = cover is TransitionRoute
+        // ignore: invalid_use_of_protected_member
+        ? cover.controller
+        : null;
     if (route is! ModalRoute || animation == null || animation.isCompleted) {
       return;
     }
