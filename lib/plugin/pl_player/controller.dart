@@ -381,6 +381,20 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
   }
 
+  /// 仅在视频页播放且没有应用内小窗时自动进入画中画
+  void updateAutoEnterPip() {
+    if (!_isAutoEnterPip) {
+      return;
+    }
+    if (playerStatus.isPlaying &&
+        _isCurrVideoPage &&
+        !miniPlayerSession.isActive) {
+      enterPip(autoEnter: true);
+    } else {
+      _disableAutoEnterPip();
+    }
+  }
+
   void _disableAutoEnterPip() {
     if (_isAutoEnterPip) {
       if (Platform.isIOS) {
@@ -1058,13 +1072,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
           _updatePlaybackState();
           WakelockPlus.enable();
 
-          if (_isAutoEnterPip) {
-            if (_isCurrVideoPage) {
-              enterPip(autoEnter: true);
-            } else {
-              _disableAutoEnterPip();
-            }
-          }
+          updateAutoEnterPip();
         } else {
           playerStatus = .paused;
           _startWakeLockTimer();

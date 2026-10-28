@@ -749,6 +749,8 @@ class VideoDetailController extends GetxController
     bool autoFullScreenFlag = false,
     ShutdownLoad? load,
   }) async {
+    // 页面已关闭或播放器已交给其他页面、小窗时不再加载
+    if (isClosed || PlPlayerController.playOwner?.tag != heroTag) return;
     Duration? seek = defaultST ?? playedTime;
     if (seek == .zero) seek = null;
     seek ??= getFirstSegment();
@@ -892,13 +894,16 @@ class VideoDetailController extends GetxController
       preferCodecs = isWiFi ? Pref.preferCodecs : Pref.preferCodecsCellular;
     }
 
+    // 小窗交接的播放源已补全画质，直接接管
+    final handedOver = miniPlayerSession.playUrlFor(cid.value);
     final result =
-        miniPlayerSession.playUrlFor(cid.value) ??
-        await _getVideoUrl(VideoQuality.hdrVivid.code);
+        handedOver ?? await _getVideoUrl(VideoQuality.hdrVivid.code);
 
     if (result case Success(:final response)) {
       data = response;
-      if (data.dash != null) await _supplementVideoQualities();
+      if (data.dash != null && handedOver == null) {
+        await _supplementVideoQualities();
+      }
 
       languages.value = data.language?.items;
       currLang.value = data.curLanguage;

@@ -17,6 +17,12 @@ enum MiniRouteKind {
   content,
 }
 
+/// 缩小、恢复时小窗、页面淡入淡出共用的动画参数
+abstract final class MiniPlayerMotion {
+  static const duration = Duration(milliseconds: 300);
+  static const curve = Curves.fastOutSlowIn;
+}
+
 abstract final class MiniPlayerPolicy {
   static const videoRoute = '/videoV';
 

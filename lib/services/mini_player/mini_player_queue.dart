@@ -10,6 +10,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/utils/id_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
 import 'package:PiliPlus/utils/utils.dart';
+import 'package:flutter/foundation.dart' show ValueChanged;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 
 /// 播完后的下一步
@@ -87,6 +88,12 @@ class MiniPlayerQueue {
   Future<void>? _detailLoading;
   Future<_PageResult>? _mediaLoading;
 
+  /// 当前视频的详情已获取
+  VideoDetailData? get detail => _detail?.bvid == _bvid ? _detail : null;
+
+  /// 获取到当前视频的详情时通知
+  ValueChanged<VideoDetailData>? onDetail;
+
   /// 切换到列表中的另一个视频后获取其分P与合集
   void select(String bvid) {
     if (bvid != _bvid) {
@@ -107,6 +114,7 @@ class MiniPlayerQueue {
         response.ugcSeason = current.ugcSeason;
       }
       _detail = response;
+      onDetail?.call(response);
     } else if (reportError) {
       res.toast();
     }

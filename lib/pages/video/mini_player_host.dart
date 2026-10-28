@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
@@ -7,6 +9,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_queue.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
@@ -32,33 +35,31 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     miniPlayerSession.attach(this);
     if (miniPlayerSession.isRestoreTarget(miniHeroTag)) {
       videoDetailController.autoPlay = true;
+      // 立即接管播放器，先展示小窗已有的视频详情
+      final detail = miniPlayerSession.handOver(this);
+      if (detail != null && detail.bvid == videoDetailController.bvid) {
+        introController.videoDetail.value = detail;
+      }
       _reportRestoreRect();
     }
   }
 
   void disposeMiniPlayerHost() => miniPlayerSession.detach(this);
 
+  /// 播放器完成布局后再上报，避免以空区域作为恢复动画的终点
   void _reportRestoreRect() {
-    void report() {
-      if (mounted) {
-        miniPlayerSession.reportRestoreRect(this);
-      }
-    }
-
-    final animation = (miniRoute as ModalRoute?)?.animation;
-    if (animation == null || animation.isCompleted) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => report());
-      return;
-    }
-    late final AnimationStatusListener listener;
-    listener = (status) {
-      if (status.isCompleted) {
-        animation.removeStatusListener(listener);
-        report();
-      }
-    };
-    animation.addStatusListener(listener);
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        if (mounted && !miniPlayerSession.reportRestoreRect(this)) {
+          _reportRestoreRect();
+        }
+      })
+      ..scheduleFrame();
   }
+
+  /// 页面内容的根节点，位于转场动画的变换之内
+  RenderRepaintBoundary? get _pageBoundary =>
+      context.findAncestorRenderObjectOfType<RenderRepaintBoundary>();
 
   /// 返回 true 时跳过 [didPopNext] 的重新获取播放器
   bool miniPlayerHandlesPopNext() {
@@ -101,14 +102,30 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
         !player.isDesktopPip;
   }
 
+  /// 相对页面根节点计算，转场缩放期间也是页面静止时的位置
   @override
   Rect? get miniPlayerRect {
     final box = videoDetailController.videoPlayerKey.currentContext
         ?.findRenderObject();
-    if (box is RenderBox && box.attached && box.hasSize) {
-      return box.localToGlobal(Offset.zero) & box.size;
+    if (box is RenderBox &&
+        box.attached &&
+        box.hasSize &&
+        !box.size.isEmpty) {
+      return box.localToGlobal(Offset.zero, ancestor: _pageBoundary) &
+          box.size;
     }
     return null;
+  }
+
+  @override
+  ui.Image? captureMiniSnapshot() {
+    try {
+      return _pageBoundary?.toImageSync(
+        pixelRatio: MediaQuery.devicePixelRatioOf(context),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
@@ -186,5 +203,9 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   }
 
   @override
-  void onMiniRevealed() => didPopNext();
+  void onMiniRevealed() {
+    if (!isShowing) {
+      didPopNext();
+    }
+  }
 }

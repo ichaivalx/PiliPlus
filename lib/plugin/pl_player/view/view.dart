@@ -49,6 +49,7 @@ import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/forward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/mpv_convert_webp.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/play_pause_btn.dart';
+import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -153,7 +154,15 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
   GestureType? _gestureType;
   Offset? _initialFocalPoint;
 
-  bool _pauseDueToPauseUponEnteringBackgroundMode = false;
+  /// 进入后台暂停后待恢复，定时关闭到期时取消
+  ShutdownLoad? _backgroundResume;
+
+  void _endBackgroundResume() {
+    if (_backgroundResume case final resume?) {
+      _backgroundResume = null;
+      shutdownTimerService.endLoad(resume);
+    }
+  }
 
   StreamSubscription? _brightnessListener;
   void _onBrightnessChanged(double value) {
@@ -349,12 +358,12 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
       late final player = plPlayerController.videoPlayerController;
       if (const <AppLifecycleState>[.paused, .detached].contains(state)) {
         if (player != null && player.state.playing) {
-          _pauseDueToPauseUponEnteringBackgroundMode = true;
+          _backgroundResume ??= shutdownTimerService.beginLoad();
           player.pause();
         }
-      } else {
-        if (_pauseDueToPauseUponEnteringBackgroundMode) {
-          _pauseDueToPauseUponEnteringBackgroundMode = false;
+      } else if (_backgroundResume case final resume?) {
+        _endBackgroundResume();
+        if (shutdownTimerService.canAutoplay(resume)) {
           player?.play();
         }
       }
@@ -387,6 +396,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
   @override
   void dispose() {
     removeObserverMobile(this);
+    _endBackgroundResume();
     _danmakuListener?.cancel();
     _tapGestureRecognizer.dispose();
     _longPressRecognizer?.dispose();
