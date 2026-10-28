@@ -32,7 +32,7 @@ import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
-    show shutdownTimerService;
+    show ShutdownLoad, shutdownTimerService;
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
@@ -738,8 +738,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     Volume? volume,
     bool autoFullScreenFlag = false,
     int? rotate,
+    ShutdownLoad? load,
   }) async {
+    // 延续请求播放地址时开始的加载
+    final shutdownLoad = load ?? _load ?? beginLoad();
     if (miniPlayerSession.adopt(bvid: bvid, cid: cid)) {
+      endLoad(shutdownLoad);
       onInit?.call();
       return;
     }
@@ -794,6 +798,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         triggerFullScreen(status: true);
       }
 
+      if (!endLoad(shutdownLoad)) {
+        _autoPlay = false;
+      }
       await _initializePlayer();
       onInit?.call();
     } catch (err, stackTrace) {
@@ -803,8 +810,22 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         debugPrint('plPlayer err:  $err');
       }
     } finally {
+      endLoad(shutdownLoad);
       _processing = false;
     }
+  }
+
+  ShutdownLoad? _load;
+
+  /// 开始加载新的播放源（含请求播放地址），之后的 [setDataSource] 延续该加载
+  ShutdownLoad beginLoad() => _load = shutdownTimerService.beginLoad();
+
+  /// 返回是否允许自动播放
+  bool endLoad(ShutdownLoad load) {
+    if (identical(_load, load)) {
+      _load = null;
+    }
+    return shutdownTimerService.endLoad(load);
   }
 
   String? shadersDirPath;
@@ -998,7 +1019,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     _initVideoFit();
 
     // 自动播放
-    if (_autoPlay && !shutdownTimerService.consumeAutoPlayBlock()) {
+    if (_autoPlay) {
       playIfExists();
     }
   }

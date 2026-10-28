@@ -3,10 +3,8 @@
 import 'dart:async' show StreamSubscription, Timer;
 
 import 'package:PiliPlus/models/common/enum_with_label.dart';
-import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/menu_row.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
-import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/utils/device_utils.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
@@ -14,8 +12,6 @@ import 'package:PiliPlus/utils/theme_utils.dart';
 import 'package:collection/collection.dart';
 import 'package:cupertino_ui/cupertino_ui.dart' show CupertinoPicker;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
-import 'package:get/get_core/src/get_main.dart';
-import 'package:get/get_instance/src/extension_instance.dart';
 import 'package:get/get_rx/src/rx_types/rx_types.dart';
 import 'package:get/get_state_manager/src/rx_flutter/rx_obx_widget.dart';
 import 'package:material_ui/material_ui.dart';
@@ -35,6 +31,13 @@ enum _ShutdownType with EnumWithLabel {
 
 final shutdownTimerService = ShutdownTimerService._internal();
 
+/// 一次播放源加载，定时关闭到期时阻止其加载完成后自动播放
+final class ShutdownLoad {
+  ShutdownLoad._();
+
+  bool _blocked = false;
+}
+
 class ShutdownTimerService {
   ShutdownTimerService._internal();
 
@@ -52,7 +55,7 @@ class ShutdownTimerService {
   final RxBool _isWaiting = false.obs;
   bool get isWaiting => _isWaiting.value;
   bool _waitUntilCompleted = false;
-  bool _blockAutoPlay = false;
+  final Set<ShutdownLoad> _loads = {};
 
   void _stopTimer() {
     _deadline.value = null;
@@ -63,15 +66,27 @@ class ShutdownTimerService {
   void reset([int durationInMinutes = 0]) {
     _stopTimer();
     _isWaiting.value = false;
-    _blockAutoPlay = false;
     _durationInMinutes = durationInMinutes;
   }
 
-  /// 到期时正在加载的下一项不再自动开始
-  bool consumeAutoPlayBlock() {
-    final block = _blockAutoPlay;
-    _blockAutoPlay = false;
-    return block;
+  ShutdownLoad beginLoad() {
+    final load = ShutdownLoad._();
+    _loads.add(load);
+    return load;
+  }
+
+  /// 结束加载（成功、失败或被取代），返回是否允许自动播放
+  bool endLoad(ShutdownLoad load) {
+    _loads.remove(load);
+    return !load._blocked;
+  }
+
+  /// 阻止正在进行的加载自动播放，返回是否存在这样的加载
+  bool _blockLoads() {
+    for (final load in _loads) {
+      load._blocked = true;
+    }
+    return _loads.isNotEmpty;
   }
 
   void _startShutdownTimer(int durationInMinutes) {
@@ -91,20 +106,6 @@ class ShutdownTimerService {
   bool get _isPlaying =>
       (isPlaying?.call() ?? false) ||
       (PlPlayerController.instance?.playerStatus.isPlaying ?? false);
-
-  bool get _isLoading {
-    final player = PlPlayerController.instance;
-    if (player == null) {
-      return false;
-    }
-    if (player.processing || miniPlayerSession.loading.value) {
-      return true;
-    }
-    final tag = PlPlayerController.playOwner?.tag;
-    return tag != null &&
-        Get.isRegistered<VideoDetailController>(tag: tag) &&
-        Get.find<VideoDetailController>(tag: tag).isQuerying;
-  }
 
   void _pause() {
     if (isPlaying?.call() ?? false) {
@@ -126,13 +127,13 @@ class ShutdownTimerService {
         _syncProgressAndExit();
         return;
       }
+      _blockLoads();
       _pause();
       SmartDialog.showToast('定时时间已到，已暂停');
     } else if (_shutdownType == _ShutdownType.exit) {
       _syncProgressAndExit();
       return;
-    } else if (_isLoading) {
-      _blockAutoPlay = true;
+    } else if (_blockLoads()) {
       SmartDialog.showToast('定时时间已到，已暂停');
     }
     _durationInMinutes = 0;

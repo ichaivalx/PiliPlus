@@ -851,10 +851,12 @@ class VideoDetailController extends GetxController
       return;
     }
     isQuerying = true;
+    final load = plPlayerController.beginLoad();
     try {
       await _queryVideoUrl(fromReset, autoFullScreenFlag);
     } finally {
       isQuerying = false;
+      plPlayerController.endLoad(load);
     }
   }
 

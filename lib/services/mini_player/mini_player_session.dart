@@ -1,4 +1,4 @@
-import 'dart:async' show unawaited;
+import 'dart:async' show Completer, unawaited;
 
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
@@ -80,6 +80,8 @@ class MiniPlayerSession {
   String? _restoreTag;
   int _epoch = 0;
   bool _settling = false;
+  Future<void>? _switching;
+  _MediaControls? _savedControls;
 
   bool get isActive => mode.value != .none;
   bool get isCovered => mode.value == .covered;
@@ -98,11 +100,20 @@ class MiniPlayerSession {
 
   void detach(MiniPlayerHost host) {
     _hosts.remove(host);
+    if (_player?.isCloseAll ?? false) {
+      // 返回主页时播放器已被整体销毁
+      _abandon();
+      return;
+    }
     if (covers(host)) {
       _becomeHeadless(host);
       Future.microtask(_removeVideoRoutes);
     } else if (isRestoreTarget(host.miniHeroTag)) {
       _cancelRestore();
+    }
+    if (isHeadless) {
+      // 页面销毁时会把系统媒体状态置为暂停
+      Future.microtask(_syncMediaState);
     }
   }
 
@@ -161,6 +172,7 @@ class MiniPlayerSession {
 
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
     _routes.remove(route);
+    _onReveal();
     if (route is PageRoute && route is! GetPageRoute) {
       if (_topPage() case final page?) {
         _hostOf(page)?.onMiniRevealed();
@@ -171,7 +183,19 @@ class MiniPlayerSession {
 
   void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
     _routes.remove(route);
+    _onReveal();
     _scheduleSettle();
+  }
+
+  /// 重新露出独占播放器的页面时结束会话，先于该页面的 didPopNext 执行
+  void _onReveal() {
+    if (!isActive) {
+      return;
+    }
+    if (_topPage() case final page?
+        when MiniPlayerPolicy.classify(page) == .exclusive) {
+      close();
+    }
   }
 
   void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
@@ -253,6 +277,7 @@ class MiniPlayerSession {
     _host = null;
     final player = _player ??= PlPlayerController.getInstance()
       ..addStatusLister(_onPlayerStatus);
+    _takeMediaControls();
     PlPlayerController.setPlayCallBack(
       player.play,
       playOwner: (tag: _ownerTag, type: null),
@@ -262,12 +287,12 @@ class MiniPlayerSession {
   }
 
   /// 小窗会话期间，栈中不保留与小窗内容不同的详情页
-  void _removeVideoRoutes() {
+  void _removeVideoRoutes({MiniPlayerHost? except}) {
     if (!isHeadless) {
       return;
     }
     for (final host in _hosts.toList()) {
-      if (isRestoreTarget(host.miniHeroTag)) {
+      if (identical(host, except) || isRestoreTarget(host.miniHeroTag)) {
         continue;
       }
       final route = host.miniRoute;
@@ -278,7 +303,9 @@ class MiniPlayerSession {
   }
 
   void _onPlayerStatus(PlayerStatus status) {
-    if (!status.isCompleted) {
+    // 恢复中的详情页已注册监听时由页面处理
+    if (!status.isCompleted ||
+        _hosts.any((host) => isRestoreTarget(host.miniHeroTag))) {
       return;
     }
     if (shutdownTimerService.isWaiting) {
@@ -306,6 +333,56 @@ class MiniPlayerSession {
         _ownerTag,
         cover: _cover.value,
       );
+    _syncMediaState();
+  }
+
+  /// 按实际播放状态刷新系统媒体状态
+  void _syncMediaState() {
+    final player = PlPlayerController.instance;
+    if (player == null || player.videoPlayerController == null) {
+      return;
+    }
+    videoPlayerServiceHandler?.onUpdateState(
+      player.playerStatus,
+      player.isBuffering.value,
+      player.isLive,
+      position: Duration(milliseconds: player.positionInMilliseconds),
+      speed: player.playbackSpeed,
+    );
+  }
+
+  /// 会话持有播放器期间，系统媒体控制由会话处理
+  void _takeMediaControls() {
+    final handler = videoPlayerServiceHandler;
+    if (handler == null || _savedControls != null) {
+      return;
+    }
+    _savedControls = (
+      onPlay: handler.onPlay,
+      onPause: handler.onPause,
+      onSeek: handler.onSeek,
+      onSkipToNext: handler.onSkipToNext,
+      onSkipToPrevious: handler.onSkipToPrevious,
+    );
+    handler
+      ..onPlay = null
+      ..onPause = null
+      ..onSeek = null
+      ..onSkipToNext = null
+      ..onSkipToPrevious = null;
+  }
+
+  void _restoreMediaControls() {
+    final controls = _savedControls;
+    _savedControls = null;
+    if (controls != null) {
+      videoPlayerServiceHandler
+        ?..onPlay = controls.onPlay
+        ..onPause = controls.onPause
+        ..onSeek = controls.onSeek
+        ..onSkipToNext = controls.onSkipToNext
+        ..onSkipToPrevious = controls.onSkipToPrevious;
+    }
   }
 
   void _release() {
@@ -313,7 +390,18 @@ class MiniPlayerSession {
       ?..removeStatusLister(_onPlayerStatus)
       ..dispose();
     _player = null;
+    _restoreMediaControls();
     videoPlayerServiceHandler?.onVideoDetailDispose(_ownerTag);
+  }
+
+  /// 播放器已被外部销毁，直接结束会话
+  void _abandon() {
+    _start();
+    _host = null;
+    _player?.removeStatusLister(_onPlayerStatus);
+    _player = null;
+    _restoreMediaControls();
+    mode.value = .none;
   }
 
   // 用户操作
@@ -326,12 +414,18 @@ class MiniPlayerSession {
     enterRect = host.miniPlayerRect;
     host.onMiniDetached();
     _becomeHeadless(host);
+    // 先移除其他详情页，避免出栈时露出的详情页重新获取播放器
     Future.microtask(() {
-      if (isHeadless) {
-        host.miniRoute?.navigator?.popUntil(
-          (route) => route.isFirst || !MiniPlayerPolicy.isVideoRoute(route),
-        );
-        _removeVideoRoutes();
+      if (!isHeadless) {
+        return;
+      }
+      _removeVideoRoutes(except: host);
+      if (host.miniRoute case final route? when route.isActive) {
+        if (route.isCurrent) {
+          route.navigator?.pop();
+        } else {
+          route.navigator?.removeRoute(route);
+        }
       }
     });
   }
@@ -404,6 +498,7 @@ class MiniPlayerSession {
     _restoreTag = null;
     _release();
     mode.value = .none;
+    _syncMediaState();
     return true;
   }
 
@@ -444,6 +539,10 @@ class MiniPlayerSession {
     if (!isActive) {
       return false;
     }
+    if (off || !MiniPlayerPolicy.canLoadInMini(args)) {
+      close();
+      return false;
+    }
     final content = _content;
     if (content['bvid'] == args['bvid'] && content['cid'] == args['cid']) {
       if (isHeadless) {
@@ -456,7 +555,7 @@ class MiniPlayerSession {
       restore();
       return true;
     }
-    if (off || restoring.value || !MiniPlayerPolicy.canLoadInMini(args)) {
+    if (restoring.value) {
       close();
       return false;
     }
@@ -485,6 +584,25 @@ class MiniPlayerSession {
       return;
     }
     loading.value = true;
+    final load = player.beginLoad();
+    try {
+      await _switchTo(args, player, epoch, load);
+    } finally {
+      player.endLoad(load);
+      if (epoch == _epoch) {
+        loading.value = false;
+      }
+    }
+  }
+
+  Future<void> _switchTo(
+    Map<String, dynamic> args,
+    PlPlayerController player,
+    int epoch,
+    ShutdownLoad load,
+  ) async {
+    bool isOwner() => isHeadless && identical(_player, player);
+
     final aid = args['aid'] as int;
     final bvid = args['bvid'] as String;
     final cid = args['cid'] as int;
@@ -494,48 +612,66 @@ class MiniPlayerSession {
       bvid: bvid,
       cid: cid,
     );
-    if (epoch != _epoch || !isHeadless) {
+    // 串行切换，播放器与会话信息始终对应同一个视频
+    for (var f = _switching; f != null; f = _switching) {
+      await f;
+    }
+    if (epoch != _epoch || !isOwner()) {
       return;
     }
     switch (result) {
       case Success(:final response?):
-        final data = response.data;
-        final progress = args.remove('progress') as int? ?? data.lastPlayTime;
-        await player.setDataSource(
-          NetworkSource(
-            videoSource: response.videoUrl,
-            audioSource: response.audioUrl,
-          ),
-          seekTo: progress > 0 ? Duration(milliseconds: progress) : null,
-          duration: data.timeLength == null
-              ? null
-              : Duration(milliseconds: data.timeLength!),
-          isVertical: args['isVertical'] ?? false,
-          aid: aid,
-          bvid: bvid,
-          cid: cid,
-          videoType: VideoType.ugc,
-          width: response.video.width,
-          height: response.video.height,
-          volume: data.volume,
-        );
-        if (epoch != _epoch || !isHeadless) {
-          return;
+        final completer = Completer<void>();
+        _switching = completer.future;
+        try {
+          final data = response.data;
+          final progress =
+              args.remove('progress') as int? ?? data.lastPlayTime;
+          await player.setDataSource(
+            NetworkSource(
+              videoSource: response.videoUrl,
+              audioSource: response.audioUrl,
+            ),
+            seekTo: progress > 0 ? Duration(milliseconds: progress) : null,
+            duration: data.timeLength == null
+                ? null
+                : Duration(milliseconds: data.timeLength!),
+            isVertical: args['isVertical'] ?? false,
+            aid: aid,
+            bvid: bvid,
+            cid: cid,
+            videoType: VideoType.ugc,
+            width: response.video.width,
+            height: response.video.height,
+            volume: data.volume,
+            load: load,
+          );
+          if (isOwner()) {
+            _args = args;
+            _playUrl = data;
+            _title.value = args['title'] ?? '';
+            _cover.value = args['cover'] ?? '';
+            _updateMediaItem();
+          }
+        } finally {
+          _switching = null;
+          completer.complete();
         }
-        _args = args;
-        _playUrl = data;
-        _title.value = args['title'] ?? '';
-        _cover.value = args['cover'] ?? '';
-        _updateMediaItem();
       case Success():
         close();
         PageUtils.toDupNamed(MiniPlayerPolicy.videoRoute, arguments: args);
-        return;
       case final Error error:
         error.toast();
       case Loading():
         break;
     }
-    loading.value = false;
   }
 }
+
+typedef _MediaControls = ({
+  Future<void>? Function()? onPlay,
+  Future<void>? Function()? onPause,
+  Future<void>? Function(Duration position)? onSeek,
+  void Function()? onSkipToNext,
+  void Function()? onSkipToPrevious,
+});

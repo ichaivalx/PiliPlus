@@ -17,6 +17,7 @@ class PlayerBottomBar extends StatelessWidget {
   });
 
   static const double _loopWidth = 64;
+  static const double _timerMinWidth = 76;
   static const double _height = 34;
 
   final PlPlayerController controller;
@@ -91,7 +92,10 @@ class PlayerBottomBar extends StatelessWidget {
         children: [
           ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: max(0, constraints.maxWidth - _loopWidth),
+              maxWidth: max(
+                0,
+                constraints.maxWidth - _loopWidth - _timerMinWidth,
+              ),
             ),
             child: FittedBox(
               fit: BoxFit.scaleDown,

@@ -298,8 +298,14 @@ class AudioController extends GetxController
     }
   }
 
+  ShutdownLoad? _shutdownLoad;
+
   Future<bool> _queryPlayUrl() async {
     _querySponsorBlock();
+    if (_shutdownLoad case final load?) {
+      shutdownTimerService.endLoad(load);
+    }
+    final load = _shutdownLoad = shutdownTimerService.beginLoad();
     final res = await AudioGrpc.audioPlayUrl(
       itemType: itemType,
       oid: oid,
@@ -309,6 +315,7 @@ class AudioController extends GetxController
       _onPlay(response);
       return true;
     } else {
+      shutdownTimerService.endLoad(load);
       res.toast();
       return false;
     }
@@ -360,13 +367,18 @@ class AudioController extends GetxController
   }) async {
     await _initPlayerIfNeeded();
     final extras = audioFilterExtras(volume);
+    final load = _shutdownLoad;
+    _shutdownLoad = null;
     player
       ?..setMediaHeader(
         userAgent: ua,
         // mpv cannot clear referer option
         headers: {'Referer': ?referer},
       )
-      ..open(Media(url, start: _start, extras: extras));
+      ..open(
+        Media(url, start: _start, extras: extras),
+        play: load == null || shutdownTimerService.endLoad(load),
+      );
     _start = null;
   }
 
@@ -817,6 +829,9 @@ class AudioController extends GetxController
   @override
   void onClose() {
     _stopStatusTimer();
+    if (_shutdownLoad case final load?) {
+      shutdownTimerService.endLoad(load);
+    }
     if (shutdownTimerService.onPause == onPause) {
       shutdownTimerService
         ..onPause = null
