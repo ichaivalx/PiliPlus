@@ -584,11 +584,11 @@ class MiniPlayerSession {
       return;
     }
     loading.value = true;
-    final load = player.beginLoad();
+    final load = shutdownTimerService.beginLoad();
     try {
       await _switchTo(args, player, epoch, load);
     } finally {
-      player.endLoad(load);
+      shutdownTimerService.endLoad(load);
       if (epoch == _epoch) {
         loading.value = false;
       }

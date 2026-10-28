@@ -740,10 +740,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     int? rotate,
     ShutdownLoad? load,
   }) async {
-    // 延续请求播放地址时开始的加载
-    final shutdownLoad = load ?? _load ?? beginLoad();
+    final shutdownLoad = load ?? shutdownTimerService.beginLoad();
     if (miniPlayerSession.adopt(bvid: bvid, cid: cid)) {
-      endLoad(shutdownLoad);
+      shutdownTimerService.endLoad(shutdownLoad);
       onInit?.call();
       return;
     }
@@ -798,10 +797,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         triggerFullScreen(status: true);
       }
 
-      if (!endLoad(shutdownLoad)) {
-        _autoPlay = false;
-      }
-      await _initializePlayer();
+      await _initializePlayer(shutdownLoad);
       onInit?.call();
     } catch (err, stackTrace) {
       dataStatus.value = DataStatus.error;
@@ -810,22 +806,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         debugPrint('plPlayer err:  $err');
       }
     } finally {
-      endLoad(shutdownLoad);
+      shutdownTimerService.endLoad(shutdownLoad);
       _processing = false;
     }
-  }
-
-  ShutdownLoad? _load;
-
-  /// 开始加载新的播放源（含请求播放地址），之后的 [setDataSource] 延续该加载
-  ShutdownLoad beginLoad() => _load = shutdownTimerService.beginLoad();
-
-  /// 返回是否允许自动播放
-  bool endLoad(ShutdownLoad load) {
-    if (identical(_load, load)) {
-      _load = null;
-    }
-    return shutdownTimerService.endLoad(load);
   }
 
   String? shadersDirPath;
@@ -1007,7 +990,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   }
 
   // 开始播放
-  Future<void> _initializePlayer() async {
+  Future<void> _initializePlayer(ShutdownLoad load) async {
     if (_instance == null) return;
     // 设置倍速
     if (_videoPlayerController != null) {
@@ -1018,8 +1001,8 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
     _initVideoFit();
 
-    // 自动播放
-    if (_autoPlay) {
+    // 自动播放，定时关闭在加载期间到期时不再播放
+    if (_autoPlay && shutdownTimerService.endLoad(load)) {
       playIfExists();
     }
   }

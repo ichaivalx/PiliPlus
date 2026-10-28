@@ -52,6 +52,8 @@ import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
+import 'package:PiliPlus/services/shutdown_timer_service.dart'
+    show ShutdownLoad, shutdownTimerService;
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
@@ -724,7 +726,10 @@ class VideoDetailController extends GetxController
     playerInit();
   }
 
-  Future<void>? initPlayerIfNeeded(bool autoFullScreenFlag) {
+  Future<void>? initPlayerIfNeeded(
+    bool autoFullScreenFlag, [
+    ShutdownLoad? load,
+  ]) {
     if (_autoPlay.value ||
         (plPlayerController.preInitPlayer && !plPlayerController.processing) &&
             (isFileSource
@@ -732,6 +737,7 @@ class VideoDetailController extends GetxController
                 : videoPlayerKey.currentState?.mounted == true)) {
       return playerInit(
         autoFullScreenFlag: autoFullScreenFlag && _autoPlay.value,
+        load: load,
       );
     }
     return null;
@@ -740,6 +746,7 @@ class VideoDetailController extends GetxController
   Future<void> playerInit({
     bool? autoplay,
     bool autoFullScreenFlag = false,
+    ShutdownLoad? load,
   }) async {
     Duration? seek = defaultST ?? playedTime;
     if (seek == .zero) seek = null;
@@ -778,6 +785,7 @@ class VideoDetailController extends GetxController
       volume: volume,
       autoFullScreenFlag: autoFullScreenFlag,
       rotate: _rotate,
+      load: load,
     );
 
     if (isClosed) return;
@@ -851,17 +859,21 @@ class VideoDetailController extends GetxController
       return;
     }
     isQuerying = true;
-    final load = plPlayerController.beginLoad();
+    final load = shutdownTimerService.beginLoad();
     try {
-      await _queryVideoUrl(fromReset, autoFullScreenFlag);
+      await _queryVideoUrl(fromReset, autoFullScreenFlag, load);
     } finally {
       isQuerying = false;
-      plPlayerController.endLoad(load);
+      shutdownTimerService.endLoad(load);
     }
   }
 
   @pragma('vm:prefer-inline')
-  Future<void> _queryVideoUrl(bool fromReset, bool autoFullScreenFlag) async {
+  Future<void> _queryVideoUrl(
+    bool fromReset,
+    bool autoFullScreenFlag,
+    ShutdownLoad load,
+  ) async {
     if (plPlayerController.enableSponsorBlock && isBlock && !fromReset) {
       querySponsorBlock(bvid: bvid, cid: cid.value);
     }
@@ -946,7 +958,7 @@ class VideoDetailController extends GetxController
           _setVideoHeight();
           currentDecodeFormats = VideoDecodeFormatType.AVC;
           currentVideoQa.value = videoQuality;
-          await initPlayerIfNeeded(autoFullScreenFlag);
+          await initPlayerIfNeeded(autoFullScreenFlag, load);
           return;
         } else {
           SmartDialog.showToast('视频资源不存在');
@@ -990,7 +1002,7 @@ class VideoDetailController extends GetxController
       } else {
         audioUrl = '';
       }
-      await initPlayerIfNeeded(autoFullScreenFlag);
+      await initPlayerIfNeeded(autoFullScreenFlag, load);
     } else {
       _autoPlay.value = false;
       videoState.value = false;

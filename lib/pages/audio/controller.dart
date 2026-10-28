@@ -186,6 +186,7 @@ class AudioController extends GetxController
         ua: BrowserUa.pc,
         referer: HttpString.baseUrl,
         volume: _videoDetailController?.volume,
+        load: shutdownTimerService.beginLoad(),
       );
     }
     ConnectivityUtils.isWiFi.then((isWiFi) {
@@ -298,21 +299,18 @@ class AudioController extends GetxController
     }
   }
 
-  ShutdownLoad? _shutdownLoad;
-
   Future<bool> _queryPlayUrl() async {
     _querySponsorBlock();
-    if (_shutdownLoad case final load?) {
-      shutdownTimerService.endLoad(load);
-    }
-    final load = _shutdownLoad = shutdownTimerService.beginLoad();
+    final load = shutdownTimerService.beginLoad();
     final res = await AudioGrpc.audioPlayUrl(
       itemType: itemType,
       oid: oid,
       subId: subId,
     );
     if (res case Success(:final response)) {
-      _onPlay(response);
+      if (!_onPlay(response, load)) {
+        shutdownTimerService.endLoad(load);
+      }
       return true;
     } else {
       shutdownTimerService.endLoad(load);
@@ -321,7 +319,8 @@ class AudioController extends GetxController
     }
   }
 
-  void _onPlay(PlayURLResp data) {
+  /// 返回是否开始打开播放源
+  bool _onPlay(PlayURLResp data, ShutdownLoad load) {
     final PlayInfo? playInfo = data.playerInfo.values.firstOrNull;
     if (playInfo != null) {
       http_model.Volume? volume;
@@ -341,22 +340,33 @@ class AudioController extends GetxController
         final playDash = playInfo.playDash;
         final audios = playDash.audio;
         if (audios.isEmpty) {
-          return;
+          return false;
         }
         position.value = 0;
         final audio = audios.findTargetMedia((e) => e.id, cacheAudioQa);
-        _onOpenMedia(VideoUtils.getCdnUrl(audio.playUrls), volume: volume);
+        _onOpenMedia(
+          VideoUtils.getCdnUrl(audio.playUrls),
+          volume: volume,
+          load: load,
+        );
+        return true;
       } else if (playInfo.hasPlayUrl()) {
         final playUrl = playInfo.playUrl;
         final durls = playUrl.durl;
         if (durls.isEmpty) {
-          return;
+          return false;
         }
         final durl = durls.first;
         position.value = 0;
-        _onOpenMedia(VideoUtils.getCdnUrl(durl.playUrls), volume: volume);
+        _onOpenMedia(
+          VideoUtils.getCdnUrl(durl.playUrls),
+          volume: volume,
+          load: load,
+        );
+        return true;
       }
     }
+    return false;
   }
 
   Future<void> _onOpenMedia(
@@ -364,22 +374,30 @@ class AudioController extends GetxController
     String ua = Constants.userAgentApp,
     String? referer,
     http_model.Volume? volume,
+    required ShutdownLoad load,
   }) async {
-    await _initPlayerIfNeeded();
-    final extras = audioFilterExtras(volume);
-    final load = _shutdownLoad;
-    _shutdownLoad = null;
-    player
-      ?..setMediaHeader(
+    try {
+      await _initPlayerIfNeeded();
+      final player = this.player;
+      if (player == null) {
+        return;
+      }
+      final extras = audioFilterExtras(volume);
+      final start = _start;
+      _start = null;
+      player.setMediaHeader(
         userAgent: ua,
         // mpv cannot clear referer option
         headers: {'Referer': ?referer},
-      )
-      ..open(
-        Media(url, start: _start, extras: extras),
-        play: load == null || shutdownTimerService.endLoad(load),
       );
-    _start = null;
+      await player.open(Media(url, start: start, extras: extras), play: false);
+      // 定时关闭在加载期间到期时不再播放
+      if (shutdownTimerService.endLoad(load)) {
+        player.play();
+      }
+    } finally {
+      shutdownTimerService.endLoad(load);
+    }
   }
 
   PlayerStatus _playerStatus = .paused;
@@ -829,9 +847,6 @@ class AudioController extends GetxController
   @override
   void onClose() {
     _stopStatusTimer();
-    if (_shutdownLoad case final load?) {
-      shutdownTimerService.endLoad(load);
-    }
     if (shutdownTimerService.onPause == onPause) {
       shutdownTimerService
         ..onPause = null
