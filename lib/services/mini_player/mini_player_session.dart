@@ -1,4 +1,5 @@
 import 'dart:async' show Completer, unawaited;
+import 'dart:io' show Platform;
 
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
@@ -12,6 +13,7 @@ import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_source.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
+import 'package:PiliPlus/utils/ios/pip_helper.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
 import 'package:PiliPlus/utils/utils.dart';
@@ -56,7 +58,7 @@ enum MiniPlayerMode {
 
 final miniPlayerSession = MiniPlayerSession._();
 
-class MiniPlayerSession {
+class MiniPlayerSession with WidgetsBindingObserver {
   MiniPlayerSession._();
 
   static const _ownerTag = 'miniPlayer';
@@ -82,6 +84,7 @@ class MiniPlayerSession {
   bool _settling = false;
   Future<void>? _switching;
   _MediaControls? _savedControls;
+  bool _pausedInBackground = false;
 
   bool get isActive => mode.value != .none;
   bool get isCovered => mode.value == .covered;
@@ -275,9 +278,13 @@ class MiniPlayerSession {
     _title.value = host.miniTitle;
     _cover.value = host.miniCover;
     _host = null;
-    final player = _player ??= PlPlayerController.getInstance()
-      ..addStatusLister(_onPlayerStatus);
-    _takeMediaControls();
+    if (_player == null) {
+      _player = PlPlayerController.getInstance()
+        ..addStatusLister(_onPlayerStatus);
+      _takeMediaControls();
+      WidgetsBinding.instance.addObserver(this);
+    }
+    final player = _player!;
     PlPlayerController.setPlayCallBack(
       player.play,
       playOwner: (tag: _ownerTag, type: null),
@@ -302,7 +309,41 @@ class MiniPlayerSession {
     }
   }
 
+  /// 无宿主时由会话处理进入后台：未开启后台播放则暂停
+  bool get _shouldPauseInBackground {
+    final player = _player;
+    return player != null &&
+        !player.continuePlayInBackground.value &&
+        !(Platform.isIOS && IOSPipHelper.isActive) &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final player = _player;
+    if (player == null) {
+      return;
+    }
+    if (state == .resumed) {
+      if (_pausedInBackground) {
+        _pausedInBackground = false;
+        player.play();
+      }
+    } else if ((state == .paused || state == .detached) &&
+        _shouldPauseInBackground &&
+        player.playerStatus.isPlaying) {
+      _pausedInBackground = true;
+      player.pause(isInterrupt: true);
+    }
+  }
+
   void _onPlayerStatus(PlayerStatus status) {
+    // 后台期间开始播放（如切换视频加载完成）
+    if (status.isPlaying && _shouldPauseInBackground) {
+      _pausedInBackground = true;
+      _player!.pause(isInterrupt: true);
+      return;
+    }
     // 恢复中的详情页已注册监听时由页面处理
     if (!status.isCompleted ||
         _hosts.any((host) => isRestoreTarget(host.miniHeroTag))) {
@@ -390,6 +431,8 @@ class MiniPlayerSession {
       ?..removeStatusLister(_onPlayerStatus)
       ..dispose();
     _player = null;
+    _pausedInBackground = false;
+    WidgetsBinding.instance.removeObserver(this);
     _restoreMediaControls();
     videoPlayerServiceHandler?.onVideoDetailDispose(_ownerTag);
   }
@@ -400,6 +443,8 @@ class MiniPlayerSession {
     _host = null;
     _player?.removeStatusLister(_onPlayerStatus);
     _player = null;
+    _pausedInBackground = false;
+    WidgetsBinding.instance.removeObserver(this);
     _restoreMediaControls();
     mode.value = .none;
   }
@@ -644,6 +689,7 @@ class MiniPlayerSession {
             width: response.video.width,
             height: response.video.height,
             volume: data.volume,
+            autoplay: !_shouldPauseInBackground,
             load: load,
           );
           if (isOwner()) {

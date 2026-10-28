@@ -1,7 +1,6 @@
 import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
-import 'package:PiliPlus/pages/video/related/controller.dart';
 import 'package:PiliPlus/pages/video/view.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
@@ -34,16 +33,6 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       videoDetailController.autoPlay = true;
       _reportRestoreRect();
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      // 覆盖期间 Get.arguments 属于覆盖页面，提前创建自动连播所需的控制器
-      if (mounted &&
-          videoDetailController.isUgc &&
-          videoDetailController.plPlayerController.showRelatedVideo &&
-          MiniPlayerPolicy.isTabletLandscape(MediaQuery.sizeOf(context)) &&
-          !Get.isRegistered<RelatedController>(tag: miniHeroTag)) {
-        Get.put(RelatedController(), tag: miniHeroTag);
-      }
-    });
   }
 
   void disposeMiniPlayerHost() => miniPlayerSession.detach(this);

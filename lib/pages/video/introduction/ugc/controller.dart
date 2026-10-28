@@ -729,7 +729,10 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
     if (Get.isRegistered<RelatedController>(tag: heroTag)) {
       relatedCtr = Get.find<RelatedController>(tag: heroTag);
     } else {
-      relatedCtr = Get.put(RelatedController(autoQuery: false), tag: heroTag)
+      relatedCtr = Get.put(
+        RelatedController(autoQuery: false, bvid: bvid),
+        tag: heroTag,
+      )
         ..queryData().whenComplete(playRelated);
       return false;
     }

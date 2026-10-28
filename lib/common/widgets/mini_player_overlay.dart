@@ -1,5 +1,4 @@
 import 'dart:async' show StreamSubscription, Timer;
-import 'dart:io' show Platform;
 import 'dart:math' show max, min;
 
 import 'package:PiliPlus/common/style.dart';
@@ -9,7 +8,6 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
-import 'package:PiliPlus/utils/ios/pip_helper.dart';
 import 'package:flutter/foundation.dart' show clampDouble;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -29,7 +27,7 @@ class AppMiniPlayerOverlay extends StatefulWidget {
 }
 
 class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with SingleTickerProviderStateMixin {
   static const double _margin = 16;
   static const double _edgeGestureDistance = 72;
   static const double _flingVelocity = 650;
@@ -49,7 +47,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   double? _preferredWidth;
   Rect? _gestureStartRect;
   Offset? _gestureStartPoint;
-  bool _pausedInBackground = false;
   Timer? _restoreTimer;
 
   @override
@@ -69,12 +66,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       _session.restoring.listen(_onRestoringChanged),
       _session.restoreRect.listen(_onRestoreRectChanged),
     ];
-    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     for (final e in _subscriptions) {
       e.cancel();
     }
@@ -83,31 +78,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // 有宿主页面时由页面内播放器处理
-    final player = PlPlayerController.instance;
-    if (!_session.isHeadless ||
-        player == null ||
-        player.continuePlayInBackground.value ||
-        (Platform.isIOS && IOSPipHelper.isActive)) {
-      return;
-    }
-    if (state == .paused || state == .detached) {
-      if (player.playerStatus.isPlaying) {
-        _pausedInBackground = true;
-        player.pause(isInterrupt: true);
-      }
-    } else if (state == .resumed && _pausedInBackground) {
-      _pausedInBackground = false;
-      player.play();
-    }
-  }
-
   void _hide() {
     _visible = false;
     _from = _lastRect = _restoreTarget = null;
-    _pausedInBackground = false;
     _restoreTimer?.cancel();
   }
 

@@ -31,6 +31,9 @@ enum _ShutdownType with EnumWithLabel {
 
 final shutdownTimerService = ShutdownTimerService._internal();
 
+/// 独立于视频播放器的播放目标（听音频页）
+typedef ShutdownTarget = ({VoidCallback pause, ValueGetter<bool> isPlaying});
+
 /// 一次播放源加载，定时关闭到期时阻止其加载完成后自动播放
 final class ShutdownLoad {
   ShutdownLoad._();
@@ -41,9 +44,12 @@ final class ShutdownLoad {
 class ShutdownTimerService {
   ShutdownTimerService._internal();
 
-  /// 独立于视频播放器的播放目标（听音频页），随页面生命周期注册
-  VoidCallback? onPause;
-  ValueGetter<bool>? isPlaying;
+  final List<ShutdownTarget> _targets = [];
+
+  /// 随页面生命周期注册，只注销自己的目标
+  void addTarget(ShutdownTarget target) => _targets.add(target);
+
+  void removeTarget(ShutdownTarget target) => _targets.remove(target);
 
   final Rxn<DateTime> _deadline = Rxn<DateTime>();
   DateTime? get deadline => _deadline.value;
@@ -104,12 +110,14 @@ class ShutdownTimerService {
   }
 
   bool get _isPlaying =>
-      (isPlaying?.call() ?? false) ||
+      _targets.any((e) => e.isPlaying()) ||
       (PlPlayerController.instance?.playerStatus.isPlaying ?? false);
 
   void _pause() {
-    if (isPlaying?.call() ?? false) {
-      onPause?.call();
+    for (final target in _targets) {
+      if (target.isPlaying()) {
+        target.pause();
+      }
     }
     PlPlayerController.pauseIfExists();
   }
@@ -120,6 +128,8 @@ class ShutdownTimerService {
     final waitUntilCompleted = _waitUntilCompleted && !isLive;
     if (_isPlaying) {
       if (waitUntilCompleted) {
+        // 等待当前播放完毕，正在加载的下一项不再自动播放
+        _blockLoads();
         _isWaiting.value = true;
         return;
       }
@@ -142,6 +152,7 @@ class ShutdownTimerService {
   void handleWaiting() {
     switch (_shutdownType) {
       case .pause:
+        _blockLoads();
         _isWaiting.value = false;
         _durationInMinutes = 0;
         SmartDialog.showToast('定时时间已到，已暂停');
