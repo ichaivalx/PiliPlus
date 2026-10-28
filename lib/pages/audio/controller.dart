@@ -231,6 +231,9 @@ class AudioController extends GetxController
   /// 已让出给视频播放：返回本页前不自动播放，也不更新系统媒体信息
   bool _yielded = false;
 
+  /// 让出或关闭后，迟到的请求结果不再发布到系统媒体
+  bool get _publishesMedia => !_yielded && !isClosed;
+
   /// 视频开始播放时暂停本页并交出系统媒体控制，返回本页时取回
   void _onVideoPlayback() {
     _yielded = true;
@@ -283,7 +286,7 @@ class AudioController extends GetxController
     hasLike.value = item.stat.hasLike_7;
     coinNum.value = item.stat.hasCoin_8 ? 2 : 0;
     hasFav.value = item.stat.hasFav;
-    if (!_yielded) {
+    if (_publishesMedia) {
       videoPlayerServiceHandler?.onVideoDetailChange(
         item,
         (subId.firstOrNull ?? oid).toInt(),
@@ -470,7 +473,7 @@ class AudioController extends GetxController
 
   PlayerStatus _playerStatus = .paused;
   void _updatePlaybackState({Duration? position, String? debugLabel}) {
-    if (_yielded) {
+    if (!_publishesMedia) {
       return;
     }
     videoPlayerServiceHandler?.onUpdateState(

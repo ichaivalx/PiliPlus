@@ -160,6 +160,17 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
   }
 
+  /// 自动播放（如列表循环重播），在后台时等回到前台
+  Future<void> autoplay({bool repeat = false}) async {
+    if (!pausesInBackground) {
+      return play(repeat: repeat);
+    }
+    if (repeat) {
+      await seekTo(Duration.zero, isSeek: false);
+    }
+    _resumeInForeground();
+  }
+
   /// 恢复被打断的播放，在后台时等回到前台
   static void resumeIfExists() {
     if (_instance case final player?) {

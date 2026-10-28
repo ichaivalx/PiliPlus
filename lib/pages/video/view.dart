@@ -392,7 +392,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       return;
     }
     isShowing = false;
-    plPlayerController?.cancelBackgroundResume();
+    onLeaveWithoutMiniPlayer();
 
     removeObserverMobile(this);
 

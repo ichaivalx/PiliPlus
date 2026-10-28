@@ -45,7 +45,20 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
   }
 
-  void disposeMiniPlayerHost() => miniPlayerSession.detach(this);
+  void disposeMiniPlayerHost() {
+    _cancelContinuation();
+    miniPlayerSession.detach(this);
+  }
+
+  /// 页面正常离开（未交给小窗）：交出播放所有权并作废续播，进行中的加载
+  /// 因不再持有播放器而不会播放，重新露出时由 didPopNext 重新获取
+  void onLeaveWithoutMiniPlayer() {
+    _cancelContinuation();
+    plPlayerController?.cancelBackgroundResume();
+    if (PlPlayerController.playOwner?.tag == miniHeroTag) {
+      PlPlayerController.setPlayCallBack(null);
+    }
+  }
 
   /// 播放器完成布局后再上报，避免以空区域作为恢复动画的终点
   void _reportRestoreRect() {
@@ -215,14 +228,9 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
 
   @override
   void onMiniStopped({required bool resumeOnReturn}) {
-    _cancelContinuation();
     didPushNext();
     if (!resumeOnReturn) {
       videoDetailController.playerStatus = PlayerStatus.paused;
-    }
-    // 隐藏期间续播等不再加载播放器，重新露出时由 didPopNext 重新获取
-    if (PlPlayerController.playOwner?.tag == miniHeroTag) {
-      PlPlayerController.setPlayCallBack(null);
     }
   }
 

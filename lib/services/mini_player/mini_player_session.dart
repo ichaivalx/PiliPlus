@@ -338,6 +338,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 覆盖中的宿主页面离开栈：内容可继续时转入无宿主，否则结束会话
   void _takeOverCovered(MiniPlayerHost host) {
     if (host.canHandOffToMini) {
+      host.onMiniDetached();
       _becomeHeadless(host);
       Future.microtask(_removeVideoRoutes);
     } else {
@@ -405,7 +406,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       // 切换中播完的是旧视频，不再续播
       return;
     } else if (player.isSingleCycle) {
-      player.play(repeat: true);
+      player.autoplay(repeat: true);
     } else if (player.effectivePlayRepeat != PlayRepeat.pause) {
       unawaited(_playNext(player));
     }
@@ -437,7 +438,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       switch (next) {
         case MiniPlayerReplay():
           if (shutdownTimerService.canAutoplay(load)) {
-            player.play(repeat: true);
+            player.autoplay(repeat: true);
           }
         case MiniPlayerSwitch(args: final nextArgs, :final inList):
           await _replace(nextArgs, queue: inList ? queue : null, load: load);
