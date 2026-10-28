@@ -353,15 +353,18 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _player!.pause(isInterrupt: true);
       return;
     }
-    // 恢复中的详情页已注册监听时由页面处理；切换中播完的是旧视频，不再续播
+    // 恢复中的详情页已注册监听时由页面处理
     if (!status.isCompleted ||
-        loading.value ||
         _hosts.any((host) => isRestoreTarget(host.miniHeroTag))) {
       return;
     }
     final player = _player!;
     if (shutdownTimerService.isWaiting) {
+      // 同时阻止正在切换的视频自动播放
       shutdownTimerService.handleWaiting();
+    } else if (loading.value) {
+      // 切换中播完的是旧视频，不再续播
+      return;
     } else if (player.isSingleCycle) {
       player.play(repeat: true);
     } else if (player.effectivePlayRepeat != PlayRepeat.pause) {
