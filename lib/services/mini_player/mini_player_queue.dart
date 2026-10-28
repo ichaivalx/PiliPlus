@@ -26,6 +26,8 @@ final class MiniPlayerSwitch extends MiniPlayerNext {
   final bool inList;
 }
 
+enum _PageResult { loaded, end, failed }
+
 /// 小窗沿用详情页播放顺序所需的列表：分P、合集、播放全部
 ///
 /// 数据与顺序对应上游 `UgcIntroController.videoDetail`（含倒序后的分P与合集）
@@ -78,7 +80,7 @@ class MiniPlayerQueue {
   final Map<String, dynamic> _listArgs;
   bool _mediaEnd = false;
   Future<void>? _detailLoading;
-  Future<bool>? _mediaLoading;
+  Future<_PageResult>? _mediaLoading;
 
   /// 切换到列表中的另一个视频后获取其分P与合集
   void select(String bvid) {
@@ -89,7 +91,7 @@ class MiniPlayerQueue {
   }
 
   /// 对应上游 `UgcIntroController.queryVideoIntro` 中保留倒序合集的处理
-  Future<void> _loadDetail(String bvid) async {
+  Future<void> _loadDetail(String bvid, {bool reportError = false}) async {
     final res = await VideoHttp.videoIntro(bvid: bvid);
     if (bvid != _bvid) {
       return;
@@ -100,16 +102,19 @@ class MiniPlayerQueue {
         response.ugcSeason = current.ugcSeason;
       }
       _detail = response;
+    } else if (reportError) {
+      res.toast();
     }
   }
 
-  /// 对应上游 `VideoDetailController.getMediaList` 向后加载一页
-  Future<bool> _loadMedia() async {
+  /// 对应上游 `VideoDetailController.getMediaList` 向后加载一页，
+  /// 失败时列表不变，下次仍从同一位置加载
+  Future<_PageResult> _loadMedia() async {
     final list = _mediaList!;
     final args = _listArgs;
     final count = args['count'];
     if (_mediaEnd || (count != null && list.length >= count)) {
-      return false;
+      return _PageResult.end;
     }
     final res = await UserHttp.getMediaList(
       type: args['mediaType'] ?? (args['sourceType'] as SourceType).mediaType,
@@ -128,24 +133,35 @@ class MiniPlayerQueue {
     if (res case Success(:final response)) {
       if (response.mediaList.isEmpty) {
         _mediaEnd = true;
-        return false;
+        return _PageResult.end;
       }
       list.addAll(response.mediaList);
-      return true;
+      return _PageResult.loaded;
     }
     res.toast();
-    return false;
+    return _PageResult.failed;
   }
 
   /// 对应上游 `UgcIntroController.nextPlay`：分P → 播放全部 → 合集，
   /// 播放全部的列表到末尾时先加载下一页，返回 null 表示停止
+  ///
+  /// 详情或列表获取失败时重试一次，仍失败则停止，避免误判为没有列表
   Future<MiniPlayerNext?> next({
     required int cid,
     required PlayRepeat repeat,
     required bool showRelated,
   }) async {
     await _detailLoading;
-    await _mediaLoading;
+    if (_detail?.bvid != _bvid) {
+      await (_detailLoading = _loadDetail(_bvid, reportError: true));
+      if (_detail?.bvid != _bvid) {
+        return null;
+      }
+    }
+    if (await _mediaLoading == _PageResult.failed &&
+        await (_mediaLoading = _loadMedia()) == _PageResult.failed) {
+      return null;
+    }
     return _next(cid, repeat, showRelated, false);
   }
 
@@ -191,8 +207,11 @@ class MiniPlayerQueue {
     final currentIndex = episodes.indexWhere((e) => e.cid == currentCid);
     var nextIndex = currentIndex + 1;
 
-    if (nextIndex >= episodes.length && !isPart && mediaList != null) {
-      await (_mediaLoading = _loadMedia());
+    if (nextIndex >= episodes.length &&
+        !isPart &&
+        mediaList != null &&
+        await (_mediaLoading = _loadMedia()) == _PageResult.failed) {
+      return null;
     }
 
     if (nextIndex >= episodes.length) {

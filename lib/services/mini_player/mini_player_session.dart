@@ -353,8 +353,9 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _player!.pause(isInterrupt: true);
       return;
     }
-    // 恢复中的详情页已注册监听时由页面处理
+    // 恢复中的详情页已注册监听时由页面处理；切换中播完的是旧视频，不再续播
     if (!status.isCompleted ||
+        loading.value ||
         _hosts.any((host) => isRestoreTarget(host.miniHeroTag))) {
       return;
     }
@@ -411,16 +412,20 @@ class MiniPlayerSession with WidgetsBindingObserver {
   }
 
   /// 列表内的下一项沿用当前列表参数，恢复时详情页以同一列表模式打开
+  ///
+  /// 与 `PageUtils.toVideoPage` 一样提供完整参数，可直接用于打开详情页
   Map<String, dynamic> _argsFor(BaseEpisodeItem item, {required bool inList}) {
     final bvid = item.bvid ?? _args['bvid'] as String;
     final aid = item.aid ?? IdUtils.bv2av(bvid);
+    final cid = item.cid!;
     final sameVideo = bvid == _args['bvid'];
     return {
       if (inList) ..._args,
       'aid': aid,
       'bvid': bvid,
-      'cid': item.cid!,
+      'cid': cid,
       'videoType': VideoType.ugc,
+      'heroTag': Utils.makeHeroTag(cid),
       'title': sameVideo ? _args['title'] : item.title,
       'cover': sameVideo ? _args['cover'] : item.cover,
       if (inList && MiniPlayerQueue.isPlayAll(_args)) ...{
