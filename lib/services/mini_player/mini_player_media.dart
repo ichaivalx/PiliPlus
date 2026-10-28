@@ -4,9 +4,12 @@ import 'package:PiliPlus/services/service_locator.dart';
 
 /// 小窗会话持有播放器期间的系统媒体信息与控制
 class MiniPlayerMedia {
-  MiniPlayerMedia(this._ownerTag);
+  MiniPlayerMedia(this._ownerTag, {required this.onPause});
 
   final String _ownerTag;
+
+  /// 通知栏等系统媒体控制的暂停
+  final Future<void>? Function() onPause;
   _MediaControls? _savedControls;
 
   void updateItem({
@@ -64,7 +67,7 @@ class MiniPlayerMedia {
     );
     handler
       ..onPlay = null
-      ..onPause = null
+      ..onPause = onPause
       ..onSeek = null
       ..onSkipToNext = null
       ..onSkipToPrevious = null;

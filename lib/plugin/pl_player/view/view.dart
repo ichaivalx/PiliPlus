@@ -49,7 +49,6 @@ import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/forward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/mpv_convert_webp.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/play_pause_btn.dart';
-import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -60,7 +59,6 @@ import 'package:PiliPlus/utils/extension/theme_ext.dart';
 import 'package:PiliPlus/utils/feed_back.dart';
 import 'package:PiliPlus/utils/id_utils.dart';
 import 'package:PiliPlus/utils/image_utils.dart';
-import 'package:PiliPlus/utils/ios/pip_helper.dart';
 import 'package:PiliPlus/utils/mobile_observer.dart';
 import 'package:PiliPlus/utils/path_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
@@ -153,16 +151,6 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
 
   GestureType? _gestureType;
   Offset? _initialFocalPoint;
-
-  /// 进入后台暂停后待恢复，定时关闭到期时取消
-  ShutdownLoad? _backgroundResume;
-
-  void _endBackgroundResume() {
-    if (_backgroundResume case final resume?) {
-      _backgroundResume = null;
-      shutdownTimerService.endLoad(resume);
-    }
-  }
 
   StreamSubscription? _brightnessListener;
   void _onBrightnessChanged(double value) {
@@ -352,21 +340,9 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Keep playing in the PiP window.
-    if (Platform.isIOS && IOSPipHelper.isActive) return;
-    if (!plPlayerController.continuePlayInBackground.value) {
-      late final player = plPlayerController.videoPlayerController;
-      if (const <AppLifecycleState>[.paused, .detached].contains(state)) {
-        if (player != null && player.state.playing) {
-          _backgroundResume ??= shutdownTimerService.beginLoad();
-          player.pause();
-        }
-      } else if (_backgroundResume case final resume?) {
-        _endBackgroundResume();
-        if (shutdownTimerService.canAutoplay(resume)) {
-          player?.play();
-        }
-      }
+    // 回到前台时由播放器自行恢复
+    if (plPlayerController.pausesInBackground) {
+      plPlayerController.pauseForBackground();
     }
   }
 
@@ -396,7 +372,6 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
   @override
   void dispose() {
     removeObserverMobile(this);
-    _endBackgroundResume();
     _danmakuListener?.cancel();
     _tapGestureRecognizer.dispose();
     _longPressRecognizer?.dispose();

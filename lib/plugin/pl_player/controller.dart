@@ -139,6 +139,48 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   late final RxBool continuePlayInBackground =
       Pref.continuePlayInBackground.obs;
 
+  /// 未开启后台播放时应用在后台不播放；inactive（分屏失焦、系统画中画）仍可见
+  bool get pausesInBackground {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return !continuePlayInBackground.value &&
+        !(Platform.isIOS && IOSPipHelper.isActive) &&
+        (state == .hidden || state == .paused || state == .detached);
+  }
+
+  /// 后台暂停或后台加载完成后待回到前台播放，定时关闭到期或用户暂停时取消
+  ShutdownLoad? _backgroundResume;
+  AppLifecycleListener? _resumeListener;
+
+  /// 暂停正在进行的播放，回到前台时恢复
+  void pauseForBackground() {
+    if (_videoPlayerController?.state.playing ?? false) {
+      _resumeInForeground();
+      pause(isInterrupt: true);
+    }
+  }
+
+  void _resumeInForeground() {
+    _backgroundResume ??= shutdownTimerService.beginLoad();
+    _resumeListener ??= AppLifecycleListener(onResume: _resumeFromBackground);
+  }
+
+  void _clearBackgroundResume() {
+    _resumeListener?.dispose();
+    _resumeListener = null;
+    if (_backgroundResume case final resume?) {
+      _backgroundResume = null;
+      shutdownTimerService.endLoad(resume);
+    }
+  }
+
+  void _resumeFromBackground() {
+    final resume = _backgroundResume;
+    _clearBackgroundResume();
+    if (resume != null && shutdownTimerService.canAutoplay(resume)) {
+      play();
+    }
+  }
+
   bool _autoPlay = false;
 
   // 记录历史记录
@@ -1017,9 +1059,13 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
     _initVideoFit();
 
-    // 自动播放，定时关闭在加载期间到期时不再播放
+    // 自动播放，定时关闭在加载期间到期时不再播放；在后台时等回到前台
     if (_autoPlay && shutdownTimerService.canAutoplay(load)) {
-      playIfExists();
+      if (pausesInBackground) {
+        _resumeInForeground();
+      } else {
+        playIfExists();
+      }
     }
   }
 
@@ -1735,6 +1781,7 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
 
     _playerCount = 0;
+    _clearBackgroundResume();
     if (removeSafeArea) {
       showSystemBar();
     }

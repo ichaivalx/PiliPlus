@@ -93,13 +93,21 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
         isShowing &&
         PlPlayerController.playOwner?.tag == ctr.heroTag &&
         MiniPlayerPolicy.isTabletLandscape(MediaQuery.sizeOf(context)) &&
-        MiniPlayerPolicy.canLoadInMini(ctr.args) &&
-        ctr.graphVersion == null &&
+        canHandOffToMini &&
         !ctr.isQuerying &&
         ctr.autoPlay &&
         ctr.videoState.value &&
         player.videoController != null &&
         !player.isDesktopPip;
+  }
+
+  /// 互动视频的剧情图需另行请求，简介中的标记先于其可用
+  @override
+  bool get canHandOffToMini {
+    final ctr = videoDetailController;
+    return MiniPlayerPolicy.canLoadInMini(ctr.args) &&
+        ctr.graphVersion == null &&
+        introController.videoDetail.value.rights?.isSteinGate != 1;
   }
 
   /// 相对页面根节点计算，转场缩放期间也是页面静止时的位置

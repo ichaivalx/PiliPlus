@@ -584,7 +584,7 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
   void _togglePlayback() {
     if (PlPlayerController.instance case final player?) {
       if (player.playerStatus.isPlaying) {
-        player.pause();
+        miniPlayerSession.pause();
       } else {
         player.play();
       }

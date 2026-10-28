@@ -1,5 +1,4 @@
 import 'dart:async' show Completer, unawaited;
-import 'dart:io' show Platform;
 import 'dart:ui' as ui;
 
 import 'package:PiliPlus/http/loading_state.dart';
@@ -18,7 +17,6 @@ import 'package:PiliPlus/services/mini_player/mini_player_route.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_source.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
-import 'package:PiliPlus/utils/ios/pip_helper.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
 import 'package:PiliPlus/utils/utils.dart';
@@ -32,6 +30,9 @@ abstract interface class MiniPlayerHost {
 
   /// 当前页面持有播放器且满足小窗条件
   bool get canEnterMiniPlayer;
+
+  /// 当前内容可交给小窗继续播放（不依赖页面布局，页面销毁时也可用）
+  bool get canHandOffToMini;
 
   /// 播放器在页面中的位置，尚未完成布局时为 null
   Rect? get miniPlayerRect;
@@ -102,10 +103,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
   int _epoch = 0;
   bool _settling = false;
   Future<void>? _switching;
-  final _media = MiniPlayerMedia(_ownerTag);
+  late final _media = MiniPlayerMedia(_ownerTag, onPause: pause);
 
-  /// 进入后台暂停后待恢复，定时关闭到期时取消
-  ShutdownLoad? _backgroundResume;
+  /// 加载期间请求恢复详情页，加载结束后执行
+  bool _restorePending = false;
 
   bool get isActive => mode.value != .none;
   bool get isCovered => mode.value == .covered;
@@ -133,8 +134,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       return;
     }
     if (covers(host)) {
-      _becomeHeadless(host);
-      Future.microtask(_removeVideoRoutes);
+      _takeOverCovered(host);
     } else if (isRestoreTarget(host.miniHeroTag)) {
       _cancelRestore();
     }
@@ -280,8 +280,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       }
       final route = host.miniRoute;
       if (route == null || !_routes.contains(route)) {
-        _becomeHeadless(host);
-        _removeVideoRoutes();
+        _takeOverCovered(host);
       } else if (identical(_topPage(), route)) {
         restoring.value = true;
         restoreRect.value = host.miniPlayerRect;
@@ -295,6 +294,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
 
   void _start() {
     _epoch++;
+    _restorePending = false;
     loading.value = false;
     restoring.value = false;
     restoreRect.value = null;
@@ -336,6 +336,19 @@ class MiniPlayerSession with WidgetsBindingObserver {
     mode.value = .headless;
   }
 
+  /// 覆盖中的宿主页面离开栈：内容可继续时转入无宿主，否则结束会话
+  void _takeOverCovered(MiniPlayerHost host) {
+    if (host.canHandOffToMini) {
+      _becomeHeadless(host);
+      Future.microtask(_removeVideoRoutes);
+    } else {
+      _start();
+      _host = null;
+      shutdownTimerService.cancelPendingAutoplay();
+      mode.value = .none;
+    }
+  }
+
   /// 小窗会话期间，栈中不保留与小窗内容不同的详情页
   void _removeVideoRoutes({MiniPlayerHost? except}) {
     if (!isHeadless) {
@@ -345,62 +358,30 @@ class MiniPlayerSession with WidgetsBindingObserver {
       if (identical(host, except) || isRestoreTarget(host.miniHeroTag)) {
         continue;
       }
-      final route = host.miniRoute;
-      if (route != null && route.isActive) {
-        route.navigator?.removeRoute(route);
+      if (host.miniRoute case final route? when route.isActive) {
+        _removeRoute(route);
       }
     }
   }
 
-  /// 分屏失去焦点、系统画中画等 inactive 状态仍可见，不算后台
-  static bool _isBackground(AppLifecycleState? state) =>
-      state == .hidden || state == .paused || state == .detached;
-
-  /// 无宿主时由会话处理进入后台：未开启后台播放则暂停
-  bool get _shouldPauseInBackground {
-    final player = _player;
-    return player != null &&
-        !player.continuePlayInBackground.value &&
-        !(Platform.isIOS && IOSPipHelper.isActive) &&
-        _isBackground(WidgetsBinding.instance.lifecycleState);
-  }
-
-  void _pauseInBackground(PlPlayerController player) {
-    _backgroundResume ??= shutdownTimerService.beginLoad();
-    player.pause(isInterrupt: true);
-  }
-
-  void _endBackgroundResume() {
-    if (_backgroundResume case final resume?) {
-      _backgroundResume = null;
-      shutdownTimerService.endLoad(resume);
+  /// GetX 在路由被移除后把当前路由记为其下一层，即使被移除的不是栈顶；
+  /// 这里改回实际的栈顶，依赖 Get.routing 的页面（如面板注册本地历史）才正确
+  void _removeRoute(Route<dynamic> route) {
+    route.navigator?.removeRoute(route);
+    if (_routes.lastOrNull case final top?) {
+      Get.routing.route = top;
     }
   }
 
+  /// 无宿主时由会话处理进入后台，回到前台时由播放器恢复
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final player = _player;
-    if (player == null) {
-      return;
-    }
-    if (state == .resumed) {
-      if (_backgroundResume case final resume?) {
-        _endBackgroundResume();
-        if (shutdownTimerService.canAutoplay(resume)) {
-          player.play();
-        }
-      }
-    } else if (_shouldPauseInBackground && player.playerStatus.isPlaying) {
-      _pauseInBackground(player);
+    if (_player case final player? when player.pausesInBackground) {
+      player.pauseForBackground();
     }
   }
 
   void _onPlayerStatus(PlayerStatus status) {
-    // 后台期间开始播放（如切换视频加载完成）
-    if (status.isPlaying && _shouldPauseInBackground) {
-      _pauseInBackground(_player!);
-      return;
-    }
     // 恢复中的详情页即将接管
     if (!status.isCompleted || _restoreTag != null) {
       return;
@@ -427,7 +408,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
       return;
     }
     final epoch = _epoch;
-    // 获取下一项期间定时关闭到期时，同样不再自动播放
+    // 获取下一项期间同样视为加载中；定时关闭到期时不再自动播放
+    loading.value = true;
     final load = shutdownTimerService.beginLoad();
     try {
       final next = await queue.next(
@@ -452,7 +434,29 @@ class MiniPlayerSession with WidgetsBindingObserver {
       }
     } finally {
       shutdownTimerService.endLoad(load);
+      _endLoading(epoch);
     }
+  }
+
+  /// 本次加载仍是最新的选择时结束加载状态，并执行加载期间请求的操作
+  void _endLoading(int epoch) {
+    if (epoch != _epoch) {
+      return;
+    }
+    loading.value = false;
+    if (_queue?.detail case final detail?) {
+      _exitIfInteractive(detail);
+    }
+    if (_restorePending) {
+      _restorePending = false;
+      restore();
+    }
+  }
+
+  /// 用户在小窗中暂停：进行中的加载完成后同样保持暂停
+  Future<void>? pause() {
+    shutdownTimerService.cancelPendingAutoplay();
+    return PlPlayerController.instance?.pause();
   }
 
   void _updateMediaItem() => _media.updateItem(
@@ -468,7 +472,6 @@ class MiniPlayerSession with WidgetsBindingObserver {
       ..dispose();
     _player = null;
     _queue = null;
-    _endBackgroundResume();
     WidgetsBinding.instance.removeObserver(this);
     _media.restoreControls();
     videoPlayerServiceHandler?.onVideoDetailDispose(_ownerTag);
@@ -481,7 +484,6 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _player?.removeStatusLister(_onPlayerStatus);
     _player = null;
     _queue = null;
-    _endBackgroundResume();
     WidgetsBinding.instance.removeObserver(this);
     _media.restoreControls();
     mode.value = .none;
@@ -518,12 +520,16 @@ class MiniPlayerSession with WidgetsBindingObserver {
     if (route.isCurrent) {
       navigator.popUntil((e) => !identical(e, route));
     } else {
-      navigator.removeRoute(route);
+      _removeRoute(route);
     }
   }
 
   void restore() {
-    if (loading.value || restoring.value) {
+    if (restoring.value) {
+      return;
+    }
+    if (loading.value) {
+      _restorePending = true;
       return;
     }
     switch (mode.value) {
@@ -614,10 +620,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
     final host = _host;
     _start();
-    if (pause) {
-      // 正在进行的加载完成后不再自动播放
-      shutdownTimerService.cancelPendingAutoplay();
-    }
+    // 进行中的加载完成后不再自动播放；返回页面时由页面按离开时的状态恢复
+    shutdownTimerService.cancelPendingAutoplay();
     if (host != null) {
       _host = null;
       mode.value = .none;
@@ -645,21 +649,20 @@ class MiniPlayerSession with WidgetsBindingObserver {
     if (!isActive) {
       return false;
     }
-    if (off || !MiniPlayerPolicy.canLoadInMini(args)) {
+    if (off || !MiniPlayerPolicy.canLoadInMini(args) || _hasIntent(args)) {
       close();
       return false;
     }
     final content = _content;
     if (content['bvid'] == args['bvid'] && content['cid'] == args['cid']) {
-      if (_hasIntent(args, content)) {
+      if (!_isSameList(args, content)) {
         close();
         return false;
       }
       if (loading.value) {
         _keepCurrent();
-      } else {
-        restore();
       }
+      restore();
       return true;
     }
     if (restoring.value) {
@@ -670,13 +673,23 @@ class MiniPlayerSession with WidgetsBindingObserver {
     return true;
   }
 
-  /// 定位评论、指定进度或来自不同列表的请求按普通方式打开详情页
-  static bool _hasIntent(Map args, Map content) =>
+  /// 定位评论、指定进度的请求按普通方式打开详情页
+  static bool _hasIntent(Map args) =>
       args[rootRpIdKey] != null ||
       args[secondRpIdKey] != null ||
-      args['progress'] != null ||
-      args['sourceType'] != content['sourceType'] ||
-      args['mediaId'] != content['mediaId'];
+      args['progress'] != null;
+
+  /// 决定播放列表来源与顺序的参数
+  static const _listKeys = [
+    'sourceType',
+    'mediaId',
+    'mediaType',
+    'desc',
+    'sortField',
+  ];
+
+  static bool _isSameList(Map args, Map content) =>
+      _listKeys.every((key) => args[key] == content[key]);
 
   /// 切换进行中再次选择当前视频：最后一次选择生效
   void _keepCurrent() {
@@ -695,9 +708,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
   }
 
-  /// 互动视频需在详情页播放
+  /// 互动视频需在详情页播放；有更新的选择在加载时由其结束后再判断
   void _exitIfInteractive(VideoDetailData detail) {
     if (!isHeadless ||
+        loading.value ||
         detail.bvid != _args['bvid'] ||
         detail.rights?.isSteinGate != 1) {
       return;
@@ -742,9 +756,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       if (ownLoad != null) {
         shutdownTimerService.endLoad(ownLoad);
       }
-      if (epoch == _epoch) {
-        loading.value = false;
-      }
+      _endLoading(epoch);
     }
   }
 
@@ -801,10 +813,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
             width: video.width,
             height: video.height,
             volume: data.volume,
-            autoplay: !_shouldPauseInBackground,
             load: load,
           );
-          if (epoch == _epoch && isOwner()) {
+          // 会话信息始终对应实际加载的播放源，即使之后又有新的选择
+          if (isOwner()) {
             _args = args;
             _queue = queue
               ..select(bvid)
@@ -817,9 +829,6 @@ class MiniPlayerSession with WidgetsBindingObserver {
             _title.value = args['title'] ?? '';
             _cover.value = args['cover'] ?? '';
             _updateMediaItem();
-            if (queue.detail case final detail?) {
-              _exitIfInteractive(detail);
-            }
           }
         } finally {
           _switching = null;

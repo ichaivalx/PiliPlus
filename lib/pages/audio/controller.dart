@@ -197,12 +197,7 @@ class AudioController extends GetxController
         _queryPlayUrl();
       }
     });
-    videoPlayerServiceHandler
-      ?..onPlay = onPlay
-      ..onPause = onPause
-      ..onSeek = onSeek
-      ..onSkipToNext = playNext
-      ..onSkipToPrevious = playPrev;
+    claimMediaControls();
 
     animController = AnimationController(
       vsync: this,
@@ -219,6 +214,40 @@ class AudioController extends GetxController
 
   bool isPlaying() {
     return player?.state.playing ?? false;
+  }
+
+  /// 本页面位于最上层时由其响应系统媒体控制
+  void claimMediaControls() {
+    videoPlayerServiceHandler
+      ?..onPlay = onPlay
+      ..onPause = onPause
+      ..onSeek = onSeek
+      ..onSkipToNext = playNext
+      ..onSkipToPrevious = playPrev;
+  }
+
+  /// 被其他播放页面覆盖时交出系统媒体控制
+  void yieldMediaControls() {
+    final handler = videoPlayerServiceHandler;
+    if (handler != null && handler.onPlay == onPlay) {
+      handler
+        ..onPlay = null
+        ..onPause = null
+        ..onSeek = null
+        ..onSkipToNext = null
+        ..onSkipToPrevious = null;
+    }
+  }
+
+  /// 返回本页面时取回系统媒体控制与媒体信息
+  void reclaimMediaControls() {
+    claimMediaControls();
+    if (audioItem.value case final item?) {
+      _updateCurrItem(item);
+    }
+    if (player != null) {
+      _updatePlaybackState();
+    }
   }
 
   Future<void>? onPlay() {
@@ -871,13 +900,9 @@ class AudioController extends GetxController
   void onClose() {
     _stopStatusTimer();
     shutdownTimerService.removeTarget(_shutdownTarget);
+    yieldMediaControls();
     videoPlayerServiceHandler
-      ?..onPlay = null
-      ..onPause = null
-      ..onSeek = null
-      ..onSkipToNext = null
-      ..onSkipToPrevious = null
-      ..onVideoDetailDispose(hashCode.toString())
+      ?..onVideoDetailDispose(hashCode.toString())
       ..clearIfNeeded();
     _subscriptions?.forEach((e) => e.cancel());
     _subscriptions?.clear();
