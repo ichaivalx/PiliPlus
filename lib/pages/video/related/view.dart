@@ -2,6 +2,7 @@ import 'package:PiliPlus/common/widgets/loading_widget/http_error.dart';
 import 'package:PiliPlus/common/widgets/video_card/video_card_h.dart';
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/model_hot_video_item.dart';
+import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/related/controller.dart';
 import 'package:PiliPlus/utils/extension/get_ext.dart';
 import 'package:PiliPlus/utils/grid.dart';
@@ -22,7 +23,9 @@ class _RelatedVideoPanelState extends State<RelatedVideoPanel> with GridMixin {
   void initState() {
     super.initState();
     _relatedController = Get.putOrFind(
-      RelatedController.new,
+      () => RelatedController(
+        bvid: Get.find<VideoDetailController>(tag: widget.heroTag).bvid,
+      ),
       tag: widget.heroTag,
     );
   }
