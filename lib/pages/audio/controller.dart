@@ -369,6 +369,9 @@ class AudioController extends GetxController
     return false;
   }
 
+  /// 最近一次打开播放源的请求
+  ShutdownLoad? _openingLoad;
+
   Future<void> _onOpenMedia(
     String url, {
     String ua = Constants.userAgentApp,
@@ -376,6 +379,7 @@ class AudioController extends GetxController
     http_model.Volume? volume,
     required ShutdownLoad load,
   }) async {
+    _openingLoad = load;
     try {
       await _initPlayerIfNeeded();
       final player = this.player;
@@ -391,6 +395,12 @@ class AudioController extends GetxController
         headers: {'Referer': ?referer},
       );
       await player.open(Media(url, start: start, extras: extras), play: false);
+      // 已被新请求取代或页面已关闭时不播放
+      if (isClosed ||
+          !identical(_openingLoad, load) ||
+          !identical(this.player, player)) {
+        return;
+      }
       // 定时关闭在加载期间到期时不再播放
       if (shutdownTimerService.endLoad(load)) {
         player.play();
