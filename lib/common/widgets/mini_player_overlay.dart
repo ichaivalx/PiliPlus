@@ -79,13 +79,11 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 主动恢复：详情页从小窗的位置展开，[_restoreTarget] 为页面中播放器的位置
   bool _expanding = false;
 
-  /// 展开的起点，即开始展开时小窗的位置
-  Rect? _expandFrom;
+  /// 详情页与小窗之间的过渡，null 表示尚未开始
+  _Container? _container;
 
-  /// 起点时页面的缩放与偏移：页面中的视频画面与小窗中的重合；
-  /// [mask] 为起点时小窗中播放器以外的部分（页面坐标），仅在播放器
-  /// 不能完全覆盖小窗时存在
-  ({double scale, Offset origin, Rect? mask})? _expandStart;
+  /// 过渡中代替详情页绘制的截图，视频画面以实时视频叠加
+  ui.Image? _pageImage;
 
   /// 展开的背景，为恢复前的画面
   ui.Image? _backdrop;
@@ -120,6 +118,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _restoreTimer?.cancel();
     _animation.dispose();
     _snapshot?.dispose();
+    _pageImage?.dispose();
     _backdrop?.dispose();
     super.dispose();
   }
@@ -139,9 +138,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 结束或撤销展开，详情页回到原样
   void _stopExpanding() {
     _expanding = false;
-    _expandFrom = _expandStart = null;
+    _container = null;
+    _disposeAfterFrame(_pageImage);
     _disposeAfterFrame(_backdrop);
-    _backdrop = null;
+    _pageImage = _backdrop = null;
   }
 
   void _hide() {
@@ -181,14 +181,15 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     });
   }
 
-  /// 恢复动画结束且详情页已接管播放器后结束：展开时直接移除，
+  /// 恢复动画结束且详情页已接管播放器后结束：展开时换回实时页面，
   /// 小窗飞回时淡出小窗
   void _finishRestoreIfReady() {
     if (!mounted ||
         !_visible ||
         _fadingOut ||
         _session.isActive ||
-        (_restoreTarget != null && _animation.isAnimating)) {
+        (_restoreTarget != null &&
+            (_expanding ? !_animation.isCompleted : _animation.isAnimating))) {
       return;
     }
     _restoreTimer?.cancel();
@@ -256,7 +257,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   /// 恢复开始时小窗停在原处，等详情页给出播放器位置后开始过渡；
   /// 展开时截取当前画面（路由变化前的最后一帧）作为背景，
-  /// 详情页在其上不可见地完成首次构建；会话判断不宜截图时以纯色为背景
+  /// 详情页不可见地完成首次构建；会话判断不宜截图时以纯色为背景
   void _beginRestore() {
     _releaseSnapshot();
     _animation.stop();
@@ -264,18 +265,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _fromRadius = _lastRadius;
     _animation.value = 0;
     _expanding = _session.expandRestore;
-    if (!_expanding || !_session.snapshotRestore) {
-      return;
+    if (_expanding && _session.snapshotRestore) {
+      _backdrop = _capture();
     }
-    final boundary = _childKey.currentContext?.findRenderObject();
-    if (boundary is! RenderRepaintBoundary) {
-      return;
-    }
-    try {
-      _backdrop = boundary.toImageSync(
-        pixelRatio: MediaQuery.devicePixelRatioOf(context),
-      );
-    } catch (_) {}
   }
 
   void _onRestoreRectChanged(Rect? rect) {
@@ -287,33 +279,86 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       return;
     }
     _restoreTimer?.cancel();
+    if (_expanding) {
+      // 页面在下一帧不可见地绘制后截取，覆盖中的详情页此时才重新绘制
+      _restoreTarget = rect;
+      WidgetsBinding.instance
+        ..addPostFrameCallback((_) => _beginExpand(rect))
+        ..scheduleFrame();
+      return;
+    }
     setState(() {
       _restoreTarget = rect;
       _frozenTarget = null;
-      if (_expanding) {
-        // 小窗在此交给展开中的详情页
-        final from = _expandFrom = _lastRect ?? rect;
-        final dpr = MediaQuery.devicePixelRatioOf(context);
-        final mini = _videoRect(from, dpr);
-        final page = _videoRect(rect, dpr);
-        // 保持比例的 fit 两者宽高比相同，拉伸时退化为整体 contain
-        final scale = min(mini.width / page.width, mini.height / page.height);
-        final origin = mini.center - page.center * scale;
-        final player = _mapRect(rect, scale, origin);
-        _expandStart = (
-          scale: scale,
-          origin: origin,
-          // 留出半个像素的舍入误差
-          mask: player.inflate(0.5).contains(from.topLeft) &&
-                  player.inflate(0.5).contains(from.bottomRight)
-              ? null
-              : _mapRect(from.shift(-origin), 1 / scale, Offset.zero),
-        );
+      _animateFrom(_lastRect);
+    });
+  }
+
+  /// 以页面截图代替页面展开，页面保持不可见；先以起点画面静止一帧，
+  /// 截图的首次绘制不落在动画中
+  void _beginExpand(Rect player) {
+    if (!mounted ||
+        !_expanding ||
+        _container != null ||
+        _restoreTarget != player) {
+      return;
+    }
+    final mini = _lastRect ?? player;
+    setState(() {
+      _pageImage = _capture();
+      _container = _containerFor(mini, player);
+    });
+    if (_pageImage == null) {
+      // 截图失败时直接换为页面
+      _animation.value = 1;
+      return;
+    }
+    final container = _container;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(_container, container)) {
         _animation.forward(from: 0);
-      } else {
-        _animateFrom(_lastRect);
       }
     });
+  }
+
+  /// 小窗所在层（含所有页面）当前的画面
+  ui.Image? _capture() {
+    final boundary = _childKey.currentContext?.findRenderObject();
+    if (boundary is! RenderRepaintBoundary) {
+      return null;
+    }
+    try {
+      return boundary.toImageSync(
+        pixelRatio: MediaQuery.devicePixelRatioOf(context),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 起点时页面整体缩放，页面中的视频画面与小窗中的重合；播放器不能完全
+  /// 覆盖小窗时，记下小窗中播放器以外的部分（页面坐标）作为黑边遮罩
+  _Container _containerFor(Rect mini, Rect player) {
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final miniVideo = _videoRect(mini, dpr);
+    final pageVideo = _videoRect(player, dpr);
+    // 保持比例的 fit 两者宽高比相同，拉伸时退化为整体 contain
+    final scale = min(
+      miniVideo.width / pageVideo.width,
+      miniVideo.height / pageVideo.height,
+    );
+    final origin = miniVideo.center - pageVideo.center * scale;
+    // 留出半个像素的舍入误差
+    final covered = _mapRect(player, scale, origin).inflate(0.5);
+    return (
+      mini: mini,
+      player: player,
+      scale: scale,
+      origin: origin,
+      mask: covered.contains(mini.topLeft) && covered.contains(mini.bottomRight)
+          ? null
+          : _mapRect(mini.shift(-origin), 1 / scale, Offset.zero),
+    );
   }
 
   /// 视频画面在 [box] 中的位置，对应播放器与小窗中居中的 `FittedBox`：
@@ -349,87 +394,84 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         rect.height * scale,
       );
 
-  /// 展开过程中详情页的变换与可见范围（屏幕坐标），不在展开时为 null
-  ///
-  /// 页面整体等比缩放，起点时页面中的视频画面与小窗中的重合；
-  /// 可见范围从小窗扩展到整个屏幕。播放器不能完全覆盖小窗时，
-  /// 起点时小窗黑边处的页面内容以随页面移动的黑色遮罩盖住，展开前段淡去
-  ({Matrix4 transform, RRect? frame, Path? mask, double maskOpacity, double t})?
-  _expansion(Size size) {
-    if (!_expanding) {
-      return null;
-    }
-    final start = _expandStart;
-    final from = _expandFrom;
-    final player = _restoreTarget;
-    if (start == null || from == null || player == null) {
-      // 首次构建期间不可见
-      return (
-        transform: Matrix4.identity(),
-        frame: null,
-        mask: null,
-        maskOpacity: 0,
-        t: 0,
-      );
-    }
-    final t = _progress;
-    final scale = ui.lerpDouble(start.scale, 1, t)!;
-    final origin = start.origin * (1 - t);
+  /// 过渡在进度 [t]（0 为小窗，1 为整页）时的画面：页面截图等比缩放，
+  /// 外框从小窗扩展到整个屏幕；起点时小窗黑边处的页面内容以随页面移动的
+  /// 黑色遮罩盖住，前段淡去
+  _ContainerFrame _frameOf(_Container container, Size size, double t) {
+    final scale = ui.lerpDouble(container.scale, 1, t)!;
+    final origin = container.origin * (1 - t);
     final maskOpacity = clampDouble(1 - t / _maskFadeEnd, 0, 1);
-    final mask = start.mask;
+    final mask = container.mask;
     return (
-      transform: Matrix4.diagonal3Values(scale, scale, 1)
-        ..setTranslationRaw(origin.dx, origin.dy, 0),
       frame: RRect.fromRectAndRadius(
-        Rect.lerp(from, Offset.zero & size, t)!,
+        Rect.lerp(container.mini, Offset.zero & size, t)!,
         Radius.circular(ui.lerpDouble(_radius, 0, t)!),
       ),
+      scale: scale,
+      origin: origin,
+      player: _mapRect(container.player, scale, origin),
       mask: mask == null || maskOpacity == 0
           ? null
           : Path.combine(
               PathOperation.difference,
               Path()..addRect(_mapRect(mask, scale, origin)),
-              Path()..addRect(_mapRect(player, scale, origin)),
+              Path()..addRect(_mapRect(container.player, scale, origin)),
             ),
       maskOpacity: maskOpacity,
       t: t,
     );
   }
 
-  /// 页面层的结构保持不变，避免 Navigator 被重新挂载
+  /// 页面层的结构保持不变，避免 Navigator 被重新挂载；展开期间页面
+  /// 不可见，由截图与实时视频绘制
   Widget _buildPage(BuildContext context, Widget child) {
-    final expansion = _expansion(MediaQuery.sizeOf(context));
-    return CustomPaint(
-      painter: expansion == null
-          ? null
-          : _ExpandBackdropPainter(
-              image: _backdrop,
-              color: ColorScheme.of(context).surface,
-              frame: expansion.frame,
-              t: expansion.t,
+    final container = _container;
+    final frame = container == null
+        ? null
+        : _frameOf(container, MediaQuery.sizeOf(context), _progress);
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CustomPaint(
+          foregroundPainter: _expanding
+              ? _ContainerPainter(
+                  backdrop: _backdrop,
+                  backdropColor: ColorScheme.of(context).surface,
+                  page: _pageImage,
+                  frame: frame,
+                )
+              : null,
+          child: IgnorePointer(
+            ignoring: _expanding,
+            child: ClipRect(
+              clipper: _expanding ? const _EmptyClipper() : null,
+              clipBehavior: _expanding ? Clip.hardEdge : Clip.none,
+              child: child,
             ),
-      foregroundPainter: expansion?.mask == null
-          ? null
-          : _ExpandMaskPainter(
-              frame: expansion!.frame!,
-              mask: expansion.mask!,
-              opacity: expansion.maskOpacity,
-            ),
-      child: IgnorePointer(
-        ignoring: _expanding,
-        child: ClipRRect(
-          clipper: expansion == null
-              ? null
-              : _RRectClipper(expansion.frame ?? RRect.zero),
-          clipBehavior: expansion == null ? Clip.none : Clip.antiAlias,
-          child: Transform(
-            transform: expansion?.transform ?? Matrix4.identity(),
-            child: child,
           ),
         ),
-      ),
+        if (frame != null) _buildContainerVideo(frame),
+      ],
     );
   }
+
+  /// 过渡中播放器位置的实时视频，与详情页播放器同样以 `FittedBox` 布局
+  Widget _buildContainerVideo(_ContainerFrame frame) => IgnorePointer(
+    child: ClipRRect(
+      clipper: _RRectClipper(frame.frame),
+      child: Stack(
+        children: [
+          Positioned.fromRect(
+            rect: frame.player,
+            child: const ColoredBox(
+              color: Colors.black,
+              child: ClipRect(child: _MiniVideo()),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 
   ({double left, double top, double right, double bottom}) _bounds(
     Size size,
@@ -646,6 +688,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     final padding = mediaQuery.viewPadding;
     final restoring = _restoreTarget != null;
     final target = _restoreTarget ?? _frozenTarget ?? _miniRect(size, padding);
+    final handedOver = _container != null;
     final targetRadius = restoring ? 0.0 : _radius;
     return Stack(
       fit: StackFit.expand,
@@ -675,8 +718,8 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
         AnimatedBuilder(
           animation: _animation,
           builder: (context, child) {
-            if (_expanding && restoring) {
-              // 已交给展开中的详情页
+            if (handedOver) {
+              // 已交给过渡中的详情页
               return const SizedBox.shrink();
             }
             final t = _progress;
@@ -732,36 +775,62 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 }
 
-/// 展开的背景与外框的阴影，背景随进度轻微变暗
-class _ExpandBackdropPainter extends CustomPainter {
-  _ExpandBackdropPainter({
-    required this.image,
-    required this.color,
+typedef _Container = ({
+  Rect mini,
+  Rect player,
+  double scale,
+  Offset origin,
+  Rect? mask,
+});
+
+typedef _ContainerFrame = ({
+  RRect frame,
+  double scale,
+  Offset origin,
+  Rect player,
+  Path? mask,
+  double maskOpacity,
+  double t,
+});
+
+/// 过渡的背景（随进度轻微变暗）、外框阴影、缩放的页面截图与黑边遮罩；
+/// 只绘制图片与简单图形，不重新光栅化页面
+class _ContainerPainter extends CustomPainter {
+  _ContainerPainter({
+    required this.backdrop,
+    required this.backdropColor,
+    required this.page,
     required this.frame,
-    required this.t,
   });
 
-  final ui.Image? image;
-  final Color color;
+  final ui.Image? backdrop;
 
-  /// 外框，null 表示尚未开始展开
-  final RRect? frame;
-  final double t;
+  /// 没有背景截图时的背景色，null 表示露出下方的实时画面
+  final Color? backdropColor;
+  final ui.Image? page;
+
+  /// null 表示尚未开始
+  final _ContainerFrame? frame;
 
   @override
   void paint(Canvas canvas, Size size) {
     final rect = Offset.zero & size;
-    if (image case final image?) {
+    if (backdrop case final backdrop?) {
       paintImage(
         canvas: canvas,
         rect: rect,
-        image: image,
+        image: backdrop,
         fit: BoxFit.fill,
         filterQuality: FilterQuality.low,
       );
-    } else {
+    } else if (backdropColor case final color?) {
       canvas.drawRect(rect, Paint()..color = color);
     }
+    final frame = this.frame;
+    if (frame == null) {
+      return;
+    }
+    final t = frame.t;
     canvas.drawRect(
       rect,
       Paint()
@@ -769,48 +838,51 @@ class _ExpandBackdropPainter extends CustomPainter {
           alpha: _AppMiniPlayerOverlayState._backdropDim * t,
         ),
     );
-    if (frame case final frame?) {
-      // 与小窗相同的阴影，随圆角一同消失
-      final shadow = BoxShadow(
-        color: Colors.black.withValues(alpha: 0.28 * (1 - t)),
-        blurRadius: 24,
-        offset: const Offset(0, 12),
-      );
-      canvas.drawRRect(frame.shift(shadow.offset), shadow.toPaint());
+    // 与小窗相同的阴影，随圆角一同消失
+    final shadow = BoxShadow(
+      color: Colors.black.withValues(alpha: 0.28 * (1 - t)),
+      blurRadius: 24,
+      offset: const Offset(0, 12),
+    );
+    canvas
+      ..drawRRect(frame.frame.shift(shadow.offset), shadow.toPaint())
+      ..save()
+      ..clipRRect(frame.frame);
+    if (page case final page?) {
+      canvas
+        ..save()
+        ..translate(frame.origin.dx, frame.origin.dy)
+        ..scale(frame.scale)
+        ..drawImageRect(
+          page,
+          Offset.zero &
+              Size(page.width.toDouble(), page.height.toDouble()),
+          rect,
+          Paint()..filterQuality = FilterQuality.medium,
+        )
+        ..restore();
     }
+    if (frame.mask case final mask?) {
+      canvas.drawPath(
+        mask,
+        Paint()..color = Colors.black.withValues(alpha: frame.maskOpacity),
+      );
+    }
+    canvas.restore();
   }
 
   @override
-  bool shouldRepaint(_ExpandBackdropPainter oldDelegate) =>
-      oldDelegate.image != image ||
-      oldDelegate.color != color ||
-      oldDelegate.frame != frame ||
-      oldDelegate.t != t;
+  bool shouldRepaint(_ContainerPainter oldDelegate) => true;
 }
 
-/// 起点时小窗黑边处的遮罩，限制在外框内
-class _ExpandMaskPainter extends CustomPainter {
-  _ExpandMaskPainter({
-    required this.frame,
-    required this.mask,
-    required this.opacity,
-  });
-
-  final RRect frame;
-  final Path mask;
-  final double opacity;
+class _EmptyClipper extends CustomClipper<Rect> {
+  const _EmptyClipper();
 
   @override
-  void paint(Canvas canvas, Size size) {
-    canvas
-      ..save()
-      ..clipRRect(frame)
-      ..drawPath(mask, Paint()..color = Colors.black.withValues(alpha: opacity))
-      ..restore();
-  }
+  Rect getClip(Size size) => Rect.zero;
 
   @override
-  bool shouldRepaint(_ExpandMaskPainter oldDelegate) => true;
+  bool shouldReclip(_EmptyClipper oldClipper) => false;
 }
 
 class _RRectClipper extends CustomClipper<RRect> {
@@ -896,37 +968,6 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
       }
     }
     _scheduleHide();
-  }
-
-  Widget _buildVideo() {
-    return Obx(() {
-      miniPlayerSession.mode.value;
-      final player = PlPlayerController.instance;
-      final videoController = player?.videoController;
-      if (player != null && videoController != null) {
-        final videoFit = player.videoFit.value;
-        return FittedBox(
-          fit: videoFit.boxFit,
-          child: SimpleVideo(
-            controller: videoController,
-            aspectRatio: videoFit.aspectRatio,
-          ),
-        );
-      }
-      final cover = miniPlayerSession.cover;
-      if (cover.isEmpty) {
-        return const SizedBox.shrink();
-      }
-      return LayoutBuilder(
-        builder: (context, constraints) => NetworkImgLayer(
-          src: cover,
-          width: constraints.maxWidth,
-          height: constraints.maxHeight,
-          quality: 60,
-          borderRadius: BorderRadius.zero,
-        ),
-      );
-    });
   }
 
   Widget _buildLoading(ColorScheme colorScheme) => SizedBox.square(
@@ -1136,7 +1177,7 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          _buildVideo(),
+          const _MiniVideo(),
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
@@ -1167,6 +1208,43 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
         ],
       ),
     );
+  }
+}
+
+/// 小窗中的视频画面，播放器尚未就绪时为封面
+class _MiniVideo extends StatelessWidget {
+  const _MiniVideo();
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      miniPlayerSession.mode.value;
+      final player = PlPlayerController.instance;
+      final videoController = player?.videoController;
+      if (player != null && videoController != null) {
+        final videoFit = player.videoFit.value;
+        return FittedBox(
+          fit: videoFit.boxFit,
+          child: SimpleVideo(
+            controller: videoController,
+            aspectRatio: videoFit.aspectRatio,
+          ),
+        );
+      }
+      final cover = miniPlayerSession.cover;
+      if (cover.isEmpty) {
+        return const SizedBox.shrink();
+      }
+      return LayoutBuilder(
+        builder: (context, constraints) => NetworkImgLayer(
+          src: cover,
+          width: constraints.maxWidth,
+          height: constraints.maxHeight,
+          quality: 60,
+          borderRadius: BorderRadius.zero,
+        ),
+      );
+    });
   }
 }
 
