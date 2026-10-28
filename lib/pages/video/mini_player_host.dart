@@ -43,8 +43,11 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   /// null 表示页面不是从小窗恢复的
   Set<MiniRestoreContent>? _restoreWaiting;
 
+  /// 随页面初始化提前加载的评论
+  VideoReplyController? _restoreReplies;
+
   /// 交接的首页评论在下一个微任务中生效，生效后再开始恢复动画
-  VideoReplyController? _applyingReplies;
+  bool _applyingReplies = false;
 
   void initMiniPlayerHost() {
     miniRoute = Get.routing.route;
@@ -57,7 +60,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       if (detail != null && detail.bvid == videoDetailController.bvid) {
         introController.videoDetail.value = detail;
         // 对应 `UgcIntroController.queryVideoIntro`，首页评论据此过滤简介
-        _applyingReplies?.intro = detail.desc?.trim();
+        _restoreReplies?.intro = detail.desc?.trim();
       } else {
         waiting.add(.intro);
       }
@@ -87,10 +90,11 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       }
     }
     if (prefetch.showsReplies) {
-      final controller = Get.find<VideoReplyController>(tag: miniHeroTag);
-      if (prefetch.replies(controller.mode) != null) {
-        _applyingReplies = controller;
-      } else {
+      final controller = _restoreReplies = Get.find<VideoReplyController>(
+        tag: miniHeroTag,
+      );
+      _applyingReplies = prefetch.replies(controller.mode) != null;
+      if (!_applyingReplies) {
         waiting.add(.replies);
       }
       controller.queryData();
@@ -170,7 +174,8 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
           return;
         }
         final applying =
-            _applyingReplies?.loadingState.value is Loading &&
+            _applyingReplies &&
+            _restoreReplies!.loadingState.value is Loading &&
             miniPlayerSession.restoring.value;
         if (applying || !miniPlayerSession.reportRestoreRect(this)) {
           _reportRestoreRect();

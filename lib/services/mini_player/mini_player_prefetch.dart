@@ -22,13 +22,21 @@ class MiniPlayerPrefetch {
   MiniPlayerPrefetch(Map<String, dynamic> args, PlPlayerController player)
     : bvid = args['bvid'] {
     final vertical = player.enableVerticalExpand && args['isVertical'] == true;
-    final showComment = Pref.defaultShowComment;
     final showRelated = player.showRelatedVideo;
-    // 竖屏视频两侧分别为简介（含相关视频）与评论；其他视频右侧标签页默认为
-    // 相关视频，默认显示评论或不显示相关视频时为评论
-    showsRelated = showRelated && (vertical || !showComment);
-    showsReplies =
-        player.showVideoReply && (vertical || showComment || !showRelated);
+    // 对应 `VideoDetailController.onInit` 中 `tabCtr` 的初始标签，以及
+    // `buildTabBar` 的标签列表与越界时的回退：其他视频右侧为相关视频、评论、
+    // 播放列表，竖屏视频右侧为评论、播放列表，左侧简介含相关视频。
+    // 播放列表标签取决于预取时可能尚未获取的详情，按不存在处理，
+    // 实际选中播放列表时预取的内容不会用到
+    final tabs = [
+      if (showRelated && !vertical) _Tab.related,
+      if (player.showVideoReply) _Tab.replies,
+    ];
+    final tab = tabs.isEmpty
+        ? null
+        : tabs[(Pref.defaultShowComment ? 1 : 0).clamp(0, tabs.length - 1)];
+    showsRelated = showRelated && (vertical || tab == _Tab.related);
+    showsReplies = tab == _Tab.replies;
     if (showsRelated) {
       _fetchRelated();
     }
@@ -133,3 +141,5 @@ class MiniPlayerPrefetch {
     }
   }
 }
+
+enum _Tab { related, replies }
