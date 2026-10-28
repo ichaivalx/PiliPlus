@@ -12,6 +12,7 @@ import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
 import 'package:flutter/foundation.dart' show clampDouble;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:get/get.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -65,9 +66,11 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   Offset? _gestureStartPoint;
   Timer? _restoreTimer;
 
-  /// 缩小时淡出的详情页截图及其中播放器的位置
+  /// 过渡期间淡出的截图：缩小时为详情页（并留出播放器的位置），
+  /// 恢复时为恢复前的画面，详情页在其下完成首次构建
   ui.Image? _snapshot;
   Rect? _snapshotHole;
+  final _childKey = GlobalKey();
 
   double get _progress => MiniPlayerMotion.curve.transform(_animation.value);
 
@@ -197,17 +200,38 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 
   void _onRestoringChanged(bool restoring) {
-    if (!mounted || restoring || !_visible || _fadingOut) return;
+    if (!mounted || !_visible || _fadingOut) return;
     setState(() {
-      if (_session.isActive) {
-        if (_restoreTarget != null) {
-          _restoreTarget = null;
-          _animateFrom(_lastRect);
-        }
+      if (restoring) {
+        _captureScreen();
+      } else if (_session.isActive) {
+        // 恢复被取消，回到小窗位置
+        _releaseSnapshot();
+        _restoreTarget = null;
+        _animateFrom(_lastRect);
       } else {
         _hide();
       }
     });
+  }
+
+  /// 恢复开始时截取当前画面（路由变化前的最后一帧），
+  /// 小窗停在原处，等详情页给出目标位置后与截图淡出一同开始
+  void _captureScreen() {
+    _releaseSnapshot();
+    _animation.stop();
+    _from = _lastRect;
+    _fromRadius = _lastRadius;
+    _animation.value = 0;
+    final boundary = _childKey.currentContext?.findRenderObject();
+    if (boundary is! RenderRepaintBoundary) {
+      return;
+    }
+    try {
+      _snapshot = boundary.toImageSync(
+        pixelRatio: MediaQuery.devicePixelRatioOf(context),
+      );
+    } catch (_) {}
   }
 
   void _onRestoreRectChanged(Rect? rect) {
@@ -222,7 +246,6 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     setState(() {
       _restoreTarget = rect;
       _frozenTarget = null;
-      _releaseSnapshot();
       _animateFrom(_lastRect);
     });
   }
@@ -429,8 +452,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   @override
   Widget build(BuildContext context) {
+    final child = RepaintBoundary(key: _childKey, child: widget.child);
     if (!_visible) {
-      return widget.child;
+      return child;
     }
     final mediaQuery = MediaQuery.of(context);
     final size = mediaQuery.size;
@@ -441,7 +465,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     return Stack(
       fit: StackFit.expand,
       children: [
-        widget.child,
+        child,
         if (_snapshot case final snapshot?)
           IgnorePointer(
             child: AnimatedBuilder(

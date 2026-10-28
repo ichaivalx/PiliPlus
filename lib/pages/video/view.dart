@@ -861,7 +861,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
             children: [
               Offstage(
                 offstage: isFullScreen,
-                child: SizedBox(
+                child: afterMiniRestore(
                   width: introWidth,
                   height: introHeight,
                   child: videoIntro(
@@ -880,7 +880,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
               ),
               Offstage(
                 offstage: isFullScreen,
-                child: SizedBox(
+                child: afterMiniRestore(
                   width: introWidth,
                   height: introHeight,
                   child: MiniScaffold(
@@ -947,7 +947,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
             if (!videoDetailController.isFileSource)
               Offstage(
                 offstage: isFullScreen,
-                child: SizedBox(
+                child: afterMiniRestore(
                   width: width,
                   height: introHeight,
                   child: videoIntro(
@@ -962,7 +962,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         ),
         Offstage(
           offstage: isFullScreen,
-          child: SizedBox(
+          child: afterMiniRestore(
             width: maxWidth - width - padding.horizontal,
             height: maxHeight - padding.top,
             child: MiniScaffold(

@@ -1,3 +1,4 @@
+import 'dart:async' show StreamSubscription;
 import 'dart:ui' as ui;
 
 import 'package:PiliPlus/models/video/play/url.dart';
@@ -32,10 +33,14 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
 
   bool get isCoveredByMiniPlayer => miniPlayerSession.covers(this);
 
+  /// 从小窗恢复的页面，恢复动画期间不构建播放器以外的内容
+  bool _restoredFromMini = false;
+
   void initMiniPlayerHost() {
     miniRoute = Get.routing.route;
     miniPlayerSession.attach(this);
     if (miniPlayerSession.isRestoreTarget(miniHeroTag)) {
+      _restoredFromMini = true;
       videoDetailController.autoPlay = true;
       // 立即接管播放器，先展示小窗已有的视频详情
       final detail = miniPlayerSession.handOver(this);
@@ -79,6 +84,17 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       PlPlayerController.setPlayCallBack(null);
     }
   }
+
+  /// 横屏布局中播放器以外的区域：从小窗恢复时，恢复动画结束后再构建并淡入
+  Widget afterMiniRestore({
+    double? width,
+    double? height,
+    required Widget child,
+  }) => SizedBox(
+    width: width,
+    height: height,
+    child: _restoredFromMini ? _MiniRestoreReveal(child: child) : child,
+  );
 
   /// 播放器完成布局后再上报，避免以空区域作为恢复动画的终点
   void _reportRestoreRect() {
@@ -273,5 +289,85 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     if (isShowing) {
       didPushNext();
     }
+  }
+}
+
+/// 恢复动画期间先留空，结束后构建内容并以短促的淡入、上移出现
+class _MiniRestoreReveal extends StatefulWidget {
+  const _MiniRestoreReveal({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_MiniRestoreReveal> createState() => _MiniRestoreRevealState();
+}
+
+class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
+    with SingleTickerProviderStateMixin {
+  StreamSubscription<bool>? _waiting;
+  AnimationController? _controller;
+  Animation<double>? _progress;
+
+  @override
+  void initState() {
+    super.initState();
+    if (miniPlayerSession.restoring.value) {
+      _waiting = miniPlayerSession.restoring.listen((restoring) {
+        if (!restoring) {
+          _reveal();
+        }
+      });
+    }
+  }
+
+  void _reveal() {
+    _waiting?.cancel();
+    _waiting = null;
+    if (!mounted) {
+      return;
+    }
+    final controller = _controller = AnimationController(
+      vsync: this,
+      duration: MiniPlayerMotion.revealDuration,
+    );
+    setState(() {
+      _progress = CurvedAnimation(
+        parent: controller,
+        curve: MiniPlayerMotion.curve,
+      );
+    });
+    controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _waiting?.cancel();
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_waiting != null) {
+      return const SizedBox.shrink();
+    }
+    final progress = _progress;
+    if (progress == null) {
+      return widget.child;
+    }
+    return FadeTransition(
+      opacity: progress,
+      child: AnimatedBuilder(
+        animation: progress,
+        builder: (context, child) => Transform.translate(
+          offset: Offset(
+            0,
+            MiniPlayerMotion.revealOffset * (1 - progress.value),
+          ),
+          child: child,
+        ),
+        child: widget.child,
+      ),
+    );
   }
 }

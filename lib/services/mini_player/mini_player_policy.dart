@@ -21,6 +21,10 @@ enum MiniRouteKind {
 abstract final class MiniPlayerMotion {
   static const duration = Duration(milliseconds: 300);
   static const curve = Curves.fastOutSlowIn;
+
+  /// 恢复后详情页其余内容的出现
+  static const revealDuration = Duration(milliseconds: 200);
+  static const revealOffset = 10.0;
 }
 
 abstract final class MiniPlayerPolicy {
