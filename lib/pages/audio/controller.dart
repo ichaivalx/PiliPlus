@@ -186,6 +186,7 @@ class AudioController extends GetxController
         ua: BrowserUa.pc,
         referer: HttpString.baseUrl,
         volume: _videoDetailController?.volume,
+        start: _takeStart(),
         load: shutdownTimerService.beginLoad(),
       );
     }
@@ -299,8 +300,16 @@ class AudioController extends GetxController
     }
   }
 
+  /// 初始进度只用于进入页面时的那次请求
+  Duration? _takeStart() {
+    final start = _start;
+    _start = null;
+    return start;
+  }
+
   Future<bool> _queryPlayUrl() async {
     _querySponsorBlock();
+    final start = _takeStart();
     final load = shutdownTimerService.beginLoad();
     final res = await AudioGrpc.audioPlayUrl(
       itemType: itemType,
@@ -308,7 +317,7 @@ class AudioController extends GetxController
       subId: subId,
     );
     if (res case Success(:final response)) {
-      if (!_onPlay(response, load)) {
+      if (!_onPlay(response, load, start)) {
         shutdownTimerService.endLoad(load);
       }
       return true;
@@ -320,7 +329,7 @@ class AudioController extends GetxController
   }
 
   /// 返回是否开始打开播放源
-  bool _onPlay(PlayURLResp data, ShutdownLoad load) {
+  bool _onPlay(PlayURLResp data, ShutdownLoad load, Duration? start) {
     final PlayInfo? playInfo = data.playerInfo.values.firstOrNull;
     if (playInfo != null) {
       http_model.Volume? volume;
@@ -347,6 +356,7 @@ class AudioController extends GetxController
         _onOpenMedia(
           VideoUtils.getCdnUrl(audio.playUrls),
           volume: volume,
+          start: start,
           load: load,
         );
         return true;
@@ -361,6 +371,7 @@ class AudioController extends GetxController
         _onOpenMedia(
           VideoUtils.getCdnUrl(durl.playUrls),
           volume: volume,
+          start: start,
           load: load,
         );
         return true;
@@ -377,6 +388,7 @@ class AudioController extends GetxController
     String ua = Constants.userAgentApp,
     String? referer,
     http_model.Volume? volume,
+    Duration? start,
     required ShutdownLoad load,
   }) async {
     _openingLoad = load;
@@ -387,8 +399,6 @@ class AudioController extends GetxController
         return;
       }
       final extras = audioFilterExtras(volume);
-      final start = _start;
-      _start = null;
       player.setMediaHeader(
         userAgent: ua,
         // mpv cannot clear referer option
