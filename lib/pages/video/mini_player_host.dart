@@ -10,6 +10,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_queue.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
+import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
@@ -49,12 +50,27 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   void disposeMiniPlayerHost() {
     miniPlayerSession.detach(this);
     _cancelContinuation();
+    _takeReturnResume();
+  }
+
+  /// 返回时按离开时的播放状态恢复，期间定时关闭到期等停止意图使其取消
+  ShutdownLoad? _returnResume;
+
+  ShutdownLoad? _takeReturnResume() {
+    final resume = _returnResume;
+    if (resume != null) {
+      _returnResume = null;
+      shutdownTimerService.endLoad(resume);
+    }
+    return resume;
   }
 
   /// 页面正常离开（未交给小窗）：交出播放所有权并作废续播，进行中的加载
   /// 因不再持有播放器而不会播放，重新露出时由 didPopNext 重新获取
   void onLeaveWithoutMiniPlayer() {
     _cancelContinuation();
+    _takeReturnResume();
+    _returnResume = shutdownTimerService.beginLoad();
     plPlayerController?.cancelBackgroundResume();
     if (PlPlayerController.playOwner?.tag == miniHeroTag) {
       PlPlayerController.setPlayCallBack(null);
@@ -80,6 +96,10 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   bool miniPlayerHandlesPopNext() {
     if (isShowing) {
       return true;
+    }
+    if (_takeReturnResume() case final resume?
+        when !shutdownTimerService.canAutoplay(resume)) {
+      videoDetailController.playerStatus = PlayerStatus.paused;
     }
     miniPlayerSession.close(pause: false);
     return false;
@@ -242,6 +262,13 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   void onMiniRevealed() {
     if (!isShowing) {
       didPopNext();
+    }
+  }
+
+  @override
+  void onMiniHidden() {
+    if (isShowing) {
+      didPushNext();
     }
   }
 }

@@ -184,7 +184,8 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   void _resumeInForeground() {
     _backgroundResume ??= shutdownTimerService.beginLoad();
-    _resumeListener ??= AppLifecycleListener(onResume: _resumeFromBackground);
+    // 分屏时焦点在另一侧，回到可见后不会进入 resumed
+    _resumeListener ??= AppLifecycleListener(onShow: _resumeFromBackground);
   }
 
   /// 页面离开且未交给小窗时撤销

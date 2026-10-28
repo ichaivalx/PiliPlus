@@ -409,7 +409,12 @@ class VideoDetailController extends GetxController
     } else if (isPlayAll) {
       watchLaterTitle = args['favTitle'];
       _mediaDesc = args['desc'];
-      getMediaList();
+      if (miniPlayerSession.mediaListFor(heroTag) case final list?
+          when list.isNotEmpty) {
+        mediaList.addAll(list);
+      } else {
+        getMediaList();
+      }
     }
 
     tabCtr = TabController(

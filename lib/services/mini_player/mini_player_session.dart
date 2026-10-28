@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
+import 'package:PiliPlus/models_new/media_list/media_list.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
@@ -58,6 +59,9 @@ abstract interface class MiniPlayerHost {
 
   /// 页面重新成为最上层的页面，未在展示播放器时重新获取
   void onMiniRevealed();
+
+  /// 页面被隔着弹窗推入的页面覆盖，未转入小窗时按离开处理
+  void onMiniHidden();
 }
 
 enum MiniPlayerMode {
@@ -181,6 +185,18 @@ class MiniPlayerSession with WidgetsBindingObserver {
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
     _routes.add(route);
     _onPush(route);
+    _hideHostBelow(route, previousRoute);
+  }
+
+  /// 隔着弹窗等非页面路由时 RouteAware 不会通知被覆盖的页面，由此补充
+  void _hideHostBelow(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    if (route is! PageRoute || !route.opaque) {
+      return;
+    }
+    final page = _topPage(below: route);
+    if (page != null && !identical(page, previousRoute)) {
+      _hostOf(page)?.onMiniHidden();
+    }
   }
 
   void _onPush(Route<dynamic> route) {
@@ -196,7 +212,9 @@ class MiniPlayerSession with WidgetsBindingObserver {
         }
         close(pause: false);
       case .exclusive:
-        close(pause: false);
+        // 独占播放的页面不一定使用同一播放器（如听音频），无宿主时明确暂停；
+        // 覆盖中的详情页由其离开处理暂停，返回时照常恢复
+        close(pause: isHeadless);
       case .content:
         if (isActive) {
           return;
@@ -397,6 +415,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
   }
 
   void _onPlayerStatus(PlayerStatus status) {
+    // 系统媒体控制由会话接管时，播放器发出的暂停状态会被忽略，由会话同步
+    if (!status.isPlaying && isHeadless) {
+      _media.syncState();
+    }
     // 恢复中的详情页即将接管
     if (!status.isCompleted || _restoreTag != null) {
       return;
@@ -467,7 +489,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
     loading.value = false;
     if (_queue?.detail case final detail?) {
-      _exitIfInteractive(detail);
+      _exitIfDetailOnly(detail);
     }
     _runPendingRestore();
   }
@@ -635,6 +657,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
     return detail;
   }
 
+  /// 恢复的详情页沿用小窗已加载的播放全部列表，续播顺序与小窗一致
+  List<MediaListItemModel>? mediaListFor(String heroTag) =>
+      isHeadless && isRestoreTarget(heroTag) ? _queue?.mediaList : null;
+
   /// 接管页面复用正在播放的资源
   LoadingState<PlayUrlModel>? playUrlFor(int cid) => switch (_handover) {
     final handover? when handover.cid == cid => Success(handover.playUrl),
@@ -745,12 +771,13 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
   }
 
-  /// 互动视频需在详情页播放；有更新的选择在加载时由其结束后再判断
-  void _exitIfInteractive(VideoDetailData detail) {
+  /// 互动视频需在详情页播放，番剧由详情页按上游方式跳转；
+  /// 有更新的选择在加载时由其结束后再判断
+  void _exitIfDetailOnly(VideoDetailData detail) {
     if (!isHeadless ||
         loading.value ||
         detail.bvid != _args['bvid'] ||
-        detail.rights?.isSteinGate != 1) {
+        (detail.rights?.isSteinGate != 1 && detail.redirectUrl == null)) {
       return;
     }
     final args = _args;
@@ -859,7 +886,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
               ..select(bvid)
               ..onDetail = (detail) {
                 if (identical(_queue, queue)) {
-                  _exitIfInteractive(detail);
+                  _exitIfDetailOnly(detail);
                 }
               };
             _playUrl = data;

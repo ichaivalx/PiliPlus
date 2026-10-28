@@ -88,6 +88,9 @@ class MiniPlayerQueue {
   Future<void>? _detailLoading;
   Future<_PageResult>? _mediaLoading;
 
+  /// 播放全部已加载的列表
+  List<MediaListItemModel>? get mediaList => _mediaList;
+
   /// 当前视频的详情已获取
   VideoDetailData? get detail => _detail?.bvid == _bvid ? _detail : null;
 

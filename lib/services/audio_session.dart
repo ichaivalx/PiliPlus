@@ -8,6 +8,21 @@ class AudioSessionHandler {
   /// 被打断后待恢复，定时关闭到期时取消
   ShutdownLoad? _interruptResume;
 
+  /// 打断开始时正在播放，结束时需恢复播放；否则只恢复进行中加载的自动播放
+  bool _interruptedPlayback = false;
+
+  /// 暂停播放，并暂缓进行中的加载（如小窗切换视频）完成后的自动播放
+  void _beginInterrupt(bool playing) {
+    if (playing) {
+      PlPlayerController.pauseIfExists(isInterrupt: true);
+    }
+    if (_interruptResume == null) {
+      shutdownTimerService.holdPendingAutoplay();
+      _interruptResume = shutdownTimerService.beginLoad();
+      _interruptedPlayback = playing;
+    }
+  }
+
   ShutdownLoad? _takeInterruptResume() {
     final resume = _interruptResume;
     if (resume != null) {
@@ -33,7 +48,12 @@ class AudioSessionHandler {
       final playerStatus = PlPlayerController.getPlayerStatusIfExists();
       // final player = PlPlayerController.getInstance();
       if (event.begin) {
-        if (playerStatus != PlayerStatus.playing) return;
+        final playing = playerStatus == PlayerStatus.playing;
+        if (!playing &&
+            (event.type == AudioInterruptionType.duck ||
+                !shutdownTimerService.hasPendingAutoplay)) {
+          return;
+        }
         // if (!player.playerStatus.playing) return;
         switch (event.type) {
           case AudioInterruptionType.duck:
@@ -44,14 +64,12 @@ class AudioSessionHandler {
             // player.setVolume(player.volume.value * 0.5);
             break;
           case AudioInterruptionType.pause:
-            PlPlayerController.pauseIfExists(isInterrupt: true);
+            _beginInterrupt(playing);
             // player.pause(isInterrupt: true);
-            _interruptResume ??= shutdownTimerService.beginLoad();
             break;
           case AudioInterruptionType.unknown:
-            PlPlayerController.pauseIfExists(isInterrupt: true);
+            _beginInterrupt(playing);
             // player.pause(isInterrupt: true);
-            _interruptResume ??= shutdownTimerService.beginLoad();
             break;
         }
       } else {
@@ -66,7 +84,10 @@ class AudioSessionHandler {
             break;
           case AudioInterruptionType.pause:
             if (resume != null && shutdownTimerService.canAutoplay(resume)) {
-              PlPlayerController.resumeIfExists();
+              shutdownTimerService.releasePendingAutoplay();
+              if (_interruptedPlayback) {
+                PlPlayerController.resumeIfExists();
+              }
             }
             //player.play();
             break;

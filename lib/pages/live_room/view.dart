@@ -200,7 +200,9 @@ class _LiveRoomPageState extends State<LiveRoomPage>
     if (Platform.isAndroid && !plPlayerController.setSystemBrightness) {
       ScreenBrightnessPlatform.instance.resetApplicationScreenBrightness();
     }
-    PlPlayerController.setPlayCallBack(null);
+    if (PlPlayerController.playOwner == _playOwner) {
+      PlPlayerController.setPlayCallBack(null);
+    }
     plPlayerController
       ..removeStatusLister(playerListener)
       ..dispose();

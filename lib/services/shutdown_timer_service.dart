@@ -90,6 +90,9 @@ class ShutdownTimerService {
 
   bool canAutoplay(ShutdownLoad load) => !load._blocked && !load._held;
 
+  /// 存在完成后会自动播放的加载
+  bool get hasPendingAutoplay => _loads.any(canAutoplay);
+
   /// 停止播放（如关闭小窗、拔出耳机）时，进行中的加载与待恢复的暂停不再自动播放
   void cancelPendingAutoplay() => _blockLoads();
 
