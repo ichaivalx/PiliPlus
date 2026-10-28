@@ -1,6 +1,8 @@
 import 'dart:async' show Completer, unawaited;
 import 'dart:ui' as ui;
 
+import 'package:PiliPlus/grpc/bilibili/main/community/reply/v1.pb.dart'
+    show MainListReply, Mode;
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
@@ -13,6 +15,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_media.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_prefetch.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_queue.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_route.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_source.dart';
@@ -99,6 +102,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
   PlPlayerController? _player;
   Map<String, dynamic> _args = const {};
   MiniPlayerQueue? _queue;
+  MiniPlayerPrefetch? _prefetch;
   PlayUrlModel? _playUrl;
   final RxString _title = ''.obs;
   final RxString _cover = ''.obs;
@@ -353,6 +357,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _media.takeControls();
       WidgetsBinding.instance.addObserver(this);
     }
+    _prefetch = MiniPlayerPrefetch(_args, _player!);
     PlPlayerController.setPlayCallBack(
       play,
       playOwner: (tag: _ownerTag, type: null),
@@ -529,6 +534,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       ..dispose();
     _player = null;
     _queue = null;
+    _prefetch = null;
     WidgetsBinding.instance.removeObserver(this);
     _media.restoreControls();
   }
@@ -540,6 +546,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _player?.removeStatusLister(_onPlayerStatus);
     _player = null;
     _queue = null;
+    _prefetch = null;
     WidgetsBinding.instance.removeObserver(this);
     _media.restoreControls();
     mode.value = .none;
@@ -672,6 +679,17 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 恢复的详情页沿用小窗已加载的播放全部列表，续播顺序与小窗一致
   List<MediaListItemModel>? mediaListFor(String heroTag) =>
       isHeadless && isRestoreTarget(heroTag) ? _queue?.mediaList : null;
+
+  /// 恢复的详情页沿用小窗预先获取的首屏内容，需在接管前取用
+  MiniPlayerPrefetch? prefetchFor(String heroTag) =>
+      isHeadless && isRestoreTarget(heroTag) ? _prefetch : null;
+
+  /// 恢复的详情页首次加载评论时沿用预先获取的首页
+  Future<LoadingState<MainListReply>>? repliesFor(String heroTag, Mode mode) =>
+      switch (prefetchFor(heroTag)?.replies(mode)) {
+        final replies? => Future.value(replies),
+        null => null,
+      };
 
   /// 接管页面复用正在播放的资源
   LoadingState<PlayUrlModel>? playUrlFor(int cid) => switch (_handover) {
@@ -876,6 +894,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
           final video = response.video;
           final isVertical = args['isVertical'] ??=
               (video.height ?? 0) > (video.width ?? 0);
+          final prefetch = MiniPlayerPrefetch(args, player);
           await player.setDataSource(
             NetworkSource(
               videoSource: response.videoUrl,
@@ -905,6 +924,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
                   _exitIfDetailOnly(detail);
                 }
               };
+            _prefetch = prefetch;
             _playUrl = data;
             _title.value = args['title'] ?? '';
             _cover.value = args['cover'] ?? '';

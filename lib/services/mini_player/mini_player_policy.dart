@@ -25,6 +25,9 @@ abstract final class MiniPlayerMotion {
   /// 恢复后详情页其余内容的出现
   static const revealDuration = Duration(milliseconds: 200);
   static const revealOffset = 10.0;
+
+  /// 恢复后等待首屏内容的上限，超时后按页面原样显示
+  static const revealTimeout = Duration(seconds: 1);
 }
 
 abstract final class MiniPlayerPolicy {

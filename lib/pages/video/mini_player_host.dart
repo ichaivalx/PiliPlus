@@ -1,10 +1,13 @@
-import 'dart:async' show StreamSubscription;
+import 'dart:async' show StreamSubscription, Timer;
 import 'dart:ui' as ui;
 
+import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
+import 'package:PiliPlus/pages/video/related/controller.dart';
+import 'package:PiliPlus/pages/video/reply/controller.dart';
 import 'package:PiliPlus/pages/video/view.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
@@ -15,6 +18,9 @@ import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
+
+/// 横屏布局中播放器以外的区域所需的内容
+enum MiniRestoreContent { intro, related, replies }
 
 mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     implements MiniPlayerHost {
@@ -33,22 +39,63 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
 
   bool get isCoveredByMiniPlayer => miniPlayerSession.covers(this);
 
-  /// 从小窗恢复的页面，恢复动画期间不构建播放器以外的内容
-  bool _restoredFromMini = false;
+  /// 从小窗恢复时首屏尚未获取的内容，所在区域到达后再出现；
+  /// null 表示页面不是从小窗恢复的
+  Set<MiniRestoreContent>? _restoreWaiting;
+
+  /// 交接的首页评论在下一个微任务中生效，生效后再开始恢复动画
+  VideoReplyController? _applyingReplies;
 
   void initMiniPlayerHost() {
     miniRoute = Get.routing.route;
     miniPlayerSession.attach(this);
     if (miniPlayerSession.isRestoreTarget(miniHeroTag)) {
-      _restoredFromMini = true;
       videoDetailController.autoPlay = true;
+      final waiting = _restoreWaiting = _takeMiniPrefetch();
       // 立即接管播放器，先展示小窗已有的视频详情
       final detail = miniPlayerSession.handOver(this);
       if (detail != null && detail.bvid == videoDetailController.bvid) {
         introController.videoDetail.value = detail;
+        // 对应 `UgcIntroController.queryVideoIntro`，首页评论据此过滤简介
+        _applyingReplies?.intro = detail.desc?.trim();
+      } else {
+        waiting.add(.intro);
       }
       _reportRestoreRect();
     }
+  }
+
+  /// 沿用小窗预先获取的首屏内容，未获取到的随页面初始化立即请求；
+  /// 返回仍需等待的内容
+  Set<MiniRestoreContent> _takeMiniPrefetch() {
+    final waiting = <MiniRestoreContent>{};
+    final prefetch = miniPlayerSession.prefetchFor(miniHeroTag);
+    final bvid = videoDetailController.bvid;
+    if (prefetch == null || prefetch.bvid != bvid) {
+      return waiting;
+    }
+    if (prefetch.showsRelated) {
+      final related = prefetch.related;
+      final controller = Get.put(
+        RelatedController(autoQuery: related == null, bvid: bvid),
+        tag: miniHeroTag,
+      );
+      if (related != null) {
+        controller.loadingState.value = related;
+      } else {
+        waiting.add(.related);
+      }
+    }
+    if (prefetch.showsReplies) {
+      final controller = Get.find<VideoReplyController>(tag: miniHeroTag);
+      if (prefetch.replies(controller.mode) != null) {
+        _applyingReplies = controller;
+      } else {
+        waiting.add(.replies);
+      }
+      controller.queryData();
+    }
+    return waiting;
   }
 
   /// 覆盖中被移除时先由会话接续等待中的续播
@@ -85,22 +132,47 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
   }
 
-  /// 横屏布局中播放器以外的区域：从小窗恢复时，恢复动画结束后再构建并淡入
+  /// 横屏布局中播放器以外的区域：从小窗恢复时，[content] 均已交接的区域在
+  /// 首帧构建，其余留空，恢复动画结束且内容到达后再构建并淡入
   Widget afterMiniRestore({
     double? width,
     double? height,
+    required Set<MiniRestoreContent> content,
     required Widget child,
-  }) => SizedBox(
-    width: width,
-    height: height,
-    child: _restoredFromMini ? _MiniRestoreReveal(child: child) : child,
-  );
+  }) {
+    final waiting = _restoreWaiting?.intersection(content);
+    return SizedBox(
+      width: width,
+      height: height,
+      child: waiting == null
+          ? child
+          : _MiniRestoreReveal(host: this, waiting: waiting, child: child),
+    );
+  }
 
-  /// 播放器完成布局后再上报，避免以空区域作为恢复动画的终点
+  Rx<Object?> _restoreSource(MiniRestoreContent content) => switch (content) {
+    .intro => introController.videoDetail,
+    .related => Get.find<RelatedController>(tag: miniHeroTag).loadingState,
+    .replies => Get.find<VideoReplyController>(tag: miniHeroTag).loadingState,
+  };
+
+  bool _isRestoreReady(MiniRestoreContent content) => switch (content) {
+    .intro => introController.videoDetail.value.bvid != null,
+    _ => _restoreSource(content).value is! Loading,
+  };
+
+  /// 播放器完成布局、交接的内容生效后再上报，避免以空区域作为恢复动画的终点，
+  /// 也避免首次构建交接的内容落在动画的第一帧
   void _reportRestoreRect() {
     WidgetsBinding.instance
       ..addPostFrameCallback((_) {
-        if (mounted && !miniPlayerSession.reportRestoreRect(this)) {
+        if (!mounted) {
+          return;
+        }
+        final applying =
+            _applyingReplies?.loadingState.value is Loading &&
+            miniPlayerSession.restoring.value;
+        if (applying || !miniPlayerSession.reportRestoreRect(this)) {
           _reportRestoreRect();
         }
       })
@@ -292,10 +364,17 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   }
 }
 
-/// 恢复动画期间先留空，结束后构建内容并以短促的淡入、上移出现
+/// 内容已交接时直接构建；否则恢复期间先留空，恢复动画结束且内容到达
+/// （或等待超时）后构建内容并以短促的淡入、上移出现
 class _MiniRestoreReveal extends StatefulWidget {
-  const _MiniRestoreReveal({required this.child});
+  const _MiniRestoreReveal({
+    required this.host,
+    required this.waiting,
+    required this.child,
+  });
 
+  final MiniPlayerHostMixin host;
+  final Set<MiniRestoreContent> waiting;
   final Widget child;
 
   @override
@@ -304,28 +383,46 @@ class _MiniRestoreReveal extends StatefulWidget {
 
 class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
     with SingleTickerProviderStateMixin {
-  StreamSubscription<bool>? _waiting;
+  List<StreamSubscription>? _waiting;
+  Timer? _timeout;
   AnimationController? _controller;
   Animation<double>? _progress;
 
   @override
   void initState() {
     super.initState();
-    if (miniPlayerSession.restoring.value) {
-      _waiting = miniPlayerSession.restoring.listen((restoring) {
-        if (!restoring) {
-          _reveal();
-        }
-      });
+    if (miniPlayerSession.restoring.value && !_ready) {
+      _waiting = [
+        for (final e in widget.waiting)
+          widget.host._restoreSource(e).listen((_) => _check()),
+        miniPlayerSession.restoring.listen((_) => _check()),
+      ];
+      _timeout = Timer(MiniPlayerMotion.revealTimeout, _check);
     }
   }
 
-  void _reveal() {
-    _waiting?.cancel();
-    _waiting = null;
-    if (!mounted) {
+  bool get _ready => widget.waiting.every(widget.host._isRestoreReady);
+
+  /// 超时后按页面原样显示
+  void _check() {
+    if (_waiting == null ||
+        (_timeout!.isActive && !_ready) ||
+        miniPlayerSession.restoring.value) {
       return;
     }
+    _stopWaiting();
+    _reveal();
+  }
+
+  void _stopWaiting() {
+    _timeout?.cancel();
+    for (final e in _waiting ?? const <StreamSubscription>[]) {
+      e.cancel();
+    }
+    _waiting = null;
+  }
+
+  void _reveal() {
     final controller = _controller = AnimationController(
       vsync: this,
       duration: MiniPlayerMotion.revealDuration,
@@ -341,7 +438,7 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
 
   @override
   void dispose() {
-    _waiting?.cancel();
+    _stopWaiting();
     _controller?.dispose();
     super.dispose();
   }

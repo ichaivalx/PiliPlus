@@ -864,6 +864,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                 child: afterMiniRestore(
                   width: introWidth,
                   height: introHeight,
+                  content: const {.intro, .related},
                   child: videoIntro(
                     width: introWidth,
                     height: introHeight,
@@ -883,6 +884,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                 child: afterMiniRestore(
                   width: introWidth,
                   height: introHeight,
+                  content: const {.replies},
                   child: MiniScaffold(
                     key: videoDetailController.childKey,
                     body: Column(
@@ -950,6 +952,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                 child: afterMiniRestore(
                   width: width,
                   height: introHeight,
+                  content: const {.intro},
                   child: videoIntro(
                     width: width,
                     height: introHeight,
@@ -965,6 +968,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
           child: afterMiniRestore(
             width: maxWidth - width - padding.horizontal,
             height: maxHeight - padding.top,
+            content: const {.related, .replies},
             child: MiniScaffold(
               key: videoDetailController.childKey,
               body: Column(
