@@ -21,8 +21,10 @@ import 'package:PiliPlus/pages/log_table/view.dart';
 import 'package:PiliPlus/pages/login_devices/view.dart';
 import 'package:PiliPlus/pages/login_log/controller.dart';
 import 'package:PiliPlus/pages/member/controller.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/member/widget/medal_wall.dart';
 import 'package:PiliPlus/pages/member/widget/reserve_button.dart';
+import 'package:PiliPlus/pages/member/widget/space_skeleton.dart';
 import 'package:PiliPlus/pages/member/widget/user_info_card.dart';
 import 'package:PiliPlus/pages/member_cheese/view.dart';
 import 'package:PiliPlus/pages/member_contribute/controller.dart';
@@ -92,7 +94,10 @@ class _MemberPageState extends State<MemberPage> {
       color: theme.surface,
       child: Obx(
         () => switch (_userController.loadingState.value) {
-          Loading() => m3eLoading,
+          Loading() => MemberSpaceSkeleton(
+            isOwner: _mid == _userController.account.mid,
+            actions: _actions(theme),
+          ),
           Success(:final response) => ExtendedNestedScrollView(
             onlyOneScrollInBody: true,
             key: _userController.scrollKey,
@@ -222,10 +227,13 @@ class _MemberPageState extends State<MemberPage> {
                     Widget trailing = FilledButton.tonal(
                       onPressed: () async {
                         final isFollow = e.isFollow;
+                        // 预取的空间页数据含预约状态；变更完成后再次作废
+                        MemberSpacePrefetch.invalidate(_mid);
                         final res = await UserHttp.spaceReserve(
                           sid: e.sid!,
                           isFollow: isFollow,
                         );
+                        MemberSpacePrefetch.invalidate(_mid);
                         if (res.isSuccess) {
                           e
                             ..total += isFollow ? -1 : 1

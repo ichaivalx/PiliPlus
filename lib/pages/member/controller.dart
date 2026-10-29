@@ -67,7 +67,7 @@ class MemberController extends CommonDataController<SpaceData, SpaceData?>
 
   final scrollKey = GlobalKey<ExtendedNestedScrollViewState>();
 
-  /// 从 UP 主面板进入时仍在进行的预取请求，首次加载时取用
+  /// 进入时仍在进行的预取请求，首次加载时取用
   Future<LoadingState<SpaceData>>? _prefetched;
 
   @override

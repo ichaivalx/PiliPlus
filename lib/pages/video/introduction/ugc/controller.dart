@@ -90,10 +90,7 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
   void onInit() {
     super.onInit();
     _spacePrefetch = videoDetail.listen(
-      (detail) => MemberSpacePrefetch.hold(this, [
-        detail.owner?.mid,
-        ...?detail.staff?.map((e) => e.mid),
-      ]),
+      (detail) => MemberSpacePrefetch.holdVideo(this, detail),
     );
     final alwaysExpandIntroPanel = Pref.alwaysExpandIntroPanel;
     expand = RxBool(alwaysExpandIntroPanel);

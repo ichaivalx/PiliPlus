@@ -9,6 +9,7 @@ import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/models_new/media_list/media_list.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/models_new/video/video_tag/data.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
@@ -634,6 +635,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _player = null;
     _queue = null;
     _prefetch = null;
+    MemberSpacePrefetch.release(this);
     WidgetsBinding.instance.removeObserver(this);
     _media.restoreControls();
   }
@@ -646,6 +648,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _player = null;
     _queue = null;
     _prefetch = null;
+    MemberSpacePrefetch.release(this);
     WidgetsBinding.instance.removeObserver(this);
     _media.restoreControls();
     mode.value = .none;
@@ -915,17 +918,19 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
   }
 
-  /// 当前视频的详情到达时预取 UP 主信息，并检查内容是否只能在详情页播放；
-  /// 详情已获取时立即预取
+  /// 当前视频的详情到达时预取 UP 主信息与空间页，并检查内容是否只能在
+  /// 详情页播放；详情已获取时立即预取
   void _watchDetail(MiniPlayerQueue queue, MiniPlayerPrefetch prefetch) {
     queue.onDetail = (detail) {
       if (identical(_queue, queue)) {
         prefetch.ownerOf(detail);
+        MemberSpacePrefetch.holdVideo(this, detail);
         _exitIfDetailOnly(detail);
       }
     };
     if (queue.detail case final detail?) {
       prefetch.ownerOf(detail);
+      MemberSpacePrefetch.holdVideo(this, detail);
     }
   }
 

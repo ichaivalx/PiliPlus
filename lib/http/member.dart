@@ -254,6 +254,18 @@ abstract final class MemberHttp {
     int? mid,
     dynamic fromViewAid,
   }) async {
+    final res = await spaceJson(mid: mid, fromViewAid: fromViewAid);
+    if (res case Success(:final response)) {
+      return Success(SpaceData.fromJson(response));
+    }
+    return res as Error;
+  }
+
+  /// 未解析的空间页数据，预取保留它，每次取用时各自解析
+  static Future<LoadingState<Map<String, dynamic>>> spaceJson({
+    int? mid,
+    dynamic fromViewAid,
+  }) async {
     final params = {
       'build': 8430300,
       'version': '8.43.0',
@@ -277,7 +289,7 @@ abstract final class MemberHttp {
       ),
     );
     if (res.data['code'] == 0) {
-      return Success(SpaceData.fromJson(res.data['data']));
+      return Success(res.data['data']);
     } else {
       return Error(res.data['message']);
     }

@@ -106,7 +106,12 @@ class _SubDetailPageState extends State<SubDetailPage> with GridMixin {
     if (info != null) return _buildAppBar(theme, padding, info);
     return Obx(() {
       return switch (_subDetailController.loadingState.value) {
-        Loading() || Error() => const SliverAppBar(),
+        // 加载中预留与加载完成后相同的高度
+        Loading() => const SliverAppBar.medium(
+          expandedHeight: kToolbarHeight + 132,
+          pinned: true,
+        ),
+        Error() => const SliverAppBar(),
         Success() => _buildAppBar(
           theme,
           padding,

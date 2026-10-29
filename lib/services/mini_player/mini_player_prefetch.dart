@@ -1,3 +1,4 @@
+import 'package:PiliPlus/common/widgets/image/precache.dart';
 import 'package:PiliPlus/common/widgets/pendant_avatar.dart';
 import 'package:PiliPlus/grpc/bilibili/main/community/reply/v1.pb.dart'
     show MainListReply, Mode;
@@ -12,10 +13,7 @@ import 'package:PiliPlus/models_new/member_card_info/data.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/models_new/video/video_tag/data.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
-import 'package:PiliPlus/utils/extension/num_ext.dart';
-import 'package:PiliPlus/utils/image_utils.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
-import 'package:cached_network_image_ce/cached_network_image.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
@@ -178,20 +176,7 @@ class MiniPlayerPrefetch {
       return;
     }
     for (final (:src, :width, :height) in images(context)) {
-      if (src == null || src.isEmpty) {
-        continue;
-      }
-      final url = ImageUtils.thumbnailUrl(src);
-      final byWidth = width <= height;
-      precacheImage(
-        ResizeImage.resizeIfNeeded(
-          byWidth ? width.cacheSize(context) : null,
-          byWidth ? null : height.cacheSize(context),
-          CachedNetworkImageProvider(url, cacheKey: url),
-        ),
-        context,
-        onError: (_, _) {},
-      );
+      precacheNetworkImg(context, src, width: width, height: height);
     }
   }
 }

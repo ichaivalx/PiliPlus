@@ -5,6 +5,7 @@ import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models_new/blacklist/data.dart';
 import 'package:PiliPlus/models_new/blacklist/list.dart';
 import 'package:PiliPlus/pages/common/common_list_controller.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/global_data.dart';
@@ -46,7 +47,10 @@ class BlackListController
       title: Text('确定将 $name 移出黑名单？'),
     );
     if (confirm) {
+      // 预取的空间页数据含拉黑状态；变更完成后再次作废
+      MemberSpacePrefetch.invalidate(mid);
       final result = await VideoHttp.relationMod(mid: mid, act: 6, reSrc: 11);
+      MemberSpacePrefetch.invalidate(mid);
       if (result.isSuccess) {
         loadingState
           ..value.data!.removeAt(index)
