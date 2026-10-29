@@ -13,6 +13,7 @@ import 'package:PiliPlus/models_new/space/space/reservation_card_list.dart';
 import 'package:PiliPlus/models_new/space/space/setting.dart';
 import 'package:PiliPlus/models_new/space/space/tab2.dart';
 import 'package:PiliPlus/pages/common/common_data_controller.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/extension/nested_scroll_ext.dart';
 import 'package:PiliPlus/utils/request_utils.dart';
@@ -66,10 +67,22 @@ class MemberController extends CommonDataController<SpaceData, SpaceData?>
 
   final scrollKey = GlobalKey<ExtendedNestedScrollViewState>();
 
+  /// 从 UP 主面板进入时仍在进行的预取请求，首次加载时取用
+  Future<LoadingState<SpaceData>>? _prefetched;
+
   @override
   void onInit() {
     super.onInit();
-    queryData();
+    switch (MemberSpacePrefetch.take(mid, fromViewAid)) {
+      // 预取已完成时同步应用，首帧即为实际内容
+      case final Success<SpaceData> res:
+        customHandleResponse(true, res);
+      case final Future<LoadingState<SpaceData>> res:
+        _prefetched = res;
+        queryData();
+      default:
+        queryData();
+    }
   }
 
   @override
@@ -187,10 +200,15 @@ class MemberController extends CommonDataController<SpaceData, SpaceData?>
   }
 
   @override
-  Future<LoadingState<SpaceData>> customGetData() => MemberHttp.space(
-    mid: mid,
-    fromViewAid: fromViewAid,
-  );
+  Future<LoadingState<SpaceData>> customGetData() {
+    final prefetched = _prefetched;
+    _prefetched = null;
+    return prefetched ??
+        MemberHttp.space(
+          mid: mid,
+          fromViewAid: fromViewAid,
+        );
+  }
 
   void blockUser(BuildContext context) {
     if (!account.isLogin) {

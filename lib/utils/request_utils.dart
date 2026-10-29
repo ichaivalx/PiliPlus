@@ -26,6 +26,7 @@ import 'package:PiliPlus/pages/fav_detail/controller.dart'
     show BaseFavController;
 import 'package:PiliPlus/pages/group_panel/view.dart';
 import 'package:PiliPlus/pages/login/geetest/geetest_webview_dialog.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/size_ext.dart';
@@ -141,6 +142,8 @@ abstract final class RequestUtils {
     if (mid == null) {
       return;
     }
+    // 预取的空间页数据含关注关系
+    MemberSpacePrefetch.discardMid(mid);
     feedBack();
     if (!isFollow) {
       final res = await VideoHttp.relationMod(

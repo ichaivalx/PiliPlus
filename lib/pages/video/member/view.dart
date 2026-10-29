@@ -19,6 +19,7 @@ import 'package:PiliPlus/models_new/space/space_archive/item.dart';
 import 'package:PiliPlus/models_new/video/video_detail/episode.dart';
 import 'package:PiliPlus/pages/fan/view.dart';
 import 'package:PiliPlus/pages/follow/view.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/member_video/widgets/video_card_h_member_video.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
@@ -57,9 +58,13 @@ class _HorizontalMemberPageState extends State<HorizontalMemberPage> {
   late ColorScheme colorScheme;
   late final _isRefreshing = RxBool(false);
 
+  /// 预先获取空间页数据，点击查看主页时直接显示
+  Object? _spacePrefetch;
+
   @override
   void initState() {
     super.initState();
+    _spacePrefetch = MemberSpacePrefetch.start(widget.mid);
     _controller = Get.put(
       HorizontalMemberPageController(
         mid: widget.mid,
@@ -83,6 +88,12 @@ class _HorizontalMemberPageState extends State<HorizontalMemberPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     colorScheme = ColorScheme.of(context);
+  }
+
+  @override
+  void dispose() {
+    MemberSpacePrefetch.discard(_spacePrefetch);
+    super.dispose();
   }
 
   @override
