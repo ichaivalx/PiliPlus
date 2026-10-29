@@ -9,6 +9,8 @@ import 'package:PiliPlus/services/mini_player/mini_player_window.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
 import 'package:PiliPlus/utils/utils.dart';
+import 'package:collection/collection.dart' show IterableExtension;
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 import 'package:get/get_navigation/src/router_report.dart';
@@ -324,7 +326,8 @@ class MiniPlayerSession {
       window
         ..host = null
         ..dormant = dormant;
-      if (host.presented != null && host.anchor case final anchor?) {
+      final anchor = host.anchor;
+      if (host.presented != null && anchor != null) {
         // 只保留一条记录
         anchor.host = null;
         Future.microtask(() => _removeRoute(anchor));
@@ -888,10 +891,11 @@ class MiniPlayerSession {
       _dormantEntry = _DormantPopEntry(
         target,
         onBack: () {
+          final dormant = _routeBelow(target);
           if (_gate == null &&
               target.isCurrent &&
-              _routeBelow(target) case final MiniPlayerWindowRoute dormant
-              when dormant.isDormant) {
+              dormant is MiniPlayerWindowRoute &&
+              dormant.isDormant) {
             _openDormant(dormant, above: target);
           }
         },
