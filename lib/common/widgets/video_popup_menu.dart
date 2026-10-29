@@ -295,12 +295,16 @@ class VideoPopupMenu extends StatelessWidget {
                             TextButton(
                               onPressed: () async {
                                 Get.back();
+                                // 预取的空间页数据含拉黑状态；变更完成后
+                                // 再次作废，期间开始的预取可能取到变更前的状态
+                                MemberSpacePrefetch.discardMid(
+                                  videoItem.owner.mid,
+                                );
                                 final res = await VideoHttp.relationMod(
                                   mid: videoItem.owner.mid!,
                                   act: 5,
                                   reSrc: 11,
                                 );
-                                // 预取的空间页数据含拉黑状态
                                 MemberSpacePrefetch.discardMid(
                                   videoItem.owner.mid,
                                 );

@@ -454,12 +454,14 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
     }
     int attr = followStatus.value.attribute ?? 0;
     if (attr == 128) {
+      // 预取的空间页数据含拉黑状态；变更完成后再次作废，期间开始的预取
+      // 可能取到变更前的状态
+      MemberSpacePrefetch.discardMid(mid);
       final res = await VideoHttp.relationMod(
         mid: mid,
         act: 6,
         reSrc: 11,
       );
-      // 预取的空间页数据含拉黑状态
       MemberSpacePrefetch.discardMid(mid);
       if (res.isSuccess) {
         followStatus
