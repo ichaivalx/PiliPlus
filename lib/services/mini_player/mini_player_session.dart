@@ -8,6 +8,7 @@ import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
 import 'package:PiliPlus/models_new/media_list/media_list.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
+import 'package:PiliPlus/models_new/video/video_tag/data.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
@@ -752,6 +753,16 @@ class MiniPlayerSession with WidgetsBindingObserver {
         final replies? => Future.value(replies),
         null => null,
       };
+
+  /// 恢复的详情页首次加载标签时沿用预先获取的结果
+  Future<LoadingState<List<VideoTagItem>?>>? videoTagsFor(
+    String heroTag,
+    String bvid,
+    int cid,
+  ) => switch (prefetchFor(heroTag)?.tags(bvid, cid)) {
+    final tags? => Future.value(tags),
+    null => null,
+  };
 
   /// 接管页面复用正在播放的资源
   LoadingState<PlayUrlModel>? playUrlFor(int cid) => switch (_handover) {

@@ -3,9 +3,11 @@ import 'package:PiliPlus/grpc/bilibili/main/community/reply/v1.pb.dart'
     show MainListReply, Mode;
 import 'package:PiliPlus/grpc/reply.dart';
 import 'package:PiliPlus/http/loading_state.dart';
+import 'package:PiliPlus/http/user.dart';
 import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/model_hot_video_item.dart';
+import 'package:PiliPlus/models_new/video/video_tag/data.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/image_utils.dart';
@@ -14,13 +16,17 @@ import 'package:cached_network_image_ce/cached_network_image.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
-/// 小窗播放期间预先获取详情页横屏首屏的相关视频与首页评论，恢复时交给详情页
+/// 小窗播放期间预先获取详情页横屏首屏的相关视频、首页评论与简介中的标签，
+/// 恢复时交给详情页
 ///
-/// 请求对应上游 `RelatedController` 与 `VideoReplyController` 的首次加载，
-/// 首屏的判断对应详情页的横屏布局与默认标签，合并上游时需同步检查
+/// 请求对应上游 `RelatedController`、`VideoReplyController` 的首次加载与
+/// `CommonIntroController.queryVideoTags`，首屏的判断对应详情页的横屏布局
+/// 与默认标签，合并上游时需同步检查
 class MiniPlayerPrefetch {
   MiniPlayerPrefetch(Map<String, dynamic> args, PlPlayerController player)
-    : bvid = args['bvid'] {
+    : bvid = args['bvid'],
+      cid = args['cid'] {
+    _fetchTags();
     final vertical = player.enableVerticalExpand && args['isVertical'] == true;
     final showRelated = player.showRelatedVideo;
     // 对应 `VideoDetailController.onInit` 中 `tabCtr` 的初始标签，以及
@@ -46,6 +52,7 @@ class MiniPlayerPrefetch {
   }
 
   final String bvid;
+  final int? cid;
 
   /// 首屏含相关视频
   late final bool showsRelated;
@@ -62,6 +69,19 @@ class MiniPlayerPrefetch {
   /// 已获取的首页评论，排序需与请求时一致
   Success<MainListReply>? replies(Mode mode) =>
       mode == _replyMode ? _replies : null;
+
+  Success<List<VideoTagItem>?>? _tags;
+
+  /// 已获取的标签，需与请求的视频分P一致
+  Success<List<VideoTagItem>?>? tags(String bvid, int cid) =>
+      bvid == this.bvid && cid == this.cid ? _tags : null;
+
+  Future<void> _fetchTags() async {
+    final res = await UserHttp.videoTags(bvid: bvid, cid: cid);
+    if (res case Success(:final response)) {
+      _tags = Success(response);
+    }
+  }
 
   Future<void> _fetchRelated() async {
     final res = await VideoHttp.relatedVideoList(bvid: bvid);

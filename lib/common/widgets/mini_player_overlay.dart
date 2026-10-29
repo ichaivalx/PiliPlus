@@ -46,6 +46,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 小窗黑边处的遮罩在展开进度达到此值时完全淡去
   static const double _maskFadeEnd = 0.4;
 
+  /// 详情页播放器底边进度条在播放器内的高度，对应上游 `PLVideoPlayer` 中
+  /// 进度条的位置（`bottom: -2.2`）与高度（`2 * thumbRadius`，即 5）
+  static const double _progressBarInset = 2.8;
+
   final _session = miniPlayerSession;
 
   /// 唯一的动画驱动：小窗的位置、大小、圆角与详情页的展开、收起共用同一进度
@@ -484,6 +488,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   /// 过渡中播放器位置的实时视频：按详情页播放器的原始尺寸以同样的
   /// `FittedBox` 布局，再与截图一同缩放，各种 fit 下都与截图一致
+  ///
+  /// 只绘制视频画面，播放器的黑底沿用截图；底边让出进度条，
+  /// 截图中的进度条不被盖住
   Widget _buildContainerVideo(_Container container, _ContainerFrame frame) =>
       IgnorePointer(
         child: ClipRRect(
@@ -495,9 +502,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
               children: [
                 Positioned.fromRect(
                   rect: container.player,
-                  child: const ColoredBox(
-                    color: Colors.black,
-                    child: ClipRect(child: _MiniVideo()),
+                  child: ClipRect(
+                    clipper: const _BottomInsetClipper(_progressBarInset),
+                    child: const _MiniVideo(),
                   ),
                 ),
               ],
@@ -896,6 +903,20 @@ class _FillPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_FillPainter oldDelegate) => oldDelegate.color != color;
+}
+
+class _BottomInsetClipper extends CustomClipper<Rect> {
+  const _BottomInsetClipper(this.inset);
+
+  final double inset;
+
+  @override
+  Rect getClip(Size size) =>
+      Rect.fromLTRB(0, 0, size.width, size.height - inset);
+
+  @override
+  bool shouldReclip(_BottomInsetClipper oldClipper) =>
+      oldClipper.inset != inset;
 }
 
 class _EmptyClipper extends CustomClipper<Rect> {
