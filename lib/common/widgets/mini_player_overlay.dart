@@ -6,6 +6,7 @@ import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/image/network_img_layer.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_host_layer.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
@@ -91,8 +92,8 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 展开的背景，为恢复前的画面
   ui.Image? _backdrop;
 
-  /// 展开的背景为页面层中实时显示的页面（截图不含其内容时），页面层保持可见，
-  /// 恢复的详情页由会话保持不可见
+  /// 展开的背景为页面层中实时显示的页面，页面层保持可见，详情页在其下方
+  /// 不可见地完成绘制
   bool _liveBackdrop = false;
   final _childKey = GlobalKey();
 
@@ -267,9 +268,8 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   }
 
   /// 恢复开始时小窗停在原处，等详情页给出播放器位置后开始过渡；
-  /// 展开时截取当前画面（路由变化前的最后一帧）作为背景，
-  /// 详情页不可见地完成首次构建；会话判断不宜截图时以实时页面为背景，
-  /// 无法保留时以纯色为背景
+  /// 返回键回到详情页的位置时截取当前画面（路由变化前的最后一帧）作为
+  /// 背景，其余情况以实时页面为背景
   void _beginRestore() {
     if (_collapsing) {
       // 收起尚未结束时小窗停在收起的终点
@@ -322,7 +322,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     }
     final mini = _lastRect ?? player;
     setState(() {
-      // 实时背景时页面层含背景页面，只截取详情页
+      // 实时背景时页面层含背景页面，只截取详情页所在的宿主
       _pageImage = _liveBackdrop ? _session.captureRestorePage() : _capture();
       _container = _containerFor(mini, player);
     });
@@ -727,7 +727,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     final page = AnimatedBuilder(
       animation: _animation,
       builder: (context, child) => _buildPage(context, child!),
-      child: RepaintBoundary(key: _childKey, child: widget.child),
+      child: RepaintBoundary(
+        key: _childKey,
+        child: MiniPlayerHostLayer(child: widget.child),
+      ),
     );
     if (!_visible) {
       return Stack(fit: StackFit.expand, children: [page]);
@@ -1102,7 +1105,7 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
             ),
             Center(
               child: Obx(() {
-                if (miniPlayerSession.loading.value) {
+                if (miniPlayerSession.isLoading) {
                   return _buildLoading(colorScheme);
                 }
                 final videoPlayer = player?.videoPlayerController;
@@ -1254,7 +1257,7 @@ class _MiniPlayerSurfaceState extends State<_MiniPlayerSurface> {
             IgnorePointer(
               child: Center(
                 child: Obx(
-                  () => miniPlayerSession.loading.value
+                  () => miniPlayerSession.isLoading
                       ? _buildLoading(colorScheme)
                       : const SizedBox.shrink(),
                 ),

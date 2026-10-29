@@ -158,9 +158,11 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
     introController = _initIntroCtr();
 
-    _setPlayCallBack();
+    if (!miniDefersPlayer) {
+      _setPlayCallBack();
+    }
 
-    if (videoDetailController.removeSafeArea) {
+    if (videoDetailController.removeSafeArea && !miniStartsHidden) {
       hideSystemBar();
     }
 
@@ -184,8 +186,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   // 获取视频资源，初始化播放器
   void videoSourceInit() {
-    videoDetailController.queryVideoUrl(autoFullScreenFlag: true);
-    if (videoDetailController.autoPlay) {
+    videoDetailController.queryVideoUrl(autoFullScreenFlag: !miniStartsHidden);
+    if (videoDetailController.autoPlay && !miniDefersPlayer) {
       plPlayerController = videoDetailController.plPlayerController;
       plPlayerController!
         ..addStatusLister(playerListener)
@@ -388,9 +390,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   // 离开当前页面时
   void didPushNext() {
     super.didPushNext();
-    if (isCoveredByMiniPlayer) {
-      return;
-    }
     isShowing = false;
     onLeaveWithoutMiniPlayer();
 

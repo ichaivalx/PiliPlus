@@ -566,10 +566,14 @@ abstract final class PageUtils {
       secondRpIdKey: ?secondRpId,
       ...?extraArguments,
     };
-    if (miniPlayerSession.interceptVideoPage(arguments, off: off)) {
+    if (miniPlayerSession.openVideo(arguments, off: off)) {
       return null;
     }
-    return PageUtils.toDupNamed('/videoV', arguments: arguments, off: off);
+    return PageUtils.toDupNamed(
+      '/videoV',
+      arguments: arguments,
+      off: off && miniPlayerSession.allowsReplace,
+    );
   }
 
   static final _pgcRegex = RegExp(r'(ep|ss)(\d+)');

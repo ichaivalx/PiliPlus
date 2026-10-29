@@ -4,6 +4,7 @@
 
 // ignore_for_file: prefer_initializing_formals
 
+import 'package:PiliPlus/services/mini_player/mini_player_host_layer.dart';
 import 'package:get/get_core/src/get_main.dart';
 import 'package:get/get_navigation/src/extension_navigation.dart';
 import 'package:material_ui/material_ui.dart' hide PopScope;
@@ -24,7 +25,10 @@ abstract class PopScopeState<T extends StatefulWidget> extends State<T>
   void initState() {
     super.initState();
     canPopNotifier = ValueNotifier<bool>(initCanPop);
-    _route = (Get.routing.route as ModalRoute)..registerPopEntry(this);
+    _route =
+        ((MiniPlayerHostScope.routeOf(context) ?? Get.routing.route)
+              as ModalRoute)
+          ..registerPopEntry(this);
   }
 
   @override

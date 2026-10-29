@@ -1,5 +1,6 @@
 import 'package:PiliPlus/models/common/video/source_type.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
+import 'package:PiliPlus/utils/device_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:flutter/widgets.dart';
 
@@ -69,7 +70,12 @@ abstract final class MiniPlayerPolicy {
       size.width > size.height &&
       size.shortestSide >= 600;
 
-  /// 可在小窗内直接加载的视频参数
+  /// 平板上可进入小窗的视频详情页在宿主层中打开，竖屏打开的也是，转为横屏
+  /// 后同样可以进入小窗
+  static bool hostsDetail(Map args) =>
+      PlatformUtils.isMobile && DeviceUtils.isTablet && canLoadInMini(args);
+
+  /// 可在小窗内播放的视频参数
   static bool canLoadInMini(Map args) =>
       args['videoType'] == VideoType.ugc &&
       args['pgcApi'] != true &&

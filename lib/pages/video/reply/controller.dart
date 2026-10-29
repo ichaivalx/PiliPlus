@@ -9,7 +9,6 @@ import 'package:PiliPlus/pages/common/reply/reply_controller.dart';
 import 'package:PiliPlus/pages/common/reply/vote/reply_vote_mixin.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/reply_reply/view.dart';
-import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/utils/id_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
@@ -84,16 +83,13 @@ class VideoReplyController extends ReplyController<MainListReply>
     );
   }
 
-  /// 从小窗恢复时首次加载沿用小窗预先获取的首页
   @override
-  Future<LoadingState<MainListReply>> customGetData() =>
-      miniPlayerSession.repliesFor(heroTag, mode) ??
-      ReplyGrpc.mainList(
-        oid: oid,
-        rpid: rootRpId,
-        type: replyType,
-        mode: mode,
-        cursorNext: cursorNext,
-        offset: paginationReply?.nextOffset,
-      );
+  Future<LoadingState<MainListReply>> customGetData() => ReplyGrpc.mainList(
+    oid: oid,
+    rpid: rootRpId,
+    type: replyType,
+    mode: mode,
+    cursorNext: cursorNext,
+    offset: paginationReply?.nextOffset,
+  );
 }

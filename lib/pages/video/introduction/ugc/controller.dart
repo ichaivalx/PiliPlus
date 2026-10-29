@@ -29,6 +29,7 @@ import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/video/related/controller.dart';
 import 'package:PiliPlus/pages/video/reply/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
@@ -796,9 +797,13 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
     } else {
       final generation = continuation;
       _continuing = true;
-      relatedCtr = Get.put(
-        RelatedController(autoQuery: false, bvid: bvid),
-        tag: heroTag,
+      // 小窗中续播时同样属于详情页
+      relatedCtr = miniPlayerSession.bindToDetail(
+        heroTag,
+        () => Get.put(
+          RelatedController(autoQuery: false, bvid: bvid),
+          tag: heroTag,
+        ),
       )
         ..queryData().whenComplete(() {
           if (generation == continuation) {

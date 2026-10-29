@@ -1,9 +1,8 @@
-import 'dart:async' show StreamSubscription, Timer;
+import 'dart:async' show Completer, StreamSubscription, Timer;
+import 'dart:io' show Platform;
 import 'dart:ui' as ui;
 
 import 'package:PiliPlus/http/loading_state.dart';
-import 'package:PiliPlus/models/video/play/url.dart';
-import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
@@ -12,17 +11,15 @@ import 'package:PiliPlus/pages/video/reply/controller.dart';
 import 'package:PiliPlus/pages/video/view.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_host_layer.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
-import 'package:PiliPlus/services/mini_player/mini_player_prefetch.dart';
-import 'package:PiliPlus/services/mini_player/mini_player_queue.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
-import 'package:PiliPlus/utils/device_utils.dart';
-import 'package:PiliPlus/utils/extension/size_ext.dart';
-import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
+import 'package:screen_brightness_platform_interface/screen_brightness_platform_interface.dart';
 
 /// 详情页播放器以外的各区域所需的内容
 enum MiniRestoreContent { intro, related, replies }
@@ -32,170 +29,47 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   VideoDetailController get videoDetailController;
   CommonIntroController get introController;
   PlPlayerController? get plPlayerController;
+  set plPlayerController(PlPlayerController? value);
   bool get isShowing;
   Future<void> playerListener(PlayerStatus status);
   void positionListener(Duration position);
+  Future<void>? playCallBack();
 
-  @override
-  late final Route<dynamic>? miniRoute;
+  /// 所在的宿主，不在宿主中（手机、桌面等）时为 null
+  MiniPlayerHostEntry? get _host => MiniPlayerHostScope.maybeOf(context);
 
-  @override
-  String get miniHeroTag => videoDetailController.heroTag;
+  /// 构建时不显示：不自动全屏，不修改系统栏
+  bool get miniStartsHidden => _host?.hidden ?? false;
 
-  bool get isCoveredByMiniPlayer => miniPlayerSession.covers(this);
+  /// 显示中的其他详情页离开前不接管播放器
+  bool get miniDefersPlayer => _host?.deferPlayer ?? false;
 
-  /// 从小窗恢复时首屏尚未获取的内容，所在区域到达后再出现；
-  /// null 表示页面不是从小窗恢复的
-  Set<MiniRestoreContent>? _restoreWaiting;
+  /// 不显示地构建时，各区域实际显示的内容，首次显示前等待其到达
+  final Set<MiniRestoreContent> _shownContents = {};
 
-  /// 随页面初始化提前加载的评论
-  VideoReplyController? _restoreReplies;
-
-  /// 交接的首页评论在下一个微任务中生效，生效后再开始恢复动画
-  bool _applyingReplies = false;
-
-  /// 简介中的标签、UP 主信息未交接，由页面自行请求，简介区域需等待其到达
-  bool _awaitTags = false;
-  bool _awaitOwner = false;
-
-  /// 简介中的点赞、投币、收藏、关注状态未全部交接，由页面立即请求，
-  /// 简介区域等待请求结束
-  bool _awaitInteraction = false;
-  final _interactionReady = RxBool(false);
+  StreamSubscription? _detailSubscription;
 
   void initMiniPlayerHost() {
-    miniRoute = Get.routing.route;
-    miniPlayerSession.attach(this);
-    if (miniPlayerSession.isRestoreTarget(miniHeroTag)) {
+    final host = _host;
+    if (host == null) {
+      return;
+    }
+    miniPlayerSession.attach(host, this);
+    if (host.hidden) {
+      // 在小窗中开始播放，回到上一个视频时同样从离开时的进度继续
       videoDetailController.autoPlay = true;
-      _expandIntroForRestore();
-      var prefetch = miniPlayerSession.prefetchFor(miniHeroTag);
-      if (prefetch?.bvid != videoDetailController.bvid) {
-        prefetch = null;
-      }
-      final waiting = _restoreWaiting = _takeMiniPrefetch(prefetch);
-      // 对应 `CommonIntroController.queryVideoTags` 中沿用预取的判断
-      _awaitTags =
-          prefetch?.tags(introController.bvid, introController.cid.value) ==
-          null;
-      // 立即接管播放器，先展示小窗已有的视频详情
-      final detail = miniPlayerSession.handOver(this);
-      if (detail != null && detail.bvid == videoDetailController.bvid) {
-        introController.videoDetail.value = detail;
-        // 对应 `UgcIntroController.queryVideoIntro`：首页评论据此过滤简介；
-        // 评论未交接时标签上的评论数先取自详情
-        if (_restoreReplies case final replies?) {
-          replies.intro = detail.desc?.trim();
-          if (!_applyingReplies) {
-            replies.count.value = detail.stat?.reply ?? 0;
-          }
-        }
-        _awaitOwner = !_takeMiniOwner(prefetch, detail);
-        _takeMiniInteraction(prefetch, detail);
-      } else {
-        _awaitOwner = true;
-      }
-      if (!_isRestoreReady(.intro)) {
-        waiting.add(.intro);
-      }
-      _reportRestoreRect();
     }
+    // 只能在详情页中播放的内容不留在小窗中
+    _detailSubscription = introController.videoDetail.listen((detail) {
+      if (detail.rights?.isSteinGate == 1) {
+        miniPlayerSession.showDetail(this);
+      }
+    });
   }
 
-  /// 对应 `UgcIntroController.onInit` 中横屏时自动展开简介：恢复时直接以
-  /// 展开的终态构建，不在恢复动画截图之后才展开
-  void _expandIntroForRestore() {
-    if (introController case UgcIntroController(:final expand)
-        when Pref.expandIntroPanelH && !DeviceUtils.size.isPortrait) {
-      expand.value = true;
-    }
-  }
-
-  /// 沿用小窗预先获取的 UP 主信息，与之后 `UgcIntroController.queryUserStat`
-  /// 获取的相同；返回是否已交接
-  bool _takeMiniOwner(MiniPlayerPrefetch? prefetch, VideoDetailData detail) {
-    final mid = detail.owner?.mid;
-    if (prefetch == null || mid == null) {
-      return false;
-    }
-    if ((introController, prefetch.owner(mid)) case (
-      UgcIntroController(:final userStat),
-      Success(:final response),
-    )) {
-      userStat.value = response;
-      return true;
-    }
-    return false;
-  }
-
-  /// 沿用小窗预先获取的点赞、投币、收藏与关注状态，首帧即为实际状态；
-  /// 未获取到的立即请求，不先显示默认的未选中状态
-  void _takeMiniInteraction(
-    MiniPlayerPrefetch? prefetch,
-    VideoDetailData detail,
-  ) {
-    if (introController case final UgcIntroController controller) {
-      final pending = <Future<void>>[];
-      void take(Object? prefetched, Future<void> query) {
-        if (prefetched == null) {
-          pending.add(query);
-        }
-      }
-
-      // 对应 `UgcIntroController.queryVideoIntro` 中的查询
-      if (controller.isLogin) {
-        final relation = prefetch?.relation;
-        take(relation, controller.queryAllStatus(relation));
-      }
-      final staff = detail.staff;
-      if (staff != null && staff.isNotEmpty) {
-        final relations = prefetch?.staffRelations;
-        take(relations, controller.queryUserStat(staff, relations));
-      } else if (controller.isLogin && detail.owner?.mid != null) {
-        final follow = prefetch?.follow(detail.owner!.mid!);
-        take(follow, controller.queryFollowStatus(follow));
-      }
-      if (pending.isNotEmpty) {
-        _awaitInteraction = true;
-        Future.wait(
-          pending,
-        ).whenComplete(() => _interactionReady.value = true).ignore();
-      }
-    }
-  }
-
-  /// 沿用小窗预先获取的相关视频与首页评论，未获取到的随页面初始化立即请求；
-  /// 返回仍需等待的内容。布局中显示哪些由页面构建时决定，见 [afterMiniRestore]
-  Set<MiniRestoreContent> _takeMiniPrefetch(MiniPlayerPrefetch? prefetch) {
-    final waiting = <MiniRestoreContent>{};
-    final ctr = videoDetailController;
-    if (ctr.showRelatedVideo) {
-      final related = prefetch?.related;
-      final controller = Get.put(
-        RelatedController(autoQuery: related == null, bvid: ctr.bvid),
-        tag: miniHeroTag,
-      );
-      if (related != null) {
-        controller.loadingState.value = related;
-      } else {
-        waiting.add(.related);
-      }
-    }
-    if (ctr.showReply) {
-      final controller = _restoreReplies = Get.find<VideoReplyController>(
-        tag: miniHeroTag,
-      );
-      _applyingReplies = prefetch?.replies(controller.mode) != null;
-      if (!_applyingReplies) {
-        waiting.add(.replies);
-      }
-      controller.queryData();
-    }
-    return waiting;
-  }
-
-  /// 覆盖中被移除时先由会话接续等待中的续播
+  /// 被移除时先作废等待中的续播
   void disposeMiniPlayerHost() {
+    _detailSubscription?.cancel();
     miniPlayerSession.detach(this);
     _cancelContinuation();
     _takeReturnResume();
@@ -228,79 +102,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
   }
 
-  /// 简介、相关视频、评论各区域：从小窗恢复时，[content] 均已交接的区域在
-  /// 首帧构建，其余留空，恢复动画结束且内容到达后再构建并淡入。各布局在
-  /// 构建这些区域时调用，只有当前尺寸下实际显示的区域参与等待
-  Widget afterMiniRestore({
-    required Set<MiniRestoreContent> content,
-    required Widget child,
-  }) {
-    final waiting = _restoreWaiting?.intersection(content);
-    if (waiting == null || waiting.isEmpty) {
-      return child;
-    }
-    return _MiniRestoreReveal(host: this, waiting: waiting, child: child);
-  }
-
-  /// 简介区域含详情、标签、UP 主信息与互动状态
-  List<Rx<Object?>> _restoreSources(MiniRestoreContent content) =>
-      switch (content) {
-        .intro => [
-          introController.videoDetail,
-          introController.videoTags,
-          if (introController case UgcIntroController(:final userStat))
-            userStat,
-          _interactionReady,
-        ],
-        .related => [
-          Get.find<RelatedController>(tag: miniHeroTag).loadingState,
-        ],
-        .replies => [
-          Get.find<VideoReplyController>(tag: miniHeroTag).loadingState,
-        ],
-      };
-
-  /// 页面自行请求的标签、UP 主信息失败时按超时显示
-  bool _isRestoreReady(MiniRestoreContent content) => switch (content) {
-    .intro =>
-      introController.videoDetail.value.bvid != null &&
-          (!_awaitTags || introController.videoTags.value != null) &&
-          (!_awaitOwner || _isOwnerReady) &&
-          (!_awaitInteraction || _interactionReady.value),
-    _ => _restoreSources(content).every((e) => e.value is! Loading),
-  };
-
-  /// 对应 `UgcIntroController.queryUserStat`：合作视频的成员在详情中，
-  /// 单个 UP 主的信息另行获取
-  bool get _isOwnerReady =>
-      (introController.videoDetail.value.staff?.isNotEmpty ?? false) ||
-      switch (introController) {
-        UgcIntroController(:final userStat) => userStat.value.card != null,
-        _ => true,
-      };
-
-  /// 播放器完成布局、交接的内容生效后再上报，避免以空区域作为恢复动画的终点，
-  /// 也避免首次构建交接的内容落在动画的第一帧
-  void _reportRestoreRect() {
-    WidgetsBinding.instance
-      ..addPostFrameCallback((_) {
-        if (!mounted) {
-          return;
-        }
-        final applying =
-            _applyingReplies &&
-            _restoreReplies!.loadingState.value is Loading &&
-            miniPlayerSession.restoring.value;
-        if (applying || !miniPlayerSession.reportRestoreRect(this)) {
-          _reportRestoreRect();
-        }
-      })
-      ..scheduleFrame();
-  }
-
-  /// 页面内容的根节点，位于转场动画的变换之内
-  RenderRepaintBoundary? get _pageBoundary =>
-      context.findAncestorRenderObjectOfType<RenderRepaintBoundary>();
+  String get miniHeroTag => videoDetailController.heroTag;
 
   /// 返回 true 时跳过 [didPopNext] 的重新获取播放器
   bool miniPlayerHandlesPopNext() {
@@ -311,23 +113,18 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
         when !shutdownTimerService.canAutoplay(resume)) {
       videoDetailController.playerStatus = PlayerStatus.paused;
     }
-    miniPlayerSession.close(pause: false);
     return false;
   }
 
-  void onMiniAwarePopInvoked(bool didPop, Object? result) {
-    if (didPop && miniPlayerSession.isActive) {
-      return;
-    }
-    videoDetailController.plPlayerController.onPopInvokedWithResult(
-      didPop,
-      result,
-    );
-  }
+  /// 宿主中的详情页只在关闭时收到出栈，收起与回到上一个视频不经过这里
+  void onMiniAwarePopInvoked(bool didPop, Object? result) => videoDetailController
+      .plPlayerController
+      .onPopInvokedWithResult(didPop, result);
 
   VoidCallback? get onShrinkToMiniPlayer =>
-      MiniPlayerPolicy.isTabletLandscape(MediaQuery.sizeOf(context))
-      ? () => miniPlayerSession.shrink(this)
+      _host != null &&
+          MiniPlayerPolicy.isTabletLandscape(MediaQuery.sizeOf(context))
+      ? () => miniPlayerSession.collapse(this)
       : null;
 
   @override
@@ -335,27 +132,31 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     final ctr = videoDetailController;
     final player = ctr.plPlayerController;
     return mounted &&
+        _host != null &&
         isShowing &&
         PlPlayerController.playOwner?.tag == ctr.heroTag &&
         MiniPlayerPolicy.isTabletLandscape(MediaQuery.sizeOf(context)) &&
-        canHandOffToMini &&
+        _canPlayInMini &&
         ctr.autoPlay &&
         ctr.videoState.value &&
         player.videoController != null &&
         !player.isDesktopPip;
   }
 
-  /// 互动视频的剧情图需另行请求，简介中的标记先于其可用；
-  /// 切换分P等加载期间页面信息与播放源不一致，不能交给小窗
-  @override
-  bool get canHandOffToMini {
+  /// 互动视频的剧情选择只在详情页中显示，简介中的标记先于剧情图可用
+  bool get _canPlayInMini {
     final ctr = videoDetailController;
     return MiniPlayerPolicy.canLoadInMini(ctr.args) &&
         ctr.graphVersion == null &&
-        introController.videoDetail.value.rights?.isSteinGate != 1 &&
-        !ctr.isQuerying &&
-        ctr.plPlayerController.cid == ctr.cid.value;
+        introController.videoDetail.value.rights?.isSteinGate != 1;
   }
+
+  @override
+  bool get isMiniPlayerLoading => !videoDetailController.videoState.value;
+
+  /// 页面内容的根节点，位于转场动画的变换之内
+  RenderRepaintBoundary? get _pageBoundary =>
+      context.findAncestorRenderObjectOfType<RenderRepaintBoundary>();
 
   /// 相对页面根节点计算，转场缩放期间也是页面静止时的位置
   @override
@@ -395,7 +196,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   @override
   String get miniCover => videoDetailController.cover.value;
 
-  /// 播放全部时以当前项续接列表，恢复时详情页从当前项加载
+  /// 播放全部时以当前项续接列表，重新打开时详情页从当前项加载
   @override
   Map<String, dynamic> get miniArgs {
     final ctr = videoDetailController;
@@ -408,7 +209,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       'title': miniTitle,
       'videoType': ctr.videoType,
       'isVertical': ctr.isVertical.value,
-      // 对应 `CommonIntroController.onInit`，恢复时保留本次的稍后再看操作
+      // 对应 `CommonIntroController.onInit`，重新打开时保留本次的稍后再看操作
       'viewLater': introController.hasLater.value,
       if (ctr.isPlayAll) ...{
         'oid': ctr.aid,
@@ -419,24 +220,39 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   }
 
   @override
-  MiniPlayerQueue createMiniQueue() {
+  void onMiniCollapsed() {
     final ctr = videoDetailController;
-    return MiniPlayerQueue.snapshot(
-      bvid: ctr.bvid,
-      detail: introController.videoDetail.value,
-      mediaList: ctr.isPlayAll ? ctr.mediaList.toList() : null,
-      args: miniArgs,
-    );
+    final player = ctr.plPlayerController;
+    if (player.isFullScreen.value) {
+      player.triggerFullScreen(status: false);
+    }
+    // 对应 didPushNext：页面不再显示时恢复应用亮度与系统栏
+    if (Platform.isAndroid && !ctr.setSystemBrightness) {
+      ctr.brightness = player.brightness.value;
+      ScreenBrightnessPlatform.instance.resetApplicationScreenBrightness();
+    }
+    if (ctr.removeSafeArea) {
+      showSystemBar();
+    }
   }
 
   @override
-  PlayUrlModel get miniPlayUrl => videoDetailController.data;
-
-  @override
-  void onMiniCovered() {
-    final player = videoDetailController.plPlayerController;
-    if (player.isFullScreen.value) {
-      player.triggerFullScreen(status: false);
+  void onMiniExpanded() {
+    final ctr = videoDetailController;
+    // 对应 didPopNext 中的亮度恢复
+    if (Platform.isAndroid && !ctr.setSystemBrightness) {
+      final brightness = ctr.brightness;
+      if (brightness != null && brightness != -1.0) {
+        plPlayerController?.brightness.value = brightness;
+        ScreenBrightnessPlatform.instance.setApplicationScreenBrightness(
+          brightness,
+        );
+      } else {
+        ScreenBrightnessPlatform.instance.resetApplicationScreenBrightness();
+      }
+    }
+    if (ctr.removeSafeArea) {
+      hideSystemBar();
     }
   }
 
@@ -450,8 +266,8 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   }
 
   @override
-  bool onMiniDetached() {
-    final continuing = _cancelContinuation();
+  void onMiniDetached() {
+    _cancelContinuation();
     introController.cancelTimer();
     videoDetailController
       ..cancelBlockListener()
@@ -459,7 +275,28 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     plPlayerController
       ?..removeStatusLister(playerListener)
       ..removePositionListener(positionListener);
-    return continuing;
+    if (PlPlayerController.playOwner?.tag == miniHeroTag) {
+      PlPlayerController.setPlayCallBack(null);
+    }
+  }
+
+  /// 对应页面初始化时获取播放器：初始化期间请求的播放地址此时才加载
+  @override
+  void takeOverPlayer() {
+    if (!mounted) {
+      return;
+    }
+    final ctr = videoDetailController;
+    PlPlayerController.setPlayCallBack(
+      playCallBack,
+      playOwner: (tag: ctr.heroTag, type: introController.runtimeType),
+    );
+    plPlayerController = ctr.plPlayerController
+      ..addStatusLister(playerListener)
+      ..addPositionListener(positionListener);
+    if (!ctr.isQuerying && ctr.videoUrl != null) {
+      ctr.playerInit();
+    }
   }
 
   @override
@@ -483,18 +320,113 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       didPushNext();
     }
   }
+
+  /// 简介、相关视频、评论各区域：不显示地构建的页面首次显示时，[content]
+  /// 尚未到达的区域留空，到达（或等待超时）后构建并淡入。各布局在构建
+  /// 这些区域时调用，只有当前尺寸下实际显示的区域参与等待
+  Widget afterMiniRestore({
+    required Set<MiniRestoreContent> content,
+    required Widget child,
+  }) {
+    final host = _host;
+    if (host == null || !host.hidden) {
+      return child;
+    }
+    _shownContents.addAll(content);
+    if (content.every(_isRestoreReady)) {
+      return child;
+    }
+    return _MiniRestoreReveal(
+      host: this,
+      entry: host,
+      waiting: content,
+      child: child,
+    );
+  }
+
+  /// 首次构建后，实际显示的区域所需的内容都已到达时完成，最长等待
+  /// [MiniPlayerMotion.revealTimeout]
+  @override
+  Future<void> whenMiniContentReady() async {
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || _shownContents.every(_isRestoreReady)) {
+      return;
+    }
+    final completer = Completer<void>();
+    void check() {
+      if (!completer.isCompleted &&
+          (!mounted || _shownContents.every(_isRestoreReady))) {
+        completer.complete();
+      }
+    }
+
+    final subscriptions = [
+      for (final e in _shownContents)
+        for (final source in _restoreSources(e)) source.listen((_) => check()),
+    ];
+    final timer = Timer(MiniPlayerMotion.revealTimeout, () {
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    });
+    await completer.future;
+    timer.cancel();
+    for (final e in subscriptions) {
+      e.cancel();
+    }
+  }
+
+  /// 简介区域含详情、标签与 UP 主信息
+  List<Rx<Object?>> _restoreSources(MiniRestoreContent content) =>
+      switch (content) {
+        .intro => [
+          introController.videoDetail,
+          introController.videoTags,
+          if (introController case UgcIntroController(:final userStat))
+            userStat,
+        ],
+        .related => [
+          if (Get.isRegistered<RelatedController>(tag: miniHeroTag))
+            Get.find<RelatedController>(tag: miniHeroTag).loadingState,
+        ],
+        .replies => [
+          if (Get.isRegistered<VideoReplyController>(tag: miniHeroTag))
+            Get.find<VideoReplyController>(tag: miniHeroTag).loadingState,
+        ],
+      };
+
+  /// 标签、UP 主信息请求失败时按超时显示
+  bool _isRestoreReady(MiniRestoreContent content) => switch (content) {
+    .intro =>
+      introController.videoDetail.value.bvid != null &&
+          introController.videoTags.value != null &&
+          _isOwnerReady,
+    _ => _restoreSources(content).every((e) => e.value is! Loading),
+  };
+
+  /// 对应 `UgcIntroController.queryUserStat`：合作视频的成员在详情中，
+  /// 单个 UP 主的信息另行获取
+  bool get _isOwnerReady =>
+      (introController.videoDetail.value.staff?.isNotEmpty ?? false) ||
+      switch (introController) {
+        UgcIntroController(:final userStat) => userStat.value.card != null,
+        _ => true,
+      };
 }
 
-/// 内容已交接时直接构建；否则恢复期间先留空，恢复动画结束且内容到达
-/// （或等待超时）后构建内容并以短促的淡入、上移出现
+/// 不显示地构建的页面中尚未到达的区域：不显示期间到达时直接构建；首次显示时
+/// 仍未到达则留空，显示动画结束且内容到达（或等待超时）后构建并以短促的
+/// 淡入、上移出现
 class _MiniRestoreReveal extends StatefulWidget {
   const _MiniRestoreReveal({
     required this.host,
+    required this.entry,
     required this.waiting,
     required this.child,
   });
 
   final MiniPlayerHostMixin host;
+  final MiniPlayerHostEntry entry;
   final Set<MiniRestoreContent> waiting;
   final Widget child;
 
@@ -512,24 +444,32 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
   @override
   void initState() {
     super.initState();
-    if (miniPlayerSession.restoring.value && !_ready) {
-      _waiting = [
-        for (final e in widget.waiting)
-          for (final source in widget.host._restoreSources(e))
-            source.listen((_) => _check()),
-        miniPlayerSession.restoring.listen((_) => _check()),
-      ];
-      _timeout = Timer(MiniPlayerMotion.revealTimeout, _check);
-    }
+    _waiting = [
+      for (final e in widget.waiting)
+        for (final source in widget.host._restoreSources(e))
+          source.listen((_) => _check()),
+      miniPlayerSession.restoring.listen((_) => _check()),
+    ];
+    widget.entry.addListener(_check);
   }
 
   bool get _ready => widget.waiting.every(widget.host._isRestoreReady);
 
-  /// 超时后按页面原样显示
   void _check() {
-    if (_waiting == null ||
-        (_timeout!.isActive && !_ready) ||
-        miniPlayerSession.restoring.value) {
+    if (_waiting == null) {
+      return;
+    }
+    if (!widget.entry.painted) {
+      // 不显示期间到达的内容直接构建
+      if (_ready) {
+        _stopWaiting();
+        setState(() {});
+      }
+      return;
+    }
+    // 首次显示时开始计时，超时后按页面原样显示
+    _timeout ??= Timer(MiniPlayerMotion.revealTimeout, _check);
+    if ((_timeout!.isActive && !_ready) || miniPlayerSession.restoring.value) {
       return;
     }
     _stopWaiting();
@@ -542,6 +482,7 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
       e.cancel();
     }
     _waiting = null;
+    widget.entry.removeListener(_check);
   }
 
   void _reveal() {

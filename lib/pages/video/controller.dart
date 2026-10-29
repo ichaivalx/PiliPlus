@@ -51,7 +51,6 @@ import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
-import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show ShutdownLoad, shutdownTimerService;
 import 'package:PiliPlus/utils/accounts.dart';
@@ -409,16 +408,7 @@ class VideoDetailController extends GetxController
     } else if (isPlayAll) {
       watchLaterTitle = args['favTitle'];
       _mediaDesc = args['desc'];
-      if (miniPlayerSession.mediaListFor(heroTag) case final list?
-          when list.isNotEmpty) {
-        mediaList.addAll(list);
-        // 已错过详情页在倒数第二项时的预取
-        if (list.last.aid == aid) {
-          getMediaList();
-        }
-      } else {
-        getMediaList();
-      }
+      getMediaList();
     }
 
     tabCtr = TabController(
@@ -962,18 +952,15 @@ class VideoDetailController extends GetxController
       preferCodecs = isWiFi ? Pref.preferCodecs : Pref.preferCodecsCellular;
     }
 
-    // 小窗交接的播放源已补全画质，直接接管
     final query = _urlQuery;
-    final handedOver = miniPlayerSession.playUrlFor(cid.value);
-    final result =
-        handedOver ?? await _getVideoUrl(VideoQuality.hdrVivid.code);
+    final result = await _getVideoUrl(VideoQuality.hdrVivid.code);
     if (query != _urlQuery) {
       return;
     }
 
     if (result case Success(:final response)) {
       data = response;
-      if (data.dash != null && handedOver == null) {
+      if (data.dash != null) {
         await _supplementVideoQualities();
         if (query != _urlQuery) {
           return;

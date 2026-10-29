@@ -826,10 +826,6 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     int? rotate,
     ShutdownLoad? load,
   }) async {
-    if (miniPlayerSession.adopt(bvid: bvid, cid: cid)) {
-      onInit?.call();
-      return;
-    }
     // 调用方未提供时自行创建并负责结束
     final ownLoad = load == null ? shutdownTimerService.beginLoad() : null;
     try {
