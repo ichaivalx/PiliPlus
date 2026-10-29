@@ -489,8 +489,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 过渡中播放器位置的实时视频：按详情页播放器的原始尺寸以同样的
   /// `FittedBox` 布局，再与截图一同缩放，各种 fit 下都与截图一致
   ///
-  /// 只绘制视频画面，播放器的黑底沿用截图；底边让出进度条，
-  /// 截图中的进度条不被盖住
+  /// 底边让出进度条，截图中的进度条不被盖住
   Widget _buildContainerVideo(_Container container, _ContainerFrame frame) =>
       IgnorePointer(
         child: ClipRRect(
@@ -502,9 +501,12 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
               children: [
                 Positioned.fromRect(
                   rect: container.player,
-                  child: ClipRect(
-                    clipper: const _BottomInsetClipper(_progressBarInset),
-                    child: const _MiniVideo(),
+                  child: const ClipRect(
+                    clipper: _BottomInsetClipper(_progressBarInset),
+                    child: ColoredBox(
+                      color: Colors.black,
+                      child: _MiniVideo(),
+                    ),
                   ),
                 ),
               ],

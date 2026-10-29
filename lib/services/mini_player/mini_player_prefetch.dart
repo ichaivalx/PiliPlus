@@ -3,10 +3,13 @@ import 'package:PiliPlus/grpc/bilibili/main/community/reply/v1.pb.dart'
     show MainListReply, Mode;
 import 'package:PiliPlus/grpc/reply.dart';
 import 'package:PiliPlus/http/loading_state.dart';
+import 'package:PiliPlus/http/member.dart';
 import 'package:PiliPlus/http/user.dart';
 import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/model_hot_video_item.dart';
+import 'package:PiliPlus/models_new/member_card_info/data.dart';
+import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/models_new/video/video_tag/data.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
@@ -16,12 +19,12 @@ import 'package:cached_network_image_ce/cached_network_image.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
-/// 小窗播放期间预先获取详情页横屏首屏的相关视频、首页评论与简介中的标签，
-/// 恢复时交给详情页
+/// 小窗播放期间预先获取详情页横屏首屏的相关视频、首页评论，以及简介中的
+/// 标签与 UP 主信息，恢复时交给详情页
 ///
 /// 请求对应上游 `RelatedController`、`VideoReplyController` 的首次加载与
-/// `CommonIntroController.queryVideoTags`，首屏的判断对应详情页的横屏布局
-/// 与默认标签，合并上游时需同步检查
+/// `CommonIntroController.queryVideoTags`、`UgcIntroController.queryUserStat`，
+/// 首屏的判断对应详情页的横屏布局与默认标签，合并上游时需同步检查
 class MiniPlayerPrefetch {
   MiniPlayerPrefetch(Map<String, dynamic> args, PlPlayerController player)
     : bvid = args['bvid'],
@@ -75,6 +78,36 @@ class MiniPlayerPrefetch {
   /// 已获取的标签，需与请求的视频分P一致
   Success<List<VideoTagItem>?>? tags(String bvid, int cid) =>
       bvid == this.bvid && cid == this.cid ? _tags : null;
+
+  int? _ownerMid;
+  Success<MemberCardInfoData>? _owner;
+
+  /// 已获取的 UP 主信息，需与详情中的 UP 主一致
+  Success<MemberCardInfoData>? owner(int mid) =>
+      mid == _ownerMid ? _owner : null;
+
+  /// 视频详情到达后获取 UP 主信息；合作视频的成员在详情中，无需获取
+  void ownerOf(VideoDetailData detail) {
+    final mid = detail.owner?.mid;
+    if (_ownerMid != null ||
+        detail.bvid != bvid ||
+        mid == null ||
+        (detail.staff?.isNotEmpty ?? false)) {
+      return;
+    }
+    _ownerMid = mid;
+    _fetchOwner(mid);
+  }
+
+  Future<void> _fetchOwner(int mid) async {
+    final res = await MemberHttp.memberCardInfo(mid: mid);
+    if (res case Success(:final response)) {
+      _owner = Success(response);
+      _precache(
+        (_) => [(src: response.card?.face, width: 35.0, height: 35.0)],
+      );
+    }
+  }
 
   Future<void> _fetchTags() async {
     final res = await UserHttp.videoTags(bvid: bvid, cid: cid);
@@ -132,7 +165,8 @@ class MiniPlayerPrefetch {
   }
 
   /// 预先下载并解码首屏图片，恢复时直接命中图片缓存；图片地址与解码尺寸
-  /// 对应 `NetworkImgLayer`：相关视频封面 100 高，评论头像 34（带挂件时 28）
+  /// 对应 `NetworkImgLayer`：相关视频封面 100 高，评论头像 34（带挂件时 28），
+  /// UP 主头像 35
   static void _precache(
     List<({String? src, double width, double height})> Function(
       BuildContext context,

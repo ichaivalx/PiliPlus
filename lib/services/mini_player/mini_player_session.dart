@@ -369,7 +369,10 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _media.takeControls();
       WidgetsBinding.instance.addObserver(this);
     }
-    _prefetch = MiniPlayerPrefetch(_args, _player!);
+    final prefetch = _prefetch = MiniPlayerPrefetch(_args, _player!);
+    if (_queue!.detail case final detail?) {
+      prefetch.ownerOf(detail);
+    }
     PlPlayerController.setPlayCallBack(
       play,
       playOwner: (tag: _ownerTag, type: null),
@@ -994,10 +997,14 @@ class MiniPlayerSession with WidgetsBindingObserver {
               ..select(bvid)
               ..onDetail = (detail) {
                 if (identical(_queue, queue)) {
+                  prefetch.ownerOf(detail);
                   _exitIfDetailOnly(detail);
                 }
               };
             _prefetch = prefetch;
+            if (queue.detail case final detail?) {
+              prefetch.ownerOf(detail);
+            }
             _playUrl = data;
             _title.value = args['title'] ?? '';
             _cover.value = args['cover'] ?? '';

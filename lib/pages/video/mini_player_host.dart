@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
+import 'package:PiliPlus/models_new/video/video_detail/data.dart';
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/video/controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
@@ -12,9 +13,13 @@ import 'package:PiliPlus/pages/video/view.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_prefetch.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_queue.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
+import 'package:PiliPlus/utils/device_utils.dart';
+import 'package:PiliPlus/utils/extension/size_ext.dart';
+import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
@@ -49,32 +54,74 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   /// 交接的首页评论在下一个微任务中生效，生效后再开始恢复动画
   bool _applyingReplies = false;
 
+  /// 简介中的标签、UP 主信息未交接，由页面自行请求，简介区域需等待其到达
+  bool _awaitTags = false;
+  bool _awaitOwner = false;
+
   void initMiniPlayerHost() {
     miniRoute = Get.routing.route;
     miniPlayerSession.attach(this);
     if (miniPlayerSession.isRestoreTarget(miniHeroTag)) {
       videoDetailController.autoPlay = true;
-      final waiting = _restoreWaiting = _takeMiniPrefetch();
+      _expandIntroForRestore();
+      var prefetch = miniPlayerSession.prefetchFor(miniHeroTag);
+      if (prefetch?.bvid != videoDetailController.bvid) {
+        prefetch = null;
+      }
+      final waiting = _restoreWaiting = _takeMiniPrefetch(prefetch);
+      // 对应 `CommonIntroController.queryVideoTags` 中沿用预取的判断
+      _awaitTags =
+          prefetch?.tags(introController.bvid, introController.cid.value) ==
+          null;
       // 立即接管播放器，先展示小窗已有的视频详情
       final detail = miniPlayerSession.handOver(this);
       if (detail != null && detail.bvid == videoDetailController.bvid) {
         introController.videoDetail.value = detail;
         // 对应 `UgcIntroController.queryVideoIntro`，首页评论据此过滤简介
         _restoreReplies?.intro = detail.desc?.trim();
+        _awaitOwner = !_takeMiniOwner(prefetch, detail);
       } else {
+        _awaitOwner = true;
+      }
+      if (!_isRestoreReady(.intro)) {
         waiting.add(.intro);
       }
       _reportRestoreRect();
     }
   }
 
+  /// 对应 `UgcIntroController.onInit` 中横屏时自动展开简介：恢复时直接以
+  /// 展开的终态构建，不在恢复动画截图之后才展开
+  void _expandIntroForRestore() {
+    if (introController case UgcIntroController(:final expand)
+        when Pref.expandIntroPanelH && !DeviceUtils.size.isPortrait) {
+      expand.value = true;
+    }
+  }
+
+  /// 沿用小窗预先获取的 UP 主信息，与之后 `UgcIntroController.queryUserStat`
+  /// 获取的相同；返回是否已交接
+  bool _takeMiniOwner(MiniPlayerPrefetch? prefetch, VideoDetailData detail) {
+    final mid = detail.owner?.mid;
+    if (prefetch == null || mid == null) {
+      return false;
+    }
+    if ((introController, prefetch.owner(mid)) case (
+      UgcIntroController(:final userStat),
+      Success(:final response),
+    )) {
+      userStat.value = response;
+      return true;
+    }
+    return false;
+  }
+
   /// 沿用小窗预先获取的首屏内容，未获取到的随页面初始化立即请求；
   /// 返回仍需等待的内容
-  Set<MiniRestoreContent> _takeMiniPrefetch() {
+  Set<MiniRestoreContent> _takeMiniPrefetch(MiniPlayerPrefetch? prefetch) {
     final waiting = <MiniRestoreContent>{};
-    final prefetch = miniPlayerSession.prefetchFor(miniHeroTag);
     final bvid = videoDetailController.bvid;
-    if (prefetch == null || prefetch.bvid != bvid) {
+    if (prefetch == null) {
       return waiting;
     }
     if (prefetch.showsRelated) {
@@ -154,16 +201,40 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     );
   }
 
-  Rx<Object?> _restoreSource(MiniRestoreContent content) => switch (content) {
-    .intro => introController.videoDetail,
-    .related => Get.find<RelatedController>(tag: miniHeroTag).loadingState,
-    .replies => Get.find<VideoReplyController>(tag: miniHeroTag).loadingState,
+  /// 简介区域含详情、标签与 UP 主信息
+  List<Rx<Object?>> _restoreSources(MiniRestoreContent content) =>
+      switch (content) {
+        .intro => [
+          introController.videoDetail,
+          introController.videoTags,
+          if (introController case UgcIntroController(:final userStat))
+            userStat,
+        ],
+        .related => [
+          Get.find<RelatedController>(tag: miniHeroTag).loadingState,
+        ],
+        .replies => [
+          Get.find<VideoReplyController>(tag: miniHeroTag).loadingState,
+        ],
+      };
+
+  /// 页面自行请求的标签、UP 主信息失败时按超时显示
+  bool _isRestoreReady(MiniRestoreContent content) => switch (content) {
+    .intro =>
+      introController.videoDetail.value.bvid != null &&
+          (!_awaitTags || introController.videoTags.value != null) &&
+          (!_awaitOwner || _isOwnerReady),
+    _ => _restoreSources(content).every((e) => e.value is! Loading),
   };
 
-  bool _isRestoreReady(MiniRestoreContent content) => switch (content) {
-    .intro => introController.videoDetail.value.bvid != null,
-    _ => _restoreSource(content).value is! Loading,
-  };
+  /// 对应 `UgcIntroController.queryUserStat`：合作视频的成员在详情中，
+  /// 单个 UP 主的信息另行获取
+  bool get _isOwnerReady =>
+      (introController.videoDetail.value.staff?.isNotEmpty ?? false) ||
+      switch (introController) {
+        UgcIntroController(:final userStat) => userStat.value.card != null,
+        _ => true,
+      };
 
   /// 播放器完成布局、交接的内容生效后再上报，避免以空区域作为恢复动画的终点，
   /// 也避免首次构建交接的内容落在动画的第一帧
@@ -399,7 +470,8 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
     if (miniPlayerSession.restoring.value && !_ready) {
       _waiting = [
         for (final e in widget.waiting)
-          widget.host._restoreSource(e).listen((_) => _check()),
+          for (final source in widget.host._restoreSources(e))
+            source.listen((_) => _check()),
         miniPlayerSession.restoring.listen((_) => _check()),
       ];
       _timeout = Timer(MiniPlayerMotion.revealTimeout, _check);
