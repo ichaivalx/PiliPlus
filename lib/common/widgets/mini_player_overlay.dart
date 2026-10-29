@@ -824,7 +824,8 @@ class _ContainerPainter extends CustomPainter {
 
   final ui.Image? backdrop;
 
-  /// 没有背景截图时的背景色，null 表示露出下方的实时画面
+  /// 背景色，垫在背景截图下方：截图中页面层未铺满的部分（如覆盖页仍在
+  /// 入场）是透明的，不能露出；null 表示露出下方的实时画面
   final Color? backdropColor;
   final ui.Image? page;
 
@@ -834,6 +835,9 @@ class _ContainerPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final rect = Offset.zero & size;
+    if (backdropColor case final color?) {
+      canvas.drawRect(rect, Paint()..color = color);
+    }
     if (backdrop case final backdrop?) {
       paintImage(
         canvas: canvas,
@@ -842,8 +846,6 @@ class _ContainerPainter extends CustomPainter {
         fit: BoxFit.fill,
         filterQuality: FilterQuality.low,
       );
-    } else if (backdropColor case final color?) {
-      canvas.drawRect(rect, Paint()..color = color);
     }
     final frame = this.frame;
     if (frame == null) {
