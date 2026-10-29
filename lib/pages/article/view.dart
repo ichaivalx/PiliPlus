@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:PiliPlus/common/skeleton/article.dart';
 import 'package:PiliPlus/common/widgets/badge.dart';
 import 'package:PiliPlus/common/widgets/flutter/refresh_indicator.dart';
 import 'package:PiliPlus/common/widgets/gesture/horizontal_drag_gesture_recognizer.dart';
@@ -10,6 +11,7 @@ import 'package:PiliPlus/common/widgets/scaffold/simple_scaffold.dart';
 import 'package:PiliPlus/common/widgets/scroll_physics.dart'
     show tabBarScrollPhysics;
 import 'package:PiliPlus/common/widgets/sliver/sliver_to_box_adapter.dart';
+import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/common/image_preview_type.dart';
 import 'package:PiliPlus/models/dynamics/article_content_model.dart' show Pic;
 import 'package:PiliPlus/models/dynamics/result.dart' show DynamicStat;
@@ -269,7 +271,12 @@ class _ArticlePageState extends CommonDynPageState<ArticlePage>
           );
         }
 
-        return const SliverToBoxAdapter();
+        // 加载中显示正文的骨架，加载失败时留空
+        return SliverToBoxAdapter(
+          child: controller.loadingState.value is Loading
+              ? const ArticleSkeleton()
+              : null,
+        );
       },
     ),
   );

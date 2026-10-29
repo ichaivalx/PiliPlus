@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math';
 
+import 'package:PiliPlus/common/skeleton/music_detail.dart';
 import 'package:PiliPlus/common/widgets/badge.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
 import 'package:PiliPlus/common/widgets/flutter/refresh_indicator.dart';
@@ -113,7 +114,9 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
 
   Widget _buildBody() => Obx(() {
     switch (controller.infoState.value) {
-      case Success(:final response):
+      // 加载中以骨架代替卡片与趋势图，布局与加载完成后一致
+      case final state when state is! Error:
+        final response = state.dataOrNull;
         double padding = max(maxWidth / 2 - Grid.smallCardWidth, 0);
         final Widget child;
         if (isPortrait) {
@@ -125,10 +128,14 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
                 SliverToBoxWithOffsetAdapter(
                   offset: 45,
                   onVisibilityChanged: controller.showTitle.call,
-                  child: _buildCard(response, maxWidth),
+                  child: response == null
+                      ? MusicCardSkeleton(width: maxWidth)
+                      : _buildCard(response, maxWidth),
                 ),
                 SliverToBoxAdapter(
-                  child: _buildChart(response, maxWidth),
+                  child: response == null
+                      ? MusicChartSkeleton(width: maxWidth)
+                      : _buildChart(response, maxWidth),
                 ),
                 buildReplyHeader(),
                 Obx(() => replyList(controller.loadingState.value)),
@@ -154,7 +161,9 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
                         left: padding,
                       ),
                       sliver: SliverToBoxAdapter(
-                        child: _buildCard(response, leftWidth),
+                        child: response == null
+                            ? MusicCardSkeleton(width: leftWidth)
+                            : _buildCard(response, leftWidth),
                       ),
                     ),
                     SliverPadding(
@@ -163,7 +172,9 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
                         bottom: this.padding.bottom + 100,
                       ),
                       sliver: SliverToBoxAdapter(
-                        child: _buildChart(response, leftWidth),
+                        child: response == null
+                            ? MusicChartSkeleton(width: leftWidth)
+                            : _buildChart(response, leftWidth),
                       ),
                     ),
                   ],
@@ -194,7 +205,7 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
         }
         return ScaffoldLayout(
           body: child,
-          fab: _buildBottom(response),
+          fab: response == null ? null : _buildBottom(response),
         );
       default:
         return const SizedBox.shrink();
