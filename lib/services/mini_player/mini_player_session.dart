@@ -743,8 +743,20 @@ class MiniPlayerSession {
     if (host.state != .shown) {
       return true;
     }
-    if (_gate != null || restoring.value) {
+    if (_gate case final gate?) {
+      // 等待期间再次出栈（如逐层出栈到首页）不再等待，上一个视频直接露出
+      if (identical(gate.above, window)) {
+        _gate = null;
+        _gating.value = false;
+        return true;
+      }
       return false;
+    }
+    if (restoring.value) {
+      // 展开动画中直接出栈，按展开已完成处理
+      restoring.value = false;
+      restoreRect.value = null;
+      host.presented?.reveal();
     }
     final below = _routeBelow(window);
     if (below is MiniPlayerWindowRoute && below.isDormant) {

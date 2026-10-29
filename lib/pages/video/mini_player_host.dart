@@ -116,11 +116,6 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     return false;
   }
 
-  /// 宿主中的详情页只在关闭时收到出栈，收起与回到上一个视频不经过这里
-  void onMiniAwarePopInvoked(bool didPop, Object? result) => videoDetailController
-      .plPlayerController
-      .onPopInvokedWithResult(didPop, result);
-
   VoidCallback? get onShrinkToMiniPlayer =>
       _host != null &&
           MiniPlayerPolicy.isTabletLandscape(MediaQuery.sizeOf(context))

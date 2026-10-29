@@ -1237,7 +1237,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         !isFullScreen &&
         !videoDetailController.plPlayerController.isDesktopPip &&
         (videoDetailController.horizontalScreen || isPortrait),
-    onPopInvokedWithResult: onMiniAwarePopInvoked,
+    onPopInvokedWithResult:
+        videoDetailController.plPlayerController.onPopInvokedWithResult,
     child: Obx(
       () =>
           !videoDetailController.videoState.value ||

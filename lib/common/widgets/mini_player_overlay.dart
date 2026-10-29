@@ -297,7 +297,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     }
     _restoreTimer?.cancel();
     if (_expanding) {
-      // 页面在下一帧不可见地绘制后截取，覆盖中的详情页此时才重新绘制
+      // 页面在下一帧不可见地绘制后截取，收起期间不绘制的详情页此时才重新绘制
       _restoreTarget = rect;
       WidgetsBinding.instance
         ..addPostFrameCallback((_) => _beginExpand(rect))
