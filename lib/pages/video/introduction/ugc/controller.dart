@@ -22,6 +22,7 @@ import 'package:PiliPlus/models_new/video/video_detail/section.dart';
 import 'package:PiliPlus/models_new/video/video_detail/staff.dart';
 import 'package:PiliPlus/models_new/video/video_detail/stat_detail.dart';
 import 'package:PiliPlus/models_new/video/video_detail/ugc_season.dart';
+import 'package:PiliPlus/models_new/video/video_relation/data.dart';
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/dynamics_repost/view.dart';
 import 'package:PiliPlus/pages/member/space_prefetch.dart';
@@ -177,14 +178,23 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
   }
 
   // 获取up主粉丝数
-  Future<void> queryUserStat(List<Staff>? staff) async {
+  /// [staffRelations] 为小窗预先获取的成员关注状态（原始响应），从小窗恢复时
+  /// 同步应用
+  Future<void> queryUserStat(
+    List<Staff>? staff, [
+    Map<String, dynamic>? staffRelations,
+  ]) async {
     if (staff != null && staff.isNotEmpty) {
-      final res = await Request().get(
-        Api.relations,
-        queryParameters: {'fids': staff.map((item) => item.mid).join(',')},
-      );
-      if (res.data['code'] == 0) {
-        staffRelations.addAll({'status': true, ...?res.data['data']});
+      final data =
+          staffRelations ??
+          (await Request().get(
+            Api.relations,
+            queryParameters: {
+              'fids': staff.map((item) => item.mid).join(','),
+            },
+          )).data;
+      if (data['code'] == 0) {
+        this.staffRelations.addAll({'status': true, ...?data['data']});
       }
     } else {
       final mid = videoDetail.value.owner?.mid;
@@ -198,8 +208,11 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
     }
   }
 
-  Future<void> queryAllStatus() async {
-    final result = await VideoHttp.videoRelation(bvid: bvid);
+  /// [prefetched] 为小窗预先获取的结果，从小窗恢复时同步应用
+  Future<void> queryAllStatus([
+    LoadingState<VideoRelation>? prefetched,
+  ]) async {
+    final result = prefetched ?? await VideoHttp.videoRelation(bvid: bvid);
     if (result case Success(:final response)) {
       late final stat = videoDetail.value.stat;
       if (response.like!) {
@@ -439,12 +452,16 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
   }
 
   // 查询关注状态
-  Future<void> queryFollowStatus() async {
+  /// [prefetched] 为小窗预先获取的结果，从小窗恢复时同步应用
+  Future<void> queryFollowStatus([
+    LoadingState<RelationData>? prefetched,
+  ]) async {
     final videoDetail = this.videoDetail.value;
     if (videoDetail.owner == null || videoDetail.staff?.isNotEmpty == true) {
       return;
     }
-    final res = await UserHttp.userRelation(videoDetail.owner!.mid!);
+    final res =
+        prefetched ?? await UserHttp.userRelation(videoDetail.owner!.mid!);
     if (res case Success(:final response)) {
       if (response.special == 1) response.attribute = -10;
       followStatus.value = response;

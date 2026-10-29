@@ -90,6 +90,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   /// 展开的背景，为恢复前的画面
   ui.Image? _backdrop;
+
+  /// 展开的背景为页面层中实时显示的页面（截图不含其内容时），页面层保持可见，
+  /// 恢复的详情页由会话保持不可见
+  bool _liveBackdrop = false;
   final _childKey = GlobalKey();
 
   double get _progress => MiniPlayerMotion.curve.transform(_animation.value);
@@ -137,7 +141,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   /// 结束或撤销展开、收起
   void _stopContainer() {
-    _expanding = _collapsing = false;
+    _expanding = _collapsing = _liveBackdrop = false;
     _container = null;
     _disposeAfterFrame(_pageImage);
     _disposeAfterFrame(_backdrop);
@@ -264,7 +268,8 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   /// 恢复开始时小窗停在原处，等详情页给出播放器位置后开始过渡；
   /// 展开时截取当前画面（路由变化前的最后一帧）作为背景，
-  /// 详情页不可见地完成首次构建；会话判断不宜截图时以纯色为背景
+  /// 详情页不可见地完成首次构建；会话判断不宜截图时以实时页面为背景，
+  /// 无法保留时以纯色为背景
   void _beginRestore() {
     if (_collapsing) {
       // 收起尚未结束时小窗停在收起的终点
@@ -276,6 +281,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     _fromRadius = _lastRadius;
     _animation.value = 0;
     _expanding = _session.expandRestore;
+    _liveBackdrop = _expanding && _session.liveBackdrop;
     if (_expanding && _session.snapshotRestore) {
       _backdrop = _capture();
     }
@@ -316,7 +322,8 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     }
     final mini = _lastRect ?? player;
     setState(() {
-      _pageImage = _capture();
+      // 实时背景时页面层含背景页面，只截取详情页
+      _pageImage = _liveBackdrop ? _session.captureRestorePage() : _capture();
       _container = _containerFor(mini, player);
     });
     if (_pageImage == null) {
@@ -458,6 +465,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
             _containerProgress,
           );
     final surface = ColorScheme.of(context).surface;
+    final hidePage = _expanding && !_liveBackdrop;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -467,7 +475,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
           foregroundPainter: _expanding || _collapsing
               ? _ContainerPainter(
                   backdrop: _backdrop,
-                  backdropColor: _expanding ? surface : null,
+                  backdropColor: hidePage ? surface : null,
                   page: _pageImage,
                   frame: frame,
                 )
@@ -475,8 +483,8 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
           child: IgnorePointer(
             ignoring: _expanding || _collapsing,
             child: ClipRect(
-              clipper: _expanding ? const _EmptyClipper() : null,
-              clipBehavior: _expanding ? Clip.hardEdge : Clip.none,
+              clipper: hidePage ? const _EmptyClipper() : null,
+              clipBehavior: hidePage ? Clip.hardEdge : Clip.none,
               child: child,
             ),
           ),

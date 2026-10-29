@@ -24,7 +24,7 @@ import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
-/// 横屏布局中播放器以外的区域所需的内容
+/// 详情页播放器以外的各区域所需的内容
 enum MiniRestoreContent { intro, related, replies }
 
 mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
@@ -58,6 +58,11 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   bool _awaitTags = false;
   bool _awaitOwner = false;
 
+  /// 简介中的点赞、投币、收藏、关注状态未全部交接，由页面立即请求，
+  /// 简介区域等待请求结束
+  bool _awaitInteraction = false;
+  final _interactionReady = RxBool(false);
+
   void initMiniPlayerHost() {
     miniRoute = Get.routing.route;
     miniPlayerSession.attach(this);
@@ -77,9 +82,16 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       final detail = miniPlayerSession.handOver(this);
       if (detail != null && detail.bvid == videoDetailController.bvid) {
         introController.videoDetail.value = detail;
-        // 对应 `UgcIntroController.queryVideoIntro`，首页评论据此过滤简介
-        _restoreReplies?.intro = detail.desc?.trim();
+        // 对应 `UgcIntroController.queryVideoIntro`：首页评论据此过滤简介；
+        // 评论未交接时标签上的评论数先取自详情
+        if (_restoreReplies case final replies?) {
+          replies.intro = detail.desc?.trim();
+          if (!_applyingReplies) {
+            replies.count.value = detail.stat?.reply ?? 0;
+          }
+        }
         _awaitOwner = !_takeMiniOwner(prefetch, detail);
+        _takeMiniInteraction(prefetch, detail);
       } else {
         _awaitOwner = true;
       }
@@ -116,18 +128,51 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     return false;
   }
 
-  /// 沿用小窗预先获取的首屏内容，未获取到的随页面初始化立即请求；
-  /// 返回仍需等待的内容
+  /// 沿用小窗预先获取的点赞、投币、收藏与关注状态，首帧即为实际状态；
+  /// 未获取到的立即请求，不先显示默认的未选中状态
+  void _takeMiniInteraction(
+    MiniPlayerPrefetch? prefetch,
+    VideoDetailData detail,
+  ) {
+    if (introController case final UgcIntroController controller) {
+      final pending = <Future<void>>[];
+      void take(Object? prefetched, Future<void> query) {
+        if (prefetched == null) {
+          pending.add(query);
+        }
+      }
+
+      // 对应 `UgcIntroController.queryVideoIntro` 中的查询
+      if (controller.isLogin) {
+        final relation = prefetch?.relation;
+        take(relation, controller.queryAllStatus(relation));
+      }
+      final staff = detail.staff;
+      if (staff != null && staff.isNotEmpty) {
+        final relations = prefetch?.staffRelations;
+        take(relations, controller.queryUserStat(staff, relations));
+      } else if (controller.isLogin && detail.owner?.mid != null) {
+        final follow = prefetch?.follow(detail.owner!.mid!);
+        take(follow, controller.queryFollowStatus(follow));
+      }
+      if (pending.isNotEmpty) {
+        _awaitInteraction = true;
+        Future.wait(
+          pending,
+        ).whenComplete(() => _interactionReady.value = true).ignore();
+      }
+    }
+  }
+
+  /// 沿用小窗预先获取的相关视频与首页评论，未获取到的随页面初始化立即请求；
+  /// 返回仍需等待的内容。布局中显示哪些由页面构建时决定，见 [afterMiniRestore]
   Set<MiniRestoreContent> _takeMiniPrefetch(MiniPlayerPrefetch? prefetch) {
     final waiting = <MiniRestoreContent>{};
-    final bvid = videoDetailController.bvid;
-    if (prefetch == null) {
-      return waiting;
-    }
-    if (prefetch.showsRelated) {
-      final related = prefetch.related;
+    final ctr = videoDetailController;
+    if (ctr.showRelatedVideo) {
+      final related = prefetch?.related;
       final controller = Get.put(
-        RelatedController(autoQuery: related == null, bvid: bvid),
+        RelatedController(autoQuery: related == null, bvid: ctr.bvid),
         tag: miniHeroTag,
       );
       if (related != null) {
@@ -136,11 +181,11 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
         waiting.add(.related);
       }
     }
-    if (prefetch.showsReplies) {
+    if (ctr.showReply) {
       final controller = _restoreReplies = Get.find<VideoReplyController>(
         tag: miniHeroTag,
       );
-      _applyingReplies = prefetch.replies(controller.mode) != null;
+      _applyingReplies = prefetch?.replies(controller.mode) != null;
       if (!_applyingReplies) {
         waiting.add(.replies);
       }
@@ -183,25 +228,21 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
   }
 
-  /// 横屏布局中播放器以外的区域：从小窗恢复时，[content] 均已交接的区域在
-  /// 首帧构建，其余留空，恢复动画结束且内容到达后再构建并淡入
+  /// 简介、相关视频、评论各区域：从小窗恢复时，[content] 均已交接的区域在
+  /// 首帧构建，其余留空，恢复动画结束且内容到达后再构建并淡入。各布局在
+  /// 构建这些区域时调用，只有当前尺寸下实际显示的区域参与等待
   Widget afterMiniRestore({
-    double? width,
-    double? height,
     required Set<MiniRestoreContent> content,
     required Widget child,
   }) {
     final waiting = _restoreWaiting?.intersection(content);
-    return SizedBox(
-      width: width,
-      height: height,
-      child: waiting == null
-          ? child
-          : _MiniRestoreReveal(host: this, waiting: waiting, child: child),
-    );
+    if (waiting == null || waiting.isEmpty) {
+      return child;
+    }
+    return _MiniRestoreReveal(host: this, waiting: waiting, child: child);
   }
 
-  /// 简介区域含详情、标签与 UP 主信息
+  /// 简介区域含详情、标签、UP 主信息与互动状态
   List<Rx<Object?>> _restoreSources(MiniRestoreContent content) =>
       switch (content) {
         .intro => [
@@ -209,6 +250,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
           introController.videoTags,
           if (introController case UgcIntroController(:final userStat))
             userStat,
+          _interactionReady,
         ],
         .related => [
           Get.find<RelatedController>(tag: miniHeroTag).loadingState,
@@ -223,7 +265,8 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     .intro =>
       introController.videoDetail.value.bvid != null &&
           (!_awaitTags || introController.videoTags.value != null) &&
-          (!_awaitOwner || _isOwnerReady),
+          (!_awaitOwner || _isOwnerReady) &&
+          (!_awaitInteraction || _interactionReady.value),
     _ => _restoreSources(content).every((e) => e.value is! Loading),
   };
 
@@ -365,6 +408,8 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       'title': miniTitle,
       'videoType': ctr.videoType,
       'isVertical': ctr.isVertical.value,
+      // 对应 `CommonIntroController.onInit`，恢复时保留本次的稍后再看操作
+      'viewLater': introController.hasLater.value,
       if (ctr.isPlayAll) ...{
         'oid': ctr.aid,
         'isContinuePlaying': true,

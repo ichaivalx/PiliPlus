@@ -861,10 +861,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
             children: [
               Offstage(
                 offstage: isFullScreen,
-                child: afterMiniRestore(
+                child: SizedBox(
                   width: introWidth,
                   height: introHeight,
-                  content: const {.intro, .related},
                   child: videoIntro(
                     width: introWidth,
                     height: introHeight,
@@ -881,10 +880,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
               ),
               Offstage(
                 offstage: isFullScreen,
-                child: afterMiniRestore(
+                child: SizedBox(
                   width: introWidth,
                   height: introHeight,
-                  content: const {.replies},
                   child: MiniScaffold(
                     key: videoDetailController.childKey,
                     body: Column(
@@ -949,10 +947,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
             if (!videoDetailController.isFileSource)
               Offstage(
                 offstage: isFullScreen,
-                child: afterMiniRestore(
+                child: SizedBox(
                   width: width,
                   height: introHeight,
-                  content: const {.intro},
                   child: videoIntro(
                     width: width,
                     height: introHeight,
@@ -965,10 +962,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         ),
         Offstage(
           offstage: isFullScreen,
-          child: afterMiniRestore(
+          child: SizedBox(
             width: maxWidth - width - padding.horizontal,
             height: maxHeight - padding.top,
-            content: const {.related, .replies},
             child: MiniScaffold(
               key: videoDetailController.childKey,
               body: Column(
@@ -988,16 +984,21 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                           localIntroPanel()
                         else if (showIntro)
                           KeepAliveWrapper(
-                            child: CustomScrollView(
-                              key: const PageStorageKey(CommonIntroController),
-                              controller:
-                                  videoDetailController.effectiveIntroScrollCtr,
-                              slivers: [
-                                RelatedVideoPanel(
-                                  key: videoRelatedKey,
-                                  heroTag: heroTag,
+                            child: afterMiniRestore(
+                              content: const {.related},
+                              child: CustomScrollView(
+                                key: const PageStorageKey(
+                                  CommonIntroController,
                                 ),
-                              ],
+                                controller: videoDetailController
+                                    .effectiveIntroScrollCtr,
+                                slivers: [
+                                  RelatedVideoPanel(
+                                    key: videoRelatedKey,
+                                    heroTag: heroTag,
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         if (videoDetailController.showReply) videoReplyPanel(),
@@ -1760,7 +1761,15 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         ),
       );
     }
-    return KeepAliveWrapper(child: child);
+    return KeepAliveWrapper(
+      child: afterMiniRestore(
+        content: {
+          .intro,
+          if (needRelated && videoDetailController.showRelatedVideo) .related,
+        },
+        child: child,
+      ),
+    );
   }
 
   Widget get seasonPanel {
@@ -1899,10 +1908,13 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     );
   }
 
-  Widget videoReplyPanel({bool isNested = false}) => VideoReplyPanel(
-    key: videoReplyPanelKey,
-    isNested: isNested,
-    heroTag: heroTag,
+  Widget videoReplyPanel({bool isNested = false}) => afterMiniRestore(
+    content: const {.replies},
+    child: VideoReplyPanel(
+      key: videoReplyPanelKey,
+      isNested: isNested,
+      heroTag: heroTag,
+    ),
   );
 
   // ai总结

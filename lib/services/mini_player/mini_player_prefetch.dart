@@ -3,6 +3,8 @@ import 'package:PiliPlus/common/widgets/pendant_avatar.dart';
 import 'package:PiliPlus/grpc/bilibili/main/community/reply/v1.pb.dart'
     show MainListReply, Mode;
 import 'package:PiliPlus/grpc/reply.dart';
+import 'package:PiliPlus/http/api.dart';
+import 'package:PiliPlus/http/init.dart';
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/member.dart';
 import 'package:PiliPlus/http/user.dart';
@@ -10,44 +12,37 @@ import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/model_hot_video_item.dart';
 import 'package:PiliPlus/models_new/member_card_info/data.dart';
+import 'package:PiliPlus/models_new/relation/data.dart';
 import 'package:PiliPlus/models_new/video/video_detail/data.dart';
+import 'package:PiliPlus/models_new/video/video_detail/staff.dart';
+import 'package:PiliPlus/models_new/video/video_relation/data.dart';
 import 'package:PiliPlus/models_new/video/video_tag/data.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
+import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
-/// 小窗播放期间预先获取详情页横屏首屏的相关视频、首页评论，以及简介中的
-/// 标签与 UP 主信息，恢复时交给详情页
+/// 小窗播放期间预先获取详情页首屏可能显示的内容：相关视频、首页评论，以及
+/// 简介中的标签、UP 主信息与当前账号的点赞、投币、收藏、关注状态，恢复时
+/// 交给详情页。恢复时的布局显示其中哪些由页面按当时的尺寸决定，这里按设置
+/// 获取全部
 ///
 /// 请求对应上游 `RelatedController`、`VideoReplyController` 的首次加载与
-/// `CommonIntroController.queryVideoTags`、`UgcIntroController.queryUserStat`，
-/// 首屏的判断对应详情页的横屏布局与默认标签，合并上游时需同步检查
+/// `CommonIntroController.queryVideoTags`、`UgcIntroController` 的
+/// `queryUserStat`、`queryAllStatus`、`queryFollowStatus`，合并上游时需同步检查
 class MiniPlayerPrefetch {
   MiniPlayerPrefetch(Map<String, dynamic> args, PlPlayerController player)
     : bvid = args['bvid'],
       cid = args['cid'] {
     _fetchTags();
-    final vertical = player.enableVerticalExpand && args['isVertical'] == true;
-    final showRelated = player.showRelatedVideo;
-    // 对应 `VideoDetailController.onInit` 中 `tabCtr` 的初始标签，以及
-    // `buildTabBar` 的标签列表与越界时的回退：其他视频右侧为相关视频、评论、
-    // 播放列表，竖屏视频右侧为评论、播放列表，左侧简介含相关视频。
-    // 播放列表标签取决于预取时可能尚未获取的详情，按不存在处理，
-    // 实际选中播放列表时预取的内容不会用到
-    final tabs = [
-      if (showRelated && !vertical) _Tab.related,
-      if (player.showVideoReply) _Tab.replies,
-    ];
-    final tab = tabs.isEmpty
-        ? null
-        : tabs[(Pref.defaultShowComment ? 1 : 0).clamp(0, tabs.length - 1)];
-    showsRelated = showRelated && (vertical || tab == _Tab.related);
-    showsReplies = tab == _Tab.replies;
-    if (showsRelated) {
+    if (_isLogin) {
+      _fetchRelation();
+    }
+    if (player.showRelatedVideo) {
       _fetchRelated();
     }
-    if (showsReplies) {
+    if (player.showVideoReply) {
       _fetchReplies(args['aid']);
     }
   }
@@ -55,11 +50,13 @@ class MiniPlayerPrefetch {
   final String bvid;
   final int? cid;
 
-  /// 首屏含相关视频
-  late final bool showsRelated;
+  /// 对应 `CommonIntroController.isLogin`：未登录时详情页不查询这些状态
+  static bool get _isLogin => Accounts.main.isLogin;
 
-  /// 首屏含评论
-  late final bool showsReplies;
+  Success<VideoRelation>? _relation;
+
+  /// 已获取的点赞、点踩、投币、收藏状态
+  Success<VideoRelation>? get relation => _relation;
 
   Success<List<HotVideoItemModel>?>? _related;
   Success<List<HotVideoItemModel>?>? get related => _related;
@@ -79,22 +76,62 @@ class MiniPlayerPrefetch {
 
   int? _ownerMid;
   Success<MemberCardInfoData>? _owner;
+  Success<RelationData>? _follow;
 
   /// 已获取的 UP 主信息，需与详情中的 UP 主一致
   Success<MemberCardInfoData>? owner(int mid) =>
       mid == _ownerMid ? _owner : null;
 
-  /// 视频详情到达后获取 UP 主信息；合作视频的成员在详情中，无需获取
+  /// 已获取的 UP 主关注状态，需与详情中的 UP 主一致
+  Success<RelationData>? follow(int mid) => mid == _ownerMid ? _follow : null;
+
+  Map<String, dynamic>? _staffRelations;
+
+  /// 已获取的合作成员关注状态（原始响应）
+  Map<String, dynamic>? get staffRelations => _staffRelations;
+
+  /// 视频详情到达后获取 UP 主信息与关注状态；合作视频的成员在详情中，
+  /// 只获取其关注状态
   void ownerOf(VideoDetailData detail) {
     final mid = detail.owner?.mid;
-    if (_ownerMid != null ||
-        detail.bvid != bvid ||
-        mid == null ||
-        (detail.staff?.isNotEmpty ?? false)) {
+    if (_ownerMid != null || detail.bvid != bvid || mid == null) {
       return;
     }
     _ownerMid = mid;
+    if (detail.staff case final staff? when staff.isNotEmpty) {
+      _fetchStaffRelations(staff);
+      return;
+    }
     _fetchOwner(mid);
+    if (_isLogin) {
+      _fetchFollow(mid);
+    }
+  }
+
+  Future<void> _fetchRelation() async {
+    final res = await VideoHttp.videoRelation(bvid: bvid);
+    if (res case Success(:final response)) {
+      _relation = Success(response);
+    }
+  }
+
+  Future<void> _fetchFollow(int mid) async {
+    final res = await UserHttp.userRelation(mid);
+    if (res case Success(:final response)) {
+      _follow = Success(response);
+    }
+  }
+
+  /// 对应 `UgcIntroController.queryUserStat` 中合作成员的请求
+  Future<void> _fetchStaffRelations(List<Staff> staff) async {
+    final res = await Request().get(
+      Api.relations,
+      queryParameters: {'fids': staff.map((item) => item.mid).join(',')},
+    );
+    if (res.data case final Map<String, dynamic> data
+        when data['code'] == 0) {
+      _staffRelations = data;
+    }
   }
 
   Future<void> _fetchOwner(int mid) async {
@@ -180,5 +217,3 @@ class MiniPlayerPrefetch {
     }
   }
 }
-
-enum _Tab { related, replies }

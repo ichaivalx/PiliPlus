@@ -130,6 +130,18 @@ class MiniPlayerSession with WidgetsBindingObserver {
   bool _snapshotRestore = false;
   bool get snapshotRestore => _snapshotRestore;
 
+  /// 截图不含其内容的页面改为保持实时显示作为展开的背景：详情页在其上方
+  /// （无宿主）或下方（覆盖中）不可见地完成布局与绘制，展开结束后再遮住或
+  /// 移除该页面
+  bool _liveBackdrop = false;
+  bool get liveBackdrop => _liveBackdrop;
+
+  /// 实时背景的收尾，展开结束（[finished]）或撤销时调用
+  void Function({required bool finished})? _endLiveBackdrop;
+
+  /// 恢复的目标页面，实时背景时由其提供展开中代替页面绘制的截图
+  MiniPlayerHost? _restorePage;
+
   bool get isActive => mode.value != .none;
   bool get isCovered => mode.value == .covered;
   bool get isHeadless => mode.value == .headless;
@@ -147,6 +159,9 @@ class MiniPlayerSession with WidgetsBindingObserver {
 
   void detach(MiniPlayerHost host) {
     _hosts.remove(host);
+    if (identical(_restorePage, host)) {
+      _restorePage = null;
+    }
     if (identical(_handover?.host, host)) {
       _handover = null;
     }
@@ -175,9 +190,13 @@ class MiniPlayerSession with WidgetsBindingObserver {
     if (rect == null) {
       return false;
     }
+    _restorePage = host;
     restoreRect.value = rect;
     return true;
   }
+
+  /// 恢复的目标页面当前的截图，由小窗层取走并负责释放
+  ui.Image? captureRestorePage() => _restorePage?.captureMiniSnapshot();
 
   /// 收起时的页面截图，由小窗取走并负责释放
   ui.Image? takeEnterSnapshot() {
@@ -276,7 +295,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
         (previousRoute.navigator?.userGestureInProgress ?? true)) {
       return;
     }
-    _beginExpandRestore(route);
+    // 出栈的页面随即离开，不能作为实时背景
+    _beginExpandRestore(route, live: false);
     restoring.value = true;
     // ignore: invalid_use_of_protected_member
     final controller = route.controller;
@@ -350,14 +370,63 @@ class MiniPlayerSession with WidgetsBindingObserver {
           _expandRestore = false;
           restoring.value = true;
         }
-        restoreRect.value = host.miniPlayerRect;
-        _host = null;
-        mode.value = .none;
+        _settleRestore(host);
       } else if (restoring.value) {
         // 详情页上方又有页面（如出栈后立即入栈），本次恢复无法完成
         _cancelRestore();
       }
     });
+  }
+
+  /// 覆盖中的详情页成为恢复的目标：给出展开的终点，会话随之结束
+  void _settleRestore(MiniPlayerHost host) {
+    _restorePage = host;
+    restoreRect.value = host.miniPlayerRect;
+    _host = null;
+    mode.value = .none;
+  }
+
+  /// 覆盖中恢复、最上层为实时背景：上层页面保持显示，详情页在其下方完成
+  /// 布局与绘制后给出展开的终点；展开结束后移除上层页面，撤销时恢复原状
+  void _expandBelow(MiniPlayerHost host) {
+    final route = host.miniRoute;
+    final index = route == null ? -1 : _routes.indexOf(route);
+    if (index == -1) {
+      _cancelRestore();
+      return;
+    }
+    final above = <TransitionRoute<dynamic>>[
+      for (final e in _routes.skip(index + 1))
+        if (e is TransitionRoute && e.overlayEntries.isNotEmpty) e,
+    ];
+    for (final e in above) {
+      e.overlayEntries.first.opaque = false;
+    }
+    _endLiveBackdrop = ({required finished}) {
+      if (finished) {
+        _removeRoutesAbove(route);
+        return;
+      }
+      for (final e in above) {
+        if (e.isActive && e.overlayEntries.isNotEmpty) {
+          e.overlayEntries.first.opaque = e.opaque;
+        }
+      }
+    };
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        if (restoring.value && covers(host)) {
+          _settleRestore(host);
+        }
+      })
+      ..scheduleFrame();
+  }
+
+  void _clearLiveBackdrop({required bool finished}) {
+    final end = _endLiveBackdrop;
+    _endLiveBackdrop = null;
+    _restorePage = null;
+    end?.call(finished: finished);
   }
 
   // 状态切换
@@ -367,6 +436,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _restorePending = false;
     loading.value = false;
     restoring.value = false;
+    _clearLiveBackdrop(finished: false);
     restoreRect.value = null;
     _restoreTag = null;
   }
@@ -705,11 +775,16 @@ class MiniPlayerSession with WidgetsBindingObserver {
       case .none:
         return;
       case .covered:
-        final route = _host!.miniRoute;
+        final host = _host!;
         restoring.value = true;
-        // 上层页面的出栈转场会出现在展开的详情页中，直接移除；
-        // 回到详情页后由 [_scheduleSettle] 给出展开的终点
-        Future.microtask(() => _removeRoutesAbove(route));
+        if (_liveBackdrop) {
+          _expandBelow(host);
+        } else {
+          // 上层页面的出栈转场会出现在展开的详情页中，直接移除；
+          // 回到详情页后由 [_scheduleSettle] 给出展开的终点
+          final route = host.miniRoute;
+          Future.microtask(() => _removeRoutesAbove(route));
+        }
       case .headless:
         final cid = _args['cid'];
         final tag = _restoreTag = Utils.makeHeroTag(cid);
@@ -721,27 +796,38 @@ class MiniPlayerSession with WidgetsBindingObserver {
         }
           ..remove(rootRpIdKey)
           ..remove(secondRpIdKey);
-        Future.microtask(
-          () => Get.key.currentState?.push(MiniPlayerRestoreRoute(args)),
+        final route = MiniPlayerRestoreRoute(
+          args,
+          overBackdrop: _liveBackdrop,
         );
+        if (_liveBackdrop) {
+          _endLiveBackdrop = ({required finished}) => route.reveal();
+        }
+        Future.microtask(() => Get.key.currentState?.push(route));
     }
   }
 
-  /// 详情页从小窗展开，[top] 为恢复前最上层的页面
-  void _beginExpandRestore(Route<dynamic>? top) {
+  /// 详情页从小窗展开，[top] 为恢复前最上层的页面；[live] 表示该页面可以
+  /// 作为实时背景
+  void _beginExpandRestore(Route<dynamic>? top, {bool live = true}) {
     _expandRestore = true;
-    _snapshotRestore = top == null || !MiniPlayerPolicy.hasPlatformView(top);
+    final platformView = top != null && MiniPlayerPolicy.hasPlatformView(top);
+    _snapshotRestore = !platformView;
+    _liveBackdrop = platformView && live;
   }
 
+  /// 展开的页面已完全盖住背景，与小窗层停止绘制过渡在同一帧换为实际页面
   void finishRestore() {
     restoring.value = false;
     restoreRect.value = null;
+    _clearLiveBackdrop(finished: true);
   }
 
   void _cancelRestore() {
     _restoreTag = null;
     restoring.value = false;
     restoreRect.value = null;
+    _clearLiveBackdrop(finished: false);
     if (isHeadless) {
       PlPlayerController.setPlayCallBack(
         play,
