@@ -38,6 +38,7 @@ import 'package:PiliPlus/utils/extension/string_ext.dart';
 import 'package:PiliPlus/utils/feed_back.dart';
 import 'package:PiliPlus/utils/global_data.dart';
 import 'package:PiliPlus/utils/id_utils.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/request_utils.dart';
@@ -194,7 +195,7 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
             },
           )).data;
       if (data['code'] == 0) {
-        this.staffRelations.addAll({'status': true, ...?data['data']});
+        this.staffRelations.assignAll({'status': true, ...?data['data']});
       }
     } else {
       final mid = videoDetail.value.owner?.mid;
@@ -486,13 +487,13 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
     if (attr == 128) {
       // 预取的空间页数据含拉黑状态；变更完成后再次作废，期间开始的预取
       // 可能取到变更前的状态
-      MemberSpacePrefetch.invalidate(mid);
+      MemberPrefetch.invalidate(mid);
       final res = await VideoHttp.relationMod(
         mid: mid,
         act: 6,
         reSrc: 11,
       );
-      MemberSpacePrefetch.invalidate(mid);
+      MemberPrefetch.invalidate(mid);
       if (res.isSuccess) {
         followStatus
           ..value.attribute = 0

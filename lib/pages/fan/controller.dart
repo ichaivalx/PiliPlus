@@ -3,8 +3,8 @@ import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models_new/follow/data.dart';
 import 'package:PiliPlus/pages/follow_type/controller.dart';
-import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/utils/accounts.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 
@@ -39,13 +39,13 @@ class FansController extends FollowTypeController {
 
   Future<void> onRemoveFan(int index, int mid) async {
     // 预取的空间页数据含对方是否关注自己；变更完成后再次作废
-    MemberSpacePrefetch.invalidate(mid);
+    MemberPrefetch.invalidate(mid);
     final res = await VideoHttp.relationMod(
       mid: mid,
       act: 7,
       reSrc: 11,
     );
-    MemberSpacePrefetch.invalidate(mid);
+    MemberPrefetch.invalidate(mid);
     if (res.isSuccess) {
       loadingState
         ..value.data!.removeAt(index)

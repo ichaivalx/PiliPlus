@@ -5,10 +5,10 @@ import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models_new/blacklist/data.dart';
 import 'package:PiliPlus/models_new/blacklist/list.dart';
 import 'package:PiliPlus/pages/common/common_list_controller.dart';
-import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/global_data.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
@@ -48,9 +48,9 @@ class BlackListController
     );
     if (confirm) {
       // 预取的空间页数据含拉黑状态；变更完成后再次作废
-      MemberSpacePrefetch.invalidate(mid);
+      MemberPrefetch.invalidate(mid);
       final result = await VideoHttp.relationMod(mid: mid, act: 6, reSrc: 11);
-      MemberSpacePrefetch.invalidate(mid);
+      MemberPrefetch.invalidate(mid);
       if (result.isSuccess) {
         loadingState
           ..value.data!.removeAt(index)

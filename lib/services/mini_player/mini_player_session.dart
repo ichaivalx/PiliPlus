@@ -139,6 +139,9 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 实时背景的收尾，展开结束（[finished]）或撤销时调用
   void Function({required bool finished})? _endLiveBackdrop;
 
+  /// 覆盖中展开时作为实时背景、位于详情页上方的页面
+  List<Route<dynamic>> _backdropRoutes = const [];
+
   /// 恢复的目标页面，实时背景时由其提供展开中代替页面绘制的截图
   MiniPlayerHost? _restorePage;
 
@@ -268,6 +271,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
 
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
     _routes.remove(route);
+    _finishOnBackdropLeft(route);
     _onReveal();
     _expandOnPop(route, previousRoute);
     _scheduleSettle();
@@ -276,6 +280,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
 
   void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
     _routes.remove(route);
+    _finishOnBackdropLeft(route);
     _onReveal();
     _scheduleSettle();
     _revealHost();
@@ -402,6 +407,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
     for (final e in above) {
       e.overlayEntries.first.opaque = false;
     }
+    _backdropRoutes = above;
     _endLiveBackdrop = ({required finished}) {
       if (finished) {
         _removeRoutesAbove(route);
@@ -425,8 +431,34 @@ class MiniPlayerSession with WidgetsBindingObserver {
   void _clearLiveBackdrop({required bool finished}) {
     final end = _endLiveBackdrop;
     _endLiveBackdrop = null;
+    _backdropRoutes = const [];
     _restorePage = null;
     end?.call(finished: finished);
+  }
+
+  /// 展开中作为实时背景的上层页面离开（如返回键）：其出栈转场会露出下方
+  /// 已完成绘制的详情页，与仍在进行的展开叠在一起；直接结束转场并立即完成
+  /// 展开，与展开结束时移除上层页面的结果一致。完成时可能移除其他上层页面，
+  /// 在路由变化的通知之后进行
+  void _finishOnBackdropLeft(Route<dynamic> route) {
+    final backdrop = _backdropRoutes;
+    if (!restoring.value || !backdrop.contains(route)) {
+      return;
+    }
+    // ignore: invalid_use_of_protected_member
+    final controller = route is TransitionRoute ? route.controller : null;
+    Future.microtask(() {
+      if (controller != null && controller.isAnimating) {
+        controller.value = controller.lowerBound;
+      }
+      if (!restoring.value || !identical(_backdropRoutes, backdrop)) {
+        return;
+      }
+      if (_host case final host? when isCovered) {
+        _settleRestore(host);
+      }
+      finishRestore();
+    });
   }
 
   // 状态切换
@@ -872,6 +904,12 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 恢复的详情页沿用小窗预先获取的首屏内容，需在接管前取用
   MiniPlayerPrefetch? prefetchFor(String heroTag) =>
       isHeadless && isRestoreTarget(heroTag) ? _prefetch : null;
+
+  /// 用户的关注关系、资料等变更后作废预先获取的相应内容，见 `MemberPrefetch`
+  void invalidateMember(Object? mid) => _prefetch?.invalidateMember(mid);
+
+  /// 切换账号后作废预先获取的与账号相关的内容
+  void invalidateAccount() => _prefetch?.invalidateAccount();
 
   /// 恢复的详情页首次加载评论时沿用预先获取的首页
   Future<LoadingState<MainListReply>>? repliesFor(String heroTag, Mode mode) =>

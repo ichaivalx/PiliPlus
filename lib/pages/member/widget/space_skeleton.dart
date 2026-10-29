@@ -1,15 +1,19 @@
-import 'package:PiliPlus/common/sliver_single_child_delegate.dart';
 import 'package:PiliPlus/common/skeleton/skeleton.dart';
-import 'package:PiliPlus/common/skeleton/video_card_h.dart';
+import 'package:PiliPlus/common/style.dart';
+import 'package:PiliPlus/common/widgets/button/more_btn.dart';
 import 'package:PiliPlus/common/widgets/dynamic_sliver_app_bar/dynamic_sliver_app_bar.dart';
 import 'package:PiliPlus/common/widgets/view_safe_area.dart';
+import 'package:PiliPlus/models/common/member/tab_type.dart';
 import 'package:PiliPlus/models/common/member/user_info_type.dart';
 import 'package:PiliPlus/pages/member/widget/header_layout_widget.dart';
+import 'package:PiliPlus/pages/member_opus/widgets/opus_grid.dart';
 import 'package:PiliPlus/utils/grid.dart';
+import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:material_ui/material_ui.dart';
 
 /// 空间页加载中的骨架，结构对应加载完成后的 `MemberPage` 与 `UserInfoCard`：
-/// 头图、头像、名字与数据的位置一致
+/// 头图、头像、名字与数据的位置一致；设置优先展示主页（或默认）时，内容区
+/// 对应主页的视频分区，其他标签页的结构各不相同，内容区留空
 class MemberSpaceSkeleton extends StatelessWidget {
   const MemberSpaceSkeleton({
     super.key,
@@ -48,17 +52,130 @@ class MemberSpaceSkeleton extends StatelessWidget {
                   ),
                 ),
               ),
-              SliverGrid(
-                gridDelegate: Grid.videoCardHDelegate(),
-                delegate: const SliverSingleChildDelegate(
-                  count: 10,
-                  child: VideoCardHSkeleton(),
-                ),
-              ),
+              if (Pref.memberTab case MemberTabType.def || MemberTabType.home)
+                const SliverToBoxAdapter(child: _HomeArchiveSkeleton()),
             ],
           ),
         ),
       ],
+    );
+  }
+}
+
+/// 对应 `MemberHome` 的视频分区：标题行与竖版卡片网格，网格参数与行数一致
+class _HomeArchiveSkeleton extends StatelessWidget {
+  const _HomeArchiveSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = ColorScheme.of(context).onInverseSurface;
+    final rows = MediaQuery.widthOf(context) < 600 ? 2 : 1;
+    final gridDelegate = OpusGridDelegate(
+      mainAxisSpacing: Style.cardSpace,
+      crossAxisSpacing: Style.cardSpace,
+      maxCrossAxisExtent: Grid.smallCardWidth,
+      childAspectRatio: Style.aspectRatio,
+      mainAxisExtent: MediaQuery.textScalerOf(context).scale(55),
+    );
+    return Skeleton(
+      child: Column(
+        crossAxisAlignment: .start,
+        children: [
+          // 对应 `MemberHome._header`，文字透明，只保留尺寸
+          Padding(
+            padding: const .symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              mainAxisAlignment: .spaceBetween,
+              children: [
+                ColoredBox(
+                  color: color,
+                  child: const Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(text: '视频 '),
+                        TextSpan(text: '000', style: TextStyle(fontSize: 13)),
+                      ],
+                    ),
+                    style: TextStyle(color: Colors.transparent),
+                  ),
+                ),
+                ColoredBox(
+                  color: color,
+                  child: IgnorePointer(
+                    child: moreTextButton(
+                      onTap: () {},
+                      color: Colors.transparent,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const .symmetric(horizontal: Style.safeSpace),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final info = gridDelegate.calcCrossAxisCount(constraints);
+                final card = SizedBox(
+                  width: info.childCrossAxisExtent,
+                  height: info.childMainAxisExtent,
+                  child: _HomeVideoCardSkeleton(color: color),
+                );
+                return Column(
+                  spacing: Style.cardSpace,
+                  children: List.filled(
+                    rows,
+                    Row(
+                      spacing: Style.cardSpace,
+                      children: List.filled(info.crossAxisCount, card),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 对应 `VideoCardVMemberHome`：封面与两行标题
+class _HomeVideoCardSkeleton extends StatelessWidget {
+  const _HomeVideoCardSkeleton({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget line(double widthFactor) => FractionallySizedBox(
+      widthFactor: widthFactor,
+      alignment: .centerLeft,
+      child: Container(height: 13, color: color),
+    );
+    return Card(
+      child: Column(
+        crossAxisAlignment: .start,
+        children: [
+          AspectRatio(
+            aspectRatio: Style.aspectRatio,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: const .vertical(top: .circular(12)),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const .fromLTRB(6, 8, 6, 0),
+            child: Column(
+              spacing: 6,
+              crossAxisAlignment: .start,
+              children: [line(0.9), line(0.6)],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

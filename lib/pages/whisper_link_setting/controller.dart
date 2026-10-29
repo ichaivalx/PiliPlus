@@ -10,8 +10,8 @@ import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models_new/msg/im_user_infos/datum.dart';
 import 'package:PiliPlus/models_new/msg/msg_dnd/uid_setting.dart';
 import 'package:PiliPlus/models_new/msg/session_ss/data.dart';
-import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/utils/accounts.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/widgets.dart' show Text;
 import 'package:get/get.dart';
@@ -120,13 +120,13 @@ class WhisperLinkSettingController extends GetxController {
   Future<void> setBlock(bool isBlocked) async {
     if (isBlocked) {
       // 预取的空间页数据含拉黑状态；变更完成后再次作废
-      MemberSpacePrefetch.invalidate(talkerUid);
+      MemberPrefetch.invalidate(talkerUid);
       final res = await VideoHttp.relationMod(
         mid: talkerUid,
         act: 6,
         reSrc: 11,
       );
-      MemberSpacePrefetch.invalidate(talkerUid);
+      MemberPrefetch.invalidate(talkerUid);
       if (res.isSuccess) {
         sessionSs
           ..value.data.followStatus = null
@@ -140,13 +140,13 @@ class WhisperLinkSettingController extends GetxController {
         title: const Text('确认拉黑该用户'),
         content: const Text('加入黑名单后，将自动解除关注关系和对该用户的合集订阅关系，禁止该用户与我互动或查看我的空间'),
         onConfirm: () async {
-          MemberSpacePrefetch.invalidate(talkerUid);
+          MemberPrefetch.invalidate(talkerUid);
           final res = await VideoHttp.relationMod(
             mid: talkerUid,
             act: 5,
             reSrc: 11,
           );
-          MemberSpacePrefetch.invalidate(talkerUid);
+          MemberPrefetch.invalidate(talkerUid);
           if (res.isSuccess) {
             sessionSs
               ..value.data.followStatus = 128

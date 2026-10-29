@@ -4,12 +4,12 @@ import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/home/rcmd/result.dart';
 import 'package:PiliPlus/models/model_video.dart';
 import 'package:PiliPlus/models_new/space/space_archive/item.dart';
-import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/mine/controller.dart';
 import 'package:PiliPlus/pages/search/widgets/search_text.dart';
 import 'package:PiliPlus/pages/video/ai_conclusion/view.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
 import 'package:PiliPlus/utils/accounts.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
@@ -297,7 +297,7 @@ class VideoPopupMenu extends StatelessWidget {
                                 Get.back();
                                 // 预取的空间页数据含拉黑状态；变更完成后
                                 // 再次作废，期间开始的预取可能取到变更前的状态
-                                MemberSpacePrefetch.invalidate(
+                                MemberPrefetch.invalidate(
                                   videoItem.owner.mid,
                                 );
                                 final res = await VideoHttp.relationMod(
@@ -305,7 +305,7 @@ class VideoPopupMenu extends StatelessWidget {
                                   act: 5,
                                   reSrc: 11,
                                 );
-                                MemberSpacePrefetch.invalidate(
+                                MemberPrefetch.invalidate(
                                   videoItem.owner.mid,
                                 );
                                 if (res.isSuccess) {

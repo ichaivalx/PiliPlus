@@ -21,7 +21,6 @@ import 'package:PiliPlus/pages/log_table/view.dart';
 import 'package:PiliPlus/pages/login_devices/view.dart';
 import 'package:PiliPlus/pages/login_log/controller.dart';
 import 'package:PiliPlus/pages/member/controller.dart';
-import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/member/widget/medal_wall.dart';
 import 'package:PiliPlus/pages/member/widget/reserve_button.dart';
 import 'package:PiliPlus/pages/member/widget/space_skeleton.dart';
@@ -41,6 +40,7 @@ import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/date_utils.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/string_ext.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:PiliPlus/utils/num_utils.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
@@ -228,12 +228,12 @@ class _MemberPageState extends State<MemberPage> {
                       onPressed: () async {
                         final isFollow = e.isFollow;
                         // 预取的空间页数据含预约状态；变更完成后再次作废
-                        MemberSpacePrefetch.invalidate(_mid);
+                        MemberPrefetch.invalidate(_mid);
                         final res = await UserHttp.spaceReserve(
                           sid: e.sid!,
                           isFollow: isFollow,
                         );
-                        MemberSpacePrefetch.invalidate(_mid);
+                        MemberPrefetch.invalidate(_mid);
                         if (res.isSuccess) {
                           e
                             ..total += isFollow ? -1 : 1

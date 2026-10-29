@@ -53,6 +53,10 @@ class MiniPlayerPrefetch {
   /// 对应 `CommonIntroController.isLogin`：未登录时详情页不查询这些状态
   static bool get _isLogin => Accounts.main.isLogin;
 
+  /// 关系变更或切换账号时递增，此前发出的请求结果不再采用
+  int _relationEpoch = 0;
+  int _memberEpoch = 0;
+
   Success<VideoRelation>? _relation;
 
   /// 已获取的点赞、点踩、投币、收藏状态
@@ -75,6 +79,7 @@ class MiniPlayerPrefetch {
       bvid == this.bvid && cid == this.cid ? _tags : null;
 
   int? _ownerMid;
+  List<Staff>? _staff;
   Success<MemberCardInfoData>? _owner;
   Success<RelationData>? _follow;
 
@@ -99,6 +104,14 @@ class MiniPlayerPrefetch {
     }
     _ownerMid = mid;
     if (detail.staff case final staff? when staff.isNotEmpty) {
+      _staff = staff;
+    }
+    _fetchMember();
+  }
+
+  void _fetchMember() {
+    final mid = _ownerMid!;
+    if (_staff case final staff?) {
       _fetchStaffRelations(staff);
       return;
     }
@@ -108,15 +121,54 @@ class MiniPlayerPrefetch {
     }
   }
 
+  /// [mid] 的关注关系、资料等变更后，丢弃已获取的 UP 主或合作成员的结果
+  /// 并重新获取，进行中的请求结果不再采用
+  void invalidateMember(Object? mid) {
+    if (_ownerMid == null ||
+        (mid != _ownerMid && !(_staff?.any((e) => e.mid == mid) ?? false))) {
+      return;
+    }
+    _discardMember();
+    _fetchMember();
+  }
+
+  /// 切换账号后丢弃与账号相关的结果并重新获取
+  void invalidateAccount() {
+    _relationEpoch++;
+    _relation = null;
+    if (_isLogin) {
+      _fetchRelation();
+    }
+    if (_ownerMid != null) {
+      _discardMember();
+      _fetchMember();
+    }
+  }
+
+  void _discardMember() {
+    _memberEpoch++;
+    _owner = null;
+    _follow = null;
+    _staffRelations = null;
+  }
+
   Future<void> _fetchRelation() async {
+    final epoch = _relationEpoch;
     final res = await VideoHttp.videoRelation(bvid: bvid);
+    if (epoch != _relationEpoch) {
+      return;
+    }
     if (res case Success(:final response)) {
       _relation = Success(response);
     }
   }
 
   Future<void> _fetchFollow(int mid) async {
+    final epoch = _memberEpoch;
     final res = await UserHttp.userRelation(mid);
+    if (epoch != _memberEpoch) {
+      return;
+    }
     if (res case Success(:final response)) {
       _follow = Success(response);
     }
@@ -124,10 +176,14 @@ class MiniPlayerPrefetch {
 
   /// 对应 `UgcIntroController.queryUserStat` 中合作成员的请求
   Future<void> _fetchStaffRelations(List<Staff> staff) async {
+    final epoch = _memberEpoch;
     final res = await Request().get(
       Api.relations,
       queryParameters: {'fids': staff.map((item) => item.mid).join(',')},
     );
+    if (epoch != _memberEpoch) {
+      return;
+    }
     if (res.data case final Map<String, dynamic> data
         when data['code'] == 0) {
       _staffRelations = data;
@@ -135,7 +191,11 @@ class MiniPlayerPrefetch {
   }
 
   Future<void> _fetchOwner(int mid) async {
+    final epoch = _memberEpoch;
     final res = await MemberHttp.memberCardInfo(mid: mid);
+    if (epoch != _memberEpoch) {
+      return;
+    }
     if (res case Success(:final response)) {
       _owner = Success(response);
       _precache(

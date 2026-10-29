@@ -301,7 +301,7 @@ class MiniPlayerQueue {
     final aid = item.aid ?? IdUtils.bv2av(bvid);
     final cid = item.cid!;
     final sameVideo = bvid == current['bvid'];
-    return {
+    final args = <String, dynamic>{
       if (inList) ...current,
       'aid': aid,
       'bvid': bvid,
@@ -319,5 +319,10 @@ class MiniPlayerQueue {
       ..remove('isVertical')
       ..remove(rootRpIdKey)
       ..remove(secondRpIdKey);
+    if (!sameVideo) {
+      // 稍后再看的状态属于当前视频，见 `MiniPlayerHostMixin.miniArgs`
+      args.remove('viewLater');
+    }
+    return args;
   }
 }

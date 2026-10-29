@@ -16,6 +16,7 @@ import 'package:PiliPlus/pages/common/common_data_controller.dart';
 import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/extension/nested_scroll_ext.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:PiliPlus/utils/request_utils.dart';
 import 'package:PiliPlus/utils/share_utils.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
@@ -254,13 +255,13 @@ class MemberController extends CommonDataController<SpaceData, SpaceData?>
 
   Future<void> _onBlock() async {
     final isBlocked = relation.value == 128;
-    MemberSpacePrefetch.invalidate(mid);
+    MemberPrefetch.invalidate(mid);
     final res = await VideoHttp.relationMod(
       mid: mid,
       act: isBlocked ? 6 : 5,
       reSrc: 11,
     );
-    MemberSpacePrefetch.invalidate(mid);
+    MemberPrefetch.invalidate(mid);
     if (res.isSuccess) {
       relation.value = isBlocked ? 0 : 128;
     }
@@ -292,9 +293,9 @@ class MemberController extends CommonDataController<SpaceData, SpaceData?>
   }
 
   Future<void> onRemoveFan() async {
-    MemberSpacePrefetch.invalidate(mid);
+    MemberPrefetch.invalidate(mid);
     final res = await VideoHttp.relationMod(mid: mid, act: 7, reSrc: 11);
-    MemberSpacePrefetch.invalidate(mid);
+    MemberPrefetch.invalidate(mid);
     if (res.isSuccess) {
       isFollowed = null;
       if (relation.value == 4) {

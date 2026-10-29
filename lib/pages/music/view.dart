@@ -65,6 +65,7 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
           child: isPortrait
               ? refreshIndicator(
                   onRefresh: controller.onRefresh,
+                  notificationPredicate: _canRefresh,
                   child: _buildBody(),
                 )
               : _buildBody(),
@@ -72,6 +73,11 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
       ),
     );
   }
+
+  /// 评论区的参数随音乐信息到达，此前不响应下拉刷新
+  bool _canRefresh(ScrollNotification notification) =>
+      controller.infoState.value is Success &&
+      defaultScrollNotificationPredicate(notification);
 
   PreferredSizeWidget _buildAppBar() => AppBar(
     title: Padding(
@@ -137,7 +143,7 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
                       ? MusicChartSkeleton(width: maxWidth)
                       : _buildChart(response, maxWidth),
                 ),
-                buildReplyHeader(),
+                _buildReplyHeader(response == null),
                 Obx(() => replyList(controller.loadingState.value)),
               ],
             ),
@@ -187,10 +193,11 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
                   child: MiniScaffold(
                     body: refreshIndicator(
                       onRefresh: controller.onRefresh,
+                      notificationPredicate: _canRefresh,
                       child: CustomScrollView(
                         physics: const AlwaysScrollableScrollPhysics(),
                         slivers: [
-                          buildReplyHeader(),
+                          _buildReplyHeader(response == null),
                           Obx(
                             () => replyList(controller.loadingState.value),
                           ),
@@ -211,6 +218,10 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
         return const SizedBox.shrink();
     }
   });
+
+  /// 音乐信息到达前评论区的参数未定，保留标题栏的位置但不响应排序
+  Widget _buildReplyHeader(bool loading) =>
+      SliverIgnorePointer(ignoring: loading, sliver: buildReplyHeader());
 
   Widget _buildBottom(MusicDetail item) {
     if (!controller.showDynActionBar) {

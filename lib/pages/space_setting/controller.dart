@@ -3,8 +3,8 @@ import 'package:PiliPlus/http/user.dart';
 import 'package:PiliPlus/models_new/space_setting/data.dart';
 import 'package:PiliPlus/models_new/space_setting/privacy.dart';
 import 'package:PiliPlus/pages/common/common_data_controller.dart';
-import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/utils/accounts.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 
 class SpaceSettingController
     extends CommonDataController<SpaceSettingData, Privacy?> {
@@ -34,7 +34,7 @@ class SpaceSettingController
       if (loadingState.value case Success(:final response?)) {
         // 预取的自己的空间页数据含这些设置；变更完成后再次作废
         final mid = Accounts.main.mid;
-        MemberSpacePrefetch.invalidate(mid);
+        MemberPrefetch.invalidate(mid);
         final res = await UserHttp.spaceSettingMod(
           {
             for (final e in response.list1) e.key: e.value,
@@ -42,7 +42,7 @@ class SpaceSettingController
             for (final e in response.list3) e.key: e.value,
           },
         );
-        MemberSpacePrefetch.invalidate(mid);
+        MemberPrefetch.invalidate(mid);
         if (!res.isSuccess) {
           res.toast();
         }

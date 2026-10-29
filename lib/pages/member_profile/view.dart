@@ -11,7 +11,6 @@ import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/models/common/member/profile_type.dart';
 import 'package:PiliPlus/models/user/info.dart';
 import 'package:PiliPlus/models_new/account_myinfo/data.dart';
-import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/mine/controller.dart';
 import 'package:PiliPlus/services/account_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
@@ -19,6 +18,7 @@ import 'package:PiliPlus/utils/app_sign.dart';
 import 'package:PiliPlus/utils/date_utils.dart';
 import 'package:PiliPlus/utils/extension/file_ext.dart';
 import 'package:PiliPlus/utils/extension/theme_ext.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
@@ -65,7 +65,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
   @override
   void dispose() {
     // 预取的空间页数据不含编辑后的资料
-    MemberSpacePrefetch.invalidate(Accounts.main.mid);
+    MemberPrefetch.invalidate(Accounts.main.mid);
     _textController.dispose();
     super.dispose();
   }

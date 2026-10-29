@@ -4,11 +4,11 @@ import 'dart:io' show Platform;
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/user.dart';
 import 'package:PiliPlus/main.dart' show webViewEnvironment;
-import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/services/account_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/accounts/account.dart';
 import 'package:PiliPlus/utils/linux_cookie_manager.dart';
+import 'package:PiliPlus/utils/member_prefetch.dart';
 import 'package:PiliPlus/utils/request_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
@@ -45,7 +45,7 @@ abstract final class LoginUtils {
 
   static Future<void> onLoginMain() async {
     // 预取的空间页数据含当前账号的关注关系等
-    MemberSpacePrefetch.invalidateAll();
+    MemberPrefetch.invalidateAll();
     final account = Accounts.main;
     final res = await UserHttp.userInfo();
     if (res case Success(:final response)) {
@@ -82,7 +82,7 @@ abstract final class LoginUtils {
   }
 
   static Future<void> onLogoutMain() {
-    MemberSpacePrefetch.invalidateAll();
+    MemberPrefetch.invalidateAll();
     Get.find<AccountService>()
       ..face.value = ''
       ..isLogin.value = false;
