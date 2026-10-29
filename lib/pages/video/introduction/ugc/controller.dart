@@ -24,6 +24,7 @@ import 'package:PiliPlus/models_new/video/video_detail/stat_detail.dart';
 import 'package:PiliPlus/models_new/video/video_detail/ugc_season.dart';
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/dynamics_repost/view.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/video/related/controller.dart';
 import 'package:PiliPlus/pages/video/reply/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
@@ -458,6 +459,8 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
         act: 6,
         reSrc: 11,
       );
+      // 预取的空间页数据含拉黑状态
+      MemberSpacePrefetch.discardMid(mid);
       if (res.isSuccess) {
         followStatus
           ..value.attribute = 0

@@ -4,6 +4,7 @@ import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/home/rcmd/result.dart';
 import 'package:PiliPlus/models/model_video.dart';
 import 'package:PiliPlus/models_new/space/space_archive/item.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/mine/controller.dart';
 import 'package:PiliPlus/pages/search/widgets/search_text.dart';
 import 'package:PiliPlus/pages/video/ai_conclusion/view.dart';
@@ -298,6 +299,10 @@ class VideoPopupMenu extends StatelessWidget {
                                   mid: videoItem.owner.mid!,
                                   act: 5,
                                   reSrc: 11,
+                                );
+                                // 预取的空间页数据含拉黑状态
+                                MemberSpacePrefetch.discardMid(
+                                  videoItem.owner.mid,
                                 );
                                 if (res.isSuccess) {
                                   onRemove?.call();

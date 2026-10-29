@@ -368,6 +368,8 @@ class _HorizontalMemberPageState extends State<HorizontalMemberPage> {
               ),
               onPressed: () {
                 if (widget.mid == account.mid) {
+                  // 编辑后空间页数据不再准确
+                  MemberSpacePrefetch.discard(_spacePrefetch);
                   Get.toNamed('/editProfile');
                 } else {
                   if (!account.isLogin) {
