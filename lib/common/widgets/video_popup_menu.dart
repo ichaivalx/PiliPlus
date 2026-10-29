@@ -297,7 +297,7 @@ class VideoPopupMenu extends StatelessWidget {
                                 Get.back();
                                 // 预取的空间页数据含拉黑状态；变更完成后
                                 // 再次作废，期间开始的预取可能取到变更前的状态
-                                MemberSpacePrefetch.discardMid(
+                                MemberSpacePrefetch.invalidate(
                                   videoItem.owner.mid,
                                 );
                                 final res = await VideoHttp.relationMod(
@@ -305,7 +305,7 @@ class VideoPopupMenu extends StatelessWidget {
                                   act: 5,
                                   reSrc: 11,
                                 );
-                                MemberSpacePrefetch.discardMid(
+                                MemberSpacePrefetch.invalidate(
                                   videoItem.owner.mid,
                                 );
                                 if (res.isSuccess) {

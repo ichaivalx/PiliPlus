@@ -58,13 +58,11 @@ class _HorizontalMemberPageState extends State<HorizontalMemberPage> {
   late ColorScheme colorScheme;
   late final _isRefreshing = RxBool(false);
 
-  /// 预先获取空间页数据，点击查看主页时直接显示
-  Object? _spacePrefetch;
-
   @override
   void initState() {
     super.initState();
-    _spacePrefetch = MemberSpacePrefetch.start(widget.mid);
+    // 预先获取空间页数据，点击查看主页时直接显示
+    MemberSpacePrefetch.hold(this, [widget.mid]);
     _controller = Get.put(
       HorizontalMemberPageController(
         mid: widget.mid,
@@ -92,7 +90,7 @@ class _HorizontalMemberPageState extends State<HorizontalMemberPage> {
 
   @override
   void dispose() {
-    MemberSpacePrefetch.discard(_spacePrefetch);
+    MemberSpacePrefetch.release(this);
     super.dispose();
   }
 
@@ -368,8 +366,6 @@ class _HorizontalMemberPageState extends State<HorizontalMemberPage> {
               ),
               onPressed: () {
                 if (widget.mid == account.mid) {
-                  // 编辑后空间页数据不再准确
-                  MemberSpacePrefetch.discard(_spacePrefetch);
                   Get.toNamed('/editProfile');
                 } else {
                   if (!account.isLogin) {

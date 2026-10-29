@@ -83,9 +83,18 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
 
   late final Map<int?, bool> seasonFavState = {};
 
+  /// 页面存在期间预先获取 UP 主与合作成员的空间页数据
+  late final StreamSubscription _spacePrefetch;
+
   @override
   void onInit() {
     super.onInit();
+    _spacePrefetch = videoDetail.listen(
+      (detail) => MemberSpacePrefetch.hold(this, [
+        detail.owner?.mid,
+        ...?detail.staff?.map((e) => e.mid),
+      ]),
+    );
     final alwaysExpandIntroPanel = Pref.alwaysExpandIntroPanel;
     expand = RxBool(alwaysExpandIntroPanel);
     if (!alwaysExpandIntroPanel && Pref.expandIntroPanelH) {
@@ -96,6 +105,13 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
       });
     }
     videoDetail.value.title = Get.arguments['title'] ?? '';
+  }
+
+  @override
+  void onClose() {
+    _spacePrefetch.cancel();
+    MemberSpacePrefetch.release(this);
+    super.onClose();
   }
 
   // 获取视频简介&分p
@@ -456,13 +472,13 @@ class UgcIntroController extends CommonIntroController with ReloadMixin {
     if (attr == 128) {
       // 预取的空间页数据含拉黑状态；变更完成后再次作废，期间开始的预取
       // 可能取到变更前的状态
-      MemberSpacePrefetch.discardMid(mid);
+      MemberSpacePrefetch.invalidate(mid);
       final res = await VideoHttp.relationMod(
         mid: mid,
         act: 6,
         reSrc: 11,
       );
-      MemberSpacePrefetch.discardMid(mid);
+      MemberSpacePrefetch.invalidate(mid);
       if (res.isSuccess) {
         followStatus
           ..value.attribute = 0

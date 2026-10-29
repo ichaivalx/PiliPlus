@@ -144,10 +144,10 @@ abstract final class RequestUtils {
     }
     // 预取的空间页数据含关注关系；变更完成后再次作废，期间开始的预取
     // 可能取到变更前的关系
-    MemberSpacePrefetch.discardMid(mid);
+    MemberSpacePrefetch.invalidate(mid);
     final onMod = afterMod;
     afterMod = (attribute) {
-      MemberSpacePrefetch.discardMid(mid);
+      MemberSpacePrefetch.invalidate(mid);
       onMod?.call(attribute);
     };
     feedBack();

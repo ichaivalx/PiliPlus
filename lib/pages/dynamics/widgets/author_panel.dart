@@ -13,6 +13,7 @@ import 'package:PiliPlus/http/user.dart';
 import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/dynamics/result.dart';
 import 'package:PiliPlus/pages/dynamics/controller.dart';
+import 'package:PiliPlus/pages/member/space_prefetch.dart';
 import 'package:PiliPlus/pages/save_panel/view.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/bili_utils.dart';
@@ -631,10 +632,14 @@ class AuthorPanel extends StatelessWidget {
                       ReportOptions.dynamicReport,
                       (reasonType, reasonDesc, banUid) {
                         if (banUid) {
+                          final mid = moduleAuthor.mid;
+                          MemberSpacePrefetch.invalidate(mid);
                           VideoHttp.relationMod(
-                            mid: moduleAuthor.mid!,
+                            mid: mid!,
                             act: 5,
                             reSrc: 11,
+                          ).whenComplete(
+                            () => MemberSpacePrefetch.invalidate(mid),
                           );
                         }
                         return UserHttp.dynamicReport(

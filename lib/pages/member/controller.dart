@@ -254,11 +254,13 @@ class MemberController extends CommonDataController<SpaceData, SpaceData?>
 
   Future<void> _onBlock() async {
     final isBlocked = relation.value == 128;
+    MemberSpacePrefetch.invalidate(mid);
     final res = await VideoHttp.relationMod(
       mid: mid,
       act: isBlocked ? 6 : 5,
       reSrc: 11,
     );
+    MemberSpacePrefetch.invalidate(mid);
     if (res.isSuccess) {
       relation.value = isBlocked ? 0 : 128;
     }
@@ -290,7 +292,9 @@ class MemberController extends CommonDataController<SpaceData, SpaceData?>
   }
 
   Future<void> onRemoveFan() async {
+    MemberSpacePrefetch.invalidate(mid);
     final res = await VideoHttp.relationMod(mid: mid, act: 7, reSrc: 11);
+    MemberSpacePrefetch.invalidate(mid);
     if (res.isSuccess) {
       isFollowed = null;
       if (relation.value == 4) {

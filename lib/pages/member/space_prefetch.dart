@@ -1,36 +1,48 @@
-import 'dart:async' show FutureOr;
+import 'dart:async' show FutureOr, StreamSubscription;
 
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/member.dart';
 import 'package:PiliPlus/models_new/space/space/data.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
+import 'package:flutter/widgets.dart';
+import 'package:get/get.dart';
 
-/// UP 主空间页数据的预取：视频详情页的 UP 主面板打开时开始请求，从面板
-/// 进入空间页时交给 `MemberController`，空间页首帧即为实际内容
+/// UP 主空间页数据的预取：视频详情页（UP 主与合作成员）和 UP 主面板持有
+/// 相应的 mid，持有期间始终备好一份，进入空间页时交给 `MemberController`，
+/// 首帧即为实际内容；被取用或作废后，仍有持有者时重新预取
 ///
-/// 请求参数对应 `MemberController.customGetData`，面板进入时不带
-/// `from_view_aid`；只保留一份，取用、面板关闭或关注关系变更后作废
+/// 请求参数对应 `MemberController.customGetData`。`from_view_aid` 不影响
+/// 空间页读取的字段（与不带时的响应只有图片地址等随机差异），各入口共用
+/// 不带它的结果
 abstract final class MemberSpacePrefetch {
-  static _Prefetch? _current;
+  /// 持有者及其持有的 mid
+  static final Map<Object, Set<int>> _holders = {};
+  static final Map<int, _Prefetch> _entries = {};
 
-  /// 开始预取，返回值用于面板关闭时作废
-  static Object? start(int? mid) {
-    if (mid == null) {
-      return null;
+  static bool _isHeld(int mid) => _holders.values.any((e) => e.contains(mid));
+
+  /// [owner] 改为持有 [mids]，不再持有的 mid 无人持有时丢弃
+  static void hold(Object owner, Iterable<Object?> mids) {
+    final next = mids.whereType<int>().toSet();
+    final prev = _holders.remove(owner) ?? const <int>{};
+    if (next.isNotEmpty) {
+      _holders[owner] = next;
     }
-    return _current = _Prefetch(mid);
+    for (final mid in prev.difference(next)) {
+      if (!_isHeld(mid)) {
+        _entries.remove(mid);
+      }
+    }
+    next.difference(prev).forEach(_arm);
   }
 
-  /// 作废 [token] 对应且尚未取用的预取
-  static void discard(Object? token) {
-    if (identical(_current, token)) {
-      _current = null;
-    }
-  }
+  static void release(Object owner) => hold(owner, const []);
 
-  /// 关注关系变更后，该 UP 主的预取不再准确
-  static void discardMid(Object? mid) {
-    if (_current?.mid == mid) {
-      _current = null;
+  /// 关注关系、资料等变更后，该 mid 的预取不再准确
+  static void invalidate(Object? mid) {
+    if (mid is int) {
+      _entries.remove(mid);
+      _arm(mid);
     }
   }
 
@@ -40,28 +52,62 @@ abstract final class MemberSpacePrefetch {
     int mid,
     Object? fromViewAid,
   ) {
-    final prefetch = _current;
-    if (prefetch == null || prefetch.mid != mid || fromViewAid != null) {
+    final prefetch = _entries.remove(mid);
+    if (prefetch == null) {
       return null;
     }
-    _current = null;
+    _arm(mid);
     return switch (prefetch.result) {
       final Success<SpaceData> result => result,
       null => prefetch.request.then<LoadingState<SpaceData>>(
-        (res) async =>
-            res.isSuccess ? res : await MemberHttp.space(mid: mid),
+        (res) async => res.isSuccess
+            ? res
+            : await MemberHttp.space(mid: mid, fromViewAid: fromViewAid),
       ),
       _ => null,
     };
   }
+
+  /// 仍有持有者时预取；在页面转场与小窗展开结束后开始，响应的解析不落在
+  /// 动画中
+  static void _arm(int mid) => _whenSettled(() {
+    if (_isHeld(mid) && !_entries.containsKey(mid)) {
+      _entries[mid] = _Prefetch(mid);
+    }
+  });
+
+  static void _whenSettled(VoidCallback callback) {
+    final route = Get.routing.route;
+    // ignore: invalid_use_of_protected_member
+    final controller = route is TransitionRoute ? route.controller : null;
+    if (controller != null && controller.isAnimating) {
+      void onStatus(AnimationStatus status) {
+        if (!status.isAnimating) {
+          controller.removeStatusListener(onStatus);
+          _whenSettled(callback);
+        }
+      }
+
+      controller.addStatusListener(onStatus);
+    } else if (miniPlayerSession.restoring.value) {
+      late final StreamSubscription<bool> subscription;
+      subscription = miniPlayerSession.restoring.listen((restoring) {
+        if (!restoring) {
+          subscription.cancel();
+          _whenSettled(callback);
+        }
+      });
+    } else {
+      callback();
+    }
+  }
 }
 
 class _Prefetch {
-  _Prefetch(this.mid) : request = MemberHttp.space(mid: mid) {
+  _Prefetch(int mid) : request = MemberHttp.space(mid: mid) {
     request.then((res) => result = res);
   }
 
-  final int mid;
   final Future<LoadingState<SpaceData>> request;
   LoadingState<SpaceData>? result;
 }
