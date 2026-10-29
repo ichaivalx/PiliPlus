@@ -352,6 +352,9 @@ class MiniPlayerSession with WidgetsBindingObserver {
         restoreRect.value = host.miniPlayerRect;
         _host = null;
         mode.value = .none;
+      } else if (restoring.value) {
+        // 详情页上方又有页面（如出栈后立即入栈），本次恢复无法完成
+        _cancelRestore();
       }
     });
   }
@@ -434,6 +437,11 @@ class MiniPlayerSession with WidgetsBindingObserver {
 
   /// 覆盖中的宿主页面离开栈：内容可继续时转入无宿主，否则结束会话
   void _takeOverCovered(MiniPlayerHost host) {
+    // 进行中的恢复以该页面为目标（如连续出栈时先回到它再离开），无法完成，
+    // 小窗撤销展开回到原位
+    if (restoring.value) {
+      _cancelRestore();
+    }
     if (host.canHandOffToMini) {
       final continuing = host.onMiniDetached();
       _becomeHeadless(host);
