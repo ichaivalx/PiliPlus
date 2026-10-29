@@ -118,7 +118,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
   /// 加载期间请求恢复详情页，加载结束后执行
   bool _restorePending = false;
 
-  /// 主动恢复时详情页从小窗展开；返回键回到覆盖中的详情页时保留其出栈转场，
+  /// 主动恢复与返回键回到覆盖中的详情页时，详情页从小窗展开；其他方式
+  /// 回到详情页时（如手势返回，详情页已随拖动露出）保留其出栈转场，
   /// 小窗飞回播放器的位置
   bool _expandRestore = false;
   bool get expandRestore => _expandRestore;
@@ -248,6 +249,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
     _routes.remove(route);
     _onReveal();
+    _expandOnPop(route, previousRoute);
     _scheduleSettle();
     _revealHost();
   }
@@ -257,6 +259,31 @@ class MiniPlayerSession with WidgetsBindingObserver {
     _onReveal();
     _scheduleSettle();
     _revealHost();
+  }
+
+  /// 返回键回到覆盖中的详情页：与主动恢复一样由小窗展开。上层页面的出栈
+  /// 转场在展开开始前直接结束（此时页面层已不可见），与主动恢复直接移除
+  /// 上层页面一致；回到详情页后由 [_scheduleSettle] 给出展开的终点
+  void _expandOnPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    final host = _host;
+    if (!isCovered ||
+        restoring.value ||
+        host == null ||
+        previousRoute == null ||
+        !identical(previousRoute, host.miniRoute) ||
+        route is! TransitionRoute ||
+        (previousRoute.navigator?.userGestureInProgress ?? true)) {
+      return;
+    }
+    _beginExpandRestore(route);
+    restoring.value = true;
+    // ignore: invalid_use_of_protected_member
+    final controller = route.controller;
+    Future.microtask(() {
+      if (controller != null && controller.isAnimating) {
+        controller.value = controller.lowerBound;
+      }
+    });
   }
 
   /// 隔着弹窗等非页面路由时 RouteAware 不会通知，由此补充
@@ -662,11 +689,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _restorePending = true;
       return;
     }
-    _expandRestore = true;
-    _snapshotRestore = switch (_topPage()) {
-      final page? => !MiniPlayerPolicy.hasPlatformView(page),
-      null => true,
-    };
+    _beginExpandRestore(_topPage());
     switch (mode.value) {
       case .none:
         return;
@@ -691,6 +714,12 @@ class MiniPlayerSession with WidgetsBindingObserver {
           () => Get.key.currentState?.push(MiniPlayerRestoreRoute(args)),
         );
     }
+  }
+
+  /// 详情页从小窗展开，[top] 为恢复前最上层的页面
+  void _beginExpandRestore(Route<dynamic>? top) {
+    _expandRestore = true;
+    _snapshotRestore = top == null || !MiniPlayerPolicy.hasPlatformView(top);
   }
 
   void finishRestore() {
