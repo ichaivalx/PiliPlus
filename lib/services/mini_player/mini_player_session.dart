@@ -580,7 +580,10 @@ class MiniPlayerSession {
     _scheduleSettle();
     _syncDormantEntry();
     _updateLayer();
-    syncCurrentRoute();
+    // 没有宿主时（手机、桌面等）依赖归属与上游一致
+    if (hosts.isNotEmpty) {
+      syncCurrentRoute();
+    }
   }
 
   /// 被覆盖的详情页重新成为最上层的页面
