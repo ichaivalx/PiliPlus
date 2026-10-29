@@ -27,6 +27,14 @@ class MusicDetailController extends CommonDynController {
     getMusicDetail();
   }
 
+  /// 评论区的参数随音乐信息到达，此前不响应排序
+  @override
+  void queryBySort() {
+    if (infoState.value is Success) {
+      super.queryBySort();
+    }
+  }
+
   Future<void> getMusicDetail() async {
     final res = await MusicHttp.bgmDetail(musicId);
     if (res case Success(:final response)) {

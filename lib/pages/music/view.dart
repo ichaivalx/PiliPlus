@@ -143,7 +143,7 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
                       ? MusicChartSkeleton(width: maxWidth)
                       : _buildChart(response, maxWidth),
                 ),
-                _buildReplyHeader(response == null),
+                buildReplyHeader(),
                 Obx(() => replyList(controller.loadingState.value)),
               ],
             ),
@@ -197,7 +197,7 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
                       child: CustomScrollView(
                         physics: const AlwaysScrollableScrollPhysics(),
                         slivers: [
-                          _buildReplyHeader(response == null),
+                          buildReplyHeader(),
                           Obx(
                             () => replyList(controller.loadingState.value),
                           ),
@@ -218,10 +218,6 @@ class _MusicDetailPageState extends CommonDynPageState<MusicDetailPage> {
         return const SizedBox.shrink();
     }
   });
-
-  /// 音乐信息到达前评论区的参数未定，保留标题栏的位置但不响应排序
-  Widget _buildReplyHeader(bool loading) =>
-      SliverIgnorePointer(ignoring: loading, sliver: buildReplyHeader());
 
   Widget _buildBottom(MusicDetail item) {
     if (!controller.showDynActionBar) {
