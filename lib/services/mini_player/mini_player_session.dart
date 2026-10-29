@@ -369,10 +369,7 @@ class MiniPlayerSession with WidgetsBindingObserver {
       _media.takeControls();
       WidgetsBinding.instance.addObserver(this);
     }
-    final prefetch = _prefetch = MiniPlayerPrefetch(_args, _player!);
-    if (_queue!.detail case final detail?) {
-      prefetch.ownerOf(detail);
-    }
+    _watchDetail(_queue!, _prefetch = MiniPlayerPrefetch(_args, _player!));
     PlPlayerController.setPlayCallBack(
       play,
       playOwner: (tag: _ownerTag, type: null),
@@ -881,6 +878,20 @@ class MiniPlayerSession with WidgetsBindingObserver {
     }
   }
 
+  /// 当前视频的详情到达时预取 UP 主信息，并检查内容是否只能在详情页播放；
+  /// 详情已获取时立即预取
+  void _watchDetail(MiniPlayerQueue queue, MiniPlayerPrefetch prefetch) {
+    queue.onDetail = (detail) {
+      if (identical(_queue, queue)) {
+        prefetch.ownerOf(detail);
+        _exitIfDetailOnly(detail);
+      }
+    };
+    if (queue.detail case final detail?) {
+      prefetch.ownerOf(detail);
+    }
+  }
+
   /// 互动视频需在详情页播放，番剧由详情页按上游方式跳转；
   /// 有更新的选择在加载时由其结束后再判断
   void _exitIfDetailOnly(VideoDetailData detail) {
@@ -993,18 +1004,8 @@ class MiniPlayerSession with WidgetsBindingObserver {
           // 会话信息始终对应实际加载的播放源，即使之后又有新的选择
           if (isOwner()) {
             _args = args;
-            _queue = queue
-              ..select(bvid)
-              ..onDetail = (detail) {
-                if (identical(_queue, queue)) {
-                  prefetch.ownerOf(detail);
-                  _exitIfDetailOnly(detail);
-                }
-              };
-            _prefetch = prefetch;
-            if (queue.detail case final detail?) {
-              prefetch.ownerOf(detail);
-            }
+            _queue = queue..select(bvid);
+            _watchDetail(queue, _prefetch = prefetch);
             _playUrl = data;
             _title.value = args['title'] ?? '';
             _cover.value = args['cover'] ?? '';
