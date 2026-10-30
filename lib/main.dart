@@ -299,8 +299,24 @@ class MyApp extends StatelessWidget {
     );
   }
 
+  /// 性能浮层，在关于页长按版本号切换
+  static final showPerformanceOverlay = ValueNotifier(
+    Pref.showPerformanceOverlay,
+  );
+
+  static void togglePerformanceOverlay() {
+    final value = showPerformanceOverlay.value = !showPerformanceOverlay.value;
+    GStorage.setting.put(SettingBoxKey.showPerformanceOverlay, value);
+    SmartDialog.showToast(value ? '已开启性能浮层' : '已关闭性能浮层');
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ValueListenableBuilder(
+    valueListenable: showPerformanceOverlay,
+    builder: _buildApp,
+  );
+
+  Widget _buildApp(BuildContext context, bool performanceOverlay, Widget? _) {
     final (light, dark) = getAllTheme();
     return GetMaterialApp(
       title: Constants.appName,
@@ -314,13 +330,16 @@ class MyApp extends StatelessWidget {
       initialRoute: '/',
       getPages: Routes.getPages,
       defaultTransition: Pref.pageTransition,
-      builder: FlutterSmartDialog.init(
-        toastBuilder: CustomToast.new,
-        loadingBuilder: LoadingWidget.new,
-        notifyStyle: const FlutterSmartNotifyStyle(
-          warningBuilder: NotifyWarning.new,
+      showPerformanceOverlay: performanceOverlay,
+      builder: _withMiniPlayer(
+        FlutterSmartDialog.init(
+          toastBuilder: CustomToast.new,
+          loadingBuilder: LoadingWidget.new,
+          notifyStyle: const FlutterSmartNotifyStyle(
+            warningBuilder: NotifyWarning.new,
+          ),
+          builder: _builder,
         ),
-        builder: _builder,
       ),
       navigatorObservers: [
         miniPlayerRouteObserver,
@@ -333,14 +352,20 @@ class MyApp extends StatelessWidget {
     );
   }
 
+  /// 小窗层（含详情页所在的宿主层）位于 SmartDialog 的 Overlay 之内：提示、
+  /// 加载与弹窗始终在详情页与小窗上方，小窗层与页面使用同一套修正后的尺寸
+  static TransitionBuilder _withMiniPlayer(TransitionBuilder builder) {
+    if (PlatformUtils.isDesktop) {
+      return builder;
+    }
+    return (context, child) =>
+        builder(context, AppMiniPlayerOverlay(child: child!));
+  }
+
   static Widget _builder(BuildContext context, Widget? child) {
     final uiScale = Pref.uiScale;
     final mediaQuery = MediaQuery.of(context);
     final textScaler = TextScaler.linear(Pref.defaultTextScale);
-    if (!PlatformUtils.isDesktop) {
-      // 小窗层与页面使用同一套修正后的尺寸
-      child = AppMiniPlayerOverlay(child: child!);
-    }
     if (uiScale != 1.0) {
       child = MediaQuery(
         data: mediaQuery.copyWith(

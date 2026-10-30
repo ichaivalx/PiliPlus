@@ -688,6 +688,9 @@ abstract final class Pref {
   static double get uiScale =>
       _setting.get(SettingBoxKey.uiScale, defaultValue: 1.0);
 
+  static bool get showPerformanceOverlay =>
+      _setting.get(SettingBoxKey.showPerformanceOverlay, defaultValue: false);
+
   static bool get dynamicsWaterfallFlow => _setting.get(
     SettingBoxKey.dynamicsWaterfallFlow,
     defaultValue: horizontalScreen,
