@@ -14,6 +14,8 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_host_layer.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
+import 'package:PiliPlus/services/linked_playback/target.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
@@ -115,6 +117,8 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
     plPlayerController?.cancelBackgroundResume();
     if (PlPlayerController.playOwner?.tag == miniHeroTag) {
+      // 联动进行中的共同起播随播放器一并交出
+      linkedPlayback.yieldTarget(const VideoLinkedTarget());
       PlPlayerController.setPlayCallBack(null);
     }
   }
@@ -392,6 +396,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       ?..removeStatusLister(playerListener)
       ..removePositionListener(positionListener);
     if (PlPlayerController.playOwner?.tag == miniHeroTag) {
+      linkedPlayback.yieldTarget(const VideoLinkedTarget());
       PlPlayerController.setPlayCallBack(null);
     }
   }

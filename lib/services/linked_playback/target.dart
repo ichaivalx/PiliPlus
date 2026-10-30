@@ -56,10 +56,12 @@ final class VideoLinkedTarget implements LinkedTarget {
   @override
   bool get isLoading => _controller?.processing ?? false;
 
+  /// 页面已交出播放器（未交给小窗）时不再视为已加载，避免操作被覆盖页面的播放器
   @override
   Player? playerFor(int cid) {
     final controller = _controller;
     if (controller == null ||
+        PlPlayerController.playOwner == null ||
         controller.isLive ||
         controller.cid != cid ||
         !controller.dataStatus.loaded) {

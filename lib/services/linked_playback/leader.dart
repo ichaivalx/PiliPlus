@@ -165,24 +165,41 @@ class LeaderSession {
 
   bool get hasPeers => _transport.connections.isNotEmpty;
 
+  /// 会话已结束：仅剩归还给本机的自行起播
+  bool _closed = false;
+
   /// 正在与跟随端一起播放
-  bool get _active => hasPeers && syncOn();
+  bool get _active => !_closed && hasPeers && syncOn();
 
   Future<void> start() async {
     await _transport.start();
     _ticker = Timer.periodic(_tickInterval, _tick);
   }
 
-  /// 结束会话并通知跟随端停止；返回的 Future 在停止消息发出、连接关闭后完成
-  Future<void> dispose() {
+  /// 结束会话并通知跟随端停止；返回的 Future 在停止消息发出、连接关闭后完成。
+  /// [handBack] 为结束联动、归还本机播放：进行中的共同起播按播放意图与许可由本机
+  /// 自行播放，未加载完时加载完成后播放（同关闭同步）；否则（定时停止、退出）作废
+  Future<void> dispose({bool handBack = false}) {
+    _closed = true;
     _ticker?.cancel();
-    _cancelRound();
-    _clearStandalone();
+    final round = _round;
     _transport.broadcast(const {'t': LinkMessageType.stop});
     final closing = _transport.dispose();
     _peers.clear();
     _detach();
+    if (handBack) {
+      _standalone(round);
+    } else {
+      _cancelRound();
+      _clearStandalone();
+    }
     return closing;
+  }
+
+  /// 已结束的会话不再等待归还的自行起播（其他页面开始加载、页面关闭等）
+  void abandon() {
+    _cancelRound();
+    _clearStandalone();
   }
 
   void refresh() => _transport.refresh();
@@ -219,6 +236,7 @@ class LeaderSession {
     LinkedContent? content,
     LinkedTarget target, {
     required bool Function() autoplay,
+    required ShutdownLoad load,
   }) {
     _setTarget(content, target);
     _clearStandalone();
@@ -237,6 +255,7 @@ class LeaderSession {
       intendsPlay: autoplay(),
       selfLoaded: false,
       autoplay: autoplay,
+      from: load,
     );
     _transport.broadcast(_open(round.id));
     return LinkedLoad(onLoaded: () => _onSelfLoaded(round));
@@ -253,6 +272,19 @@ class LeaderSession {
       if (_loadedPlayer case final player?) {
         _broadcastPause(player);
       }
+    }
+  }
+
+  /// 页面交出播放器（未交给小窗）：进行中的共同起播作废；正在一起播放时跟随端
+  /// 随之暂停。在页面交出前调用，此时仍可读取播放位置
+  void yieldTarget(LinkedTarget target) {
+    if (!identical(_target, target)) return;
+    final player = _loadedPlayer;
+    final playing = _expectPlaying;
+    supersede(target);
+    _expectPlaying = false;
+    if (playing && _active && player != null) {
+      _broadcastPause(player);
     }
   }
 
@@ -429,6 +461,7 @@ class LeaderSession {
     required bool selfLoaded,
     Iterable<LinkConnection>? loading,
     bool Function()? autoplay,
+    ShutdownLoad? from,
     _Round? inherit,
   }) {
     // 转交的许可在作废旧轮次前取出，不随旧轮次注销
@@ -455,7 +488,8 @@ class LeaderSession {
         ..load = inherited
         ..permits = inherit.permits;
     } else {
-      final load = round.load = shutdownTimerService.beginLoad();
+      // 沿用页面加载已有的停止、暂缓状态，此后的事件由本轮的登记承接
+      final load = round.load = shutdownTimerService.beginLoad(from: from);
       round.permits = () =>
           shutdownTimerService.canAutoplay(load) && (autoplay?.call() ?? true);
     }
@@ -715,6 +749,7 @@ class LeaderSession {
   // 本机播放器
 
   void _attach(Player player) {
+    if (_closed) return;
     if (!identical(player, _player)) {
       _detach();
       _player = player;

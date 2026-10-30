@@ -100,8 +100,14 @@ class ShutdownTimerService {
     _durationInMinutes = durationInMinutes;
   }
 
-  ShutdownLoad beginLoad() {
+  /// [from] 为转交的原加载（原加载随后注销）：沿用其已有的停止、暂缓状态
+  ShutdownLoad beginLoad({ShutdownLoad? from}) {
     final load = ShutdownLoad._();
+    if (from != null) {
+      load
+        .._blocked = from._blocked
+        .._held = from._held;
+    }
     _loads.add(load);
     return load;
   }

@@ -203,6 +203,11 @@ class FollowerSession {
   /// 打断结束，拔出耳机、定时关闭等停止播放使其作废；恢复前复核
   ShutdownLoad? _resumeLoad;
 
+  /// 跟随中尚未随主控播放（加载、定位、等待约定起播、跳转，或随主控暂停）期间
+  /// 登记的待自动播放：音频打断暂缓、拔出耳机等停止播放作废，起播前复核，不许可时
+  /// 按本机暂停处理；随主控实际播放、被本机暂停或不再跟随时注销
+  ShutdownLoad? _startLoad;
+
   /// 监听播放状态的播放器，暂停时及时识别是否为本机暂停
   Player? _observedPlayer;
   StreamSubscription<bool>? _playingSubscription;
@@ -265,6 +270,7 @@ class FollowerSession {
     _halt();
     _release();
     _cancelResume();
+    _endStartLoad();
     final closing = _transport.dispose();
     leader.value = null;
     driftMs.value = null;
@@ -307,6 +313,8 @@ class FollowerSession {
   void stopAll() {
     _halt();
     _cancelResume();
+    // 进行中的起播作废；之后主控再次播放时重新登记
+    _endStartLoad();
     // 已就绪的轮次不再接受起播
     _readyRound = null;
     if (!syncOn()) return;
@@ -323,6 +331,7 @@ class FollowerSession {
       _clearContent();
       _localPaused = false;
       _cancelResume();
+      _endStartLoad();
       // 关闭同步前排队的一起停止不再发出
       _pendingStopAll = false;
     }
@@ -348,6 +357,7 @@ class FollowerSession {
       _clearContent();
       _localPaused = false;
       _cancelResume();
+      _endStartLoad();
       return null;
     }
     if (!isConnected) {
@@ -380,17 +390,86 @@ class FollowerSession {
     final player = _loadedPlayer;
     _cancelResume();
     if (target != null && player != null && LinkedPlayer.isOpened(player)) {
-      target.resume();
+      _resumeLocal(target, LinkClock.nowUs);
     } else {
       _resumeLoad = shutdownTimerService.beginLoad();
     }
     return true;
   }
 
+  /// 恢复被本机暂停的跟随：主控在播时恢复播放器，随后按本机恢复对齐；主控已暂停
+  /// 时只结束本机暂停，随主控暂停
+  void _resumeLocal(LinkedTarget target, int now) {
+    if (_shouldPlay || _leaderPlaying(now)) {
+      target.resume();
+    } else {
+      _localPaused = false;
+    }
+  }
+
   void _cancelResume() {
     final load = _resumeLoad;
     _resumeLoad = null;
     if (load != null) shutdownTimerService.endLoad(load);
+  }
+
+  void _endStartLoad() {
+    final load = _startLoad;
+    _startLoad = null;
+    if (load != null) shutdownTimerService.endLoad(load);
+  }
+
+  /// 本机当前是否许可随主控起播
+  bool get _startPermitted {
+    final load = _startLoad;
+    return load == null || shutdownTimerService.canAutoplay(load);
+  }
+
+  /// 按当前状态登记或注销待自动播放
+  void _syncStartLoad(Player? player) {
+    final playingAlong =
+        _shouldPlay &&
+        !_jumping &&
+        !_awaitingSeek &&
+        _startTimer == null &&
+        (player?.state.playing ?? false);
+    if (isFollowing && !_localPaused && !playingAlong) {
+      _startLoad ??= shutdownTimerService.beginLoad();
+    } else {
+      _endStartLoad();
+    }
+  }
+
+  /// 本机的自动播放被暂缓（音频打断）或作废（拔出耳机等）：按本机暂停处理，不参与
+  /// 起播并回报；待恢复沿用被暂缓的登记，打断结束后恢复并对齐，被作废的不再恢复
+  void _deferToLocal() {
+    final round = _pendingRound;
+    _generation++;
+    _startTimer?.cancel();
+    _startTimer = null;
+    _pendingRound = null;
+    _readyRound = null;
+    _jumpToken++;
+    _jumping = false;
+    _awaitingSeek = false;
+    _localPaused = true;
+    _correcting = false;
+    _tracking = false;
+    _factor = 1.0;
+    _drifts.clear();
+    final player = _loadedPlayer;
+    if (player != null) {
+      _applySpeed(player);
+      if (player.state.playing) _pause(_target!);
+    }
+    _cancelResume();
+    _resumeLoad = _startLoad;
+    _startLoad = null;
+    // 本轮不再等待本机
+    if (round != null) {
+      _transport.send({'t': LinkMessageType.ready, 'round': round});
+    }
+    _reportNow();
   }
 
   /// 会话启动时登记已打开的听视频页
@@ -485,7 +564,12 @@ class FollowerSession {
     }
     _resetCorrection();
     if (wasJumping && _shouldPlay) {
-      _target?.play();
+      if (_startPermitted) {
+        _endStartLoad();
+        _target?.play();
+      } else {
+        _deferToLocal();
+      }
     }
     leader.value = null;
     driftMs.value = null;
@@ -705,6 +789,10 @@ class FollowerSession {
     if (round == null || pos == null || target == null || player == null) {
       return;
     }
+    if (!_startPermitted) {
+      _deferToLocal();
+      return;
+    }
     final generation = _generation;
     bool isCurrent() => generation == _generation && isConnected;
     _link(player);
@@ -748,6 +836,11 @@ class FollowerSession {
         final target = _target;
         if (target == null || _loadedPlayer == null) return;
         _shouldPlay = true;
+        if (!_startPermitted) {
+          // 等待期间被打断或停止播放
+          _deferToLocal();
+          return;
+        }
         _jumps = 0;
         _onStarted();
         target.play();
@@ -757,6 +850,7 @@ class FollowerSession {
 
   void _onStarted() {
     final now = LinkClock.nowUs;
+    _endStartLoad();
     _settleUntil = now + _settleUs;
     _judgeAfter = now + _judgeUs;
     _localPaused = false;
@@ -782,7 +876,12 @@ class FollowerSession {
       now - _leaderPosAt < _reportUs &&
       _leaderAhead(_loadedPlayer, now);
 
-  /// 跳转时预留的定位时间
+  /// 主控正在播放本机当前的内容
+  bool _leaderPlaying(int now) =>
+      _leaderCid != null &&
+      _leaderCid == _content?.cid &&
+      now - _leaderPosAt < _reportUs;
+
   /// 跳转时预留的定位时间；起播补偿为负时播放命令提前发出，预留时间相应加长，
   /// 保证播放命令的计划时刻晚于预计就绪时刻
   int get _jumpLeadUs =>
@@ -802,6 +901,11 @@ class FollowerSession {
 
   /// 跳转对齐；多次跳转仍未对齐时请主控共同暂停后重新共同起播
   void _realign(LinkedTarget target, Player player, int now) {
+    if (!_startPermitted) {
+      _shouldPlay = true;
+      _deferToLocal();
+      return;
+    }
     if (_jumps >= _maxJumps) {
       if (_requestResync(now)) {
         _jumps = 0;
@@ -818,6 +922,7 @@ class FollowerSession {
     final token = ++_jumpToken;
     _jumping = true;
     _shouldPlay = true;
+    _startLoad ??= shutdownTimerService.beginLoad();
     _correcting = false;
     _tracking = false;
     _factor = 1.0;
@@ -852,7 +957,13 @@ class FollowerSession {
       if (LinkClock.nowUs < playAt) {
         _startTimer = LinkedPlayer.scheduleAt(playAt, () {
           _startTimer = null;
-          if (!isCurrent()) return;
+          // 页面已交出播放器时不再播放
+          if (!isCurrent() || !identical(_loadedPlayer, player)) return;
+          if (!_startPermitted) {
+            // 跳转期间被打断或停止播放
+            _deferToLocal();
+            return;
+          }
           _jumping = false;
           _onStarted();
           target.play();
@@ -964,6 +1075,12 @@ class FollowerSession {
     _playingSubscription = player.stream.playing.listen((playing) {
       if (playing) {
         _expectOwnPause = false;
+        // 本机恢复播放时立即结束本机暂停，不等下次检查（期间主控可能已暂停）
+        if (_localPaused &&
+            !player.state.completed &&
+            identical(player, _loadedPlayer)) {
+          _onLocalResume(player);
+        }
       } else if (_expectOwnPause) {
         _expectOwnPause = false;
       } else if (_isLocallyPaused(player)) {
@@ -986,6 +1103,22 @@ class FollowerSession {
     return !state.playing &&
         !state.completed &&
         state.position < state.duration - _endPauseWindow;
+  }
+
+  /// 本机恢复播放（打断结束、用户播放）：主控在播时跳转重新对齐（含暂停期间主控
+  /// 切换到的新内容），主控已暂停时随主控暂停；未连接时重连后再对齐
+  void _onLocalResume(Player player) {
+    final target = _target;
+    if (target == null || !syncOn() || !_restored || !isConnected) return;
+    _localPaused = false;
+    _cancelResume();
+    final now = LinkClock.nowUs;
+    if (_shouldPlay || _canJoin(now)) {
+      _jumps = 0;
+      _realign(target, player, now);
+    } else if (_startTimer == null) {
+      _pause(target);
+    }
   }
 
   void _markLocalPaused(Player player) {
@@ -1212,18 +1345,26 @@ class FollowerSession {
           player != null &&
           LinkedPlayer.isOpened(player) &&
           shutdownTimerService.canAutoplay(load)) {
-        // 加载完成且未被之后的打断暂缓、未被停止播放作废：恢复播放，
-        // 随后按本机恢复对齐
+        // 加载完成且未被之后的打断暂缓、未被停止播放作废：恢复，随后按本机恢复对齐
         _cancelResume();
-        target.resume();
+        _resumeLocal(target, now);
       }
     }
+    _syncStartLoad(player);
     if (syncOn() && _restored && target != null && player != null) {
       if (!_loaded && !target.isLoading) {
         // 未经联动接管的加载（如用户在本机打开了同一视频）
         _onLoaded();
       }
-      if (_jumping) {
+      if (!_startPermitted &&
+          (_pendingRound != null ||
+              _readyRound != null ||
+              _startTimer != null ||
+              _jumping ||
+              _awaitingSeek)) {
+        // 等待起播期间被打断或停止播放：不再参与
+        _deferToLocal();
+      } else if (_jumping) {
         // 等待跳转后起播
       } else if (_awaitingSeek) {
         if (_intercepts.length >= _seekSamples && _clock.isReady) {
@@ -1232,16 +1373,9 @@ class FollowerSession {
           _realign(target, player, now);
         }
       } else if (_localPaused && !player.state.completed) {
+        // 播放事件未及时处理时的兜底
         if (player.state.playing) {
-          // 本机恢复播放（打断结束、用户播放）：主控在播时跳转重新对齐（含暂停期间
-          // 主控切换到的新内容），主控已暂停时随主控暂停
-          _localPaused = false;
-          if (_shouldPlay || _canJoin(now)) {
-            _jumps = 0;
-            _realign(target, player, now);
-          } else if (_startTimer == null) {
-            _pause(target);
-          }
+          _onLocalResume(player);
         }
       } else if (_shouldPlay) {
         if (player.state.completed) {

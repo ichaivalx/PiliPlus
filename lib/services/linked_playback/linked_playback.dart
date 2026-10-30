@@ -116,6 +116,7 @@ class LinkedPlayback {
     if (previous != null) {
       _leader?.supersede(previous);
     }
+    _abandonHandedBack();
   }
 
   /// 页面继续播放已加载的内容（未经加载流程，如返回听视频页继续播放）：
@@ -128,8 +129,25 @@ class LinkedPlayback {
     current.value = content;
     _currentTarget = target;
     _epoch++;
+    _abandonHandedBack();
     _leader?.takeOver(content, target);
     _follower?.adopt(target);
+  }
+
+  /// 页面交出播放器（未交给小窗，小窗接管时归属不变）：其进行中的共同起播
+  /// （含等待自行起播）作废，不再起播
+  void yieldTarget(LinkedTarget target) {
+    _leader?.yieldTarget(target);
+    _handedBack?.supersede(target);
+  }
+
+  /// 关闭联动时归还给本机、仍在等待加载完成后自行起播的会话
+  LeaderSession? _handedBack;
+
+  /// 其他页面开始播放或加载：归还的自行起播不再进行
+  void _abandonHandedBack() {
+    _handedBack?.abandon();
+    _handedBack = null;
   }
 
   LeaderSession? _leader;
@@ -190,12 +208,14 @@ class LinkedPlayback {
     LinkedContent? content,
     LinkedTarget target, {
     required bool Function() autoplay,
+    required ShutdownLoad load,
   }) {
     current.value = content;
     _currentTarget = target;
     _epoch++;
+    _abandonHandedBack();
     if (_leader case final leader?) {
-      return leader.gateLoad(content, target, autoplay: autoplay);
+      return leader.gateLoad(content, target, autoplay: autoplay, load: load);
     }
     return _follower?.gateLoad(content, target);
   }
@@ -208,6 +228,7 @@ class LinkedPlayback {
       _epoch++;
     }
     _leader?.releaseTarget(target);
+    _handedBack?.releaseTarget(target);
     _follower?.releaseTarget(target);
   }
 
@@ -381,7 +402,8 @@ class LinkedPlayback {
   }
 
   Future<void> _restart() => _switching = _switching.then((_) async {
-    _stop();
+    // 关闭联动：主控进行中的共同起播归还本机按播放意图自行播放
+    _stop(handBack: !enabled.value);
     if (!enabled.value) {
       _updateService();
       return;
@@ -455,9 +477,13 @@ class LinkedPlayback {
     _updateService();
   });
 
-  void _stop() {
+  void _stop({bool handBack = false}) {
     error.value = null;
-    _leader?.dispose();
+    _abandonHandedBack();
+    if (_leader case final leader?) {
+      leader.dispose(handBack: handBack);
+      if (handBack) _handedBack = leader;
+    }
     _leader = null;
     _follower?.dispose();
     _follower = null;

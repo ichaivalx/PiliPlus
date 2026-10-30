@@ -777,13 +777,12 @@ class VideoDetailController extends GetxController
     // 联动的共同起播在加载完成后，同样受本次加载的许可约束
     final ownLoad = load == null ? shutdownTimerService.beginLoad() : null;
     load ??= ownLoad!;
-    final permit = load;
+    // 本次加载的停止、暂缓状态随加载转交给联动
     final linkedLoad = linkedPlayback.gateLoad(
       _linkedContent,
       const VideoLinkedTarget(),
-      autoplay: () =>
-          (autoplay ?? _autoPlay.value) &&
-          shutdownTimerService.canAutoplay(permit),
+      autoplay: () => autoplay ?? _autoPlay.value,
+      load: load,
     );
     Duration? seek = linkedLoad?.position ?? defaultST ?? playedTime;
     if (seek == .zero) seek = null;

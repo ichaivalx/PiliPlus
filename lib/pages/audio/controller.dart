@@ -464,8 +464,9 @@ class AudioController extends GetxController
     if (route?.isCurrent ?? true) {
       linkedPlayback.claim(_linkedTarget);
     }
-    // 重新加载：此前的失败不再有效
+    // 重新加载：此前的失败不再有效，进行中的等待打开结束
     _failedCid = null;
+    _openWait?.cancel();
     final load = _openingLoad = shutdownTimerService.beginLoad();
     return _AudioRequest(
       load: load,
@@ -505,15 +506,24 @@ class AudioController extends GetxController
         : linkedPlayback.gateLoad(
             request.content,
             _linkedTarget,
-            autoplay: () =>
-                !_yielded && shutdownTimerService.canAutoplay(load),
+            // 本次加载的停止、暂缓状态随加载转交给联动
+            autoplay: () => !_yielded,
+            load: load,
           );
-    await player.open(
-      Media(url, start: linkedLoad?.position ?? start, extras: extras),
-      play: false,
-    );
-    // 打开命令返回时文件尚未打开，以实际打开的结果为准
-    final failure = await _waitOpened(player);
+    // 打开命令返回时文件尚未打开，以实际打开的结果为准；打开前订阅，不漏掉打开
+    // 期间的失败事件
+    final wait = _openWait = _OpenWait(player);
+    final String? failure;
+    try {
+      await player.open(
+        Media(url, start: linkedLoad?.position ?? start, extras: extras),
+        play: false,
+      );
+      failure = await wait.result;
+    } finally {
+      wait.cancel();
+      if (identical(_openWait, wait)) _openWait = null;
+    }
     // 已被新请求取代或页面已关闭时不播放
     if (isClosed ||
         !identical(_openingLoad, load) ||
@@ -544,37 +554,8 @@ class AudioController extends GetxController
     }
   }
 
-  /// 等待播放源实际打开：时长可用即打开成功，返回 null；打开失败时返回错误。
-  /// 播放器释放时返回 null，由调用方按已被取代处理
-  Future<String?> _waitOpened(Player player) {
-    if (player.state.duration > Duration.zero) return Future.value();
-    final completer = Completer<String?>();
-    StreamSubscription<Duration>? durationSubscription;
-    StreamSubscription<String>? errorSubscription;
-    void finish(String? failure) {
-      if (completer.isCompleted) return;
-      durationSubscription?.cancel();
-      errorSubscription?.cancel();
-      completer.complete(failure);
-    }
-
-    durationSubscription = player.stream.duration.listen(
-      (duration) {
-        if (duration > Duration.zero) finish(null);
-      },
-      onDone: () => finish(null),
-    );
-    errorSubscription = player.stream.error.listen(
-      (error) {
-        if (error.startsWith('Failed to open') ||
-            error.startsWith('Failed to recognize file format')) {
-          finish(error);
-        }
-      },
-      onDone: () => finish(null),
-    );
-    return completer.future;
-  }
+  /// 进行中的等待打开，新请求或页面关闭时提前结束
+  _OpenWait? _openWait;
 
   // 联动播放
 
@@ -1086,6 +1067,7 @@ class AudioController extends GetxController
 
   @override
   void onClose() {
+    _openWait?.cancel();
     linkedPlayback.releaseTarget(_linkedTarget);
     _stopStatusTimer();
     shutdownTimerService.removeTarget(_shutdownTarget);
@@ -1117,6 +1099,45 @@ class _AudioRequest {
   final int cid;
   final LinkedContent? content;
   final int epoch;
+}
+
+/// 等待一次播放源实际打开：时长可用即打开成功，返回 null；打开失败、超时返回原因；
+/// 被新请求取代、页面关闭、播放器释放时提前结束并返回 null，由调用方按已被取代处理
+final class _OpenWait {
+  _OpenWait(Player player) {
+    _subscriptions = [
+      player.stream.duration.listen((duration) {
+        if (duration > Duration.zero) _finish(null);
+      }, onDone: cancel),
+      player.stream.error.listen((error) {
+        if (error.startsWith('Failed to open') ||
+            error.startsWith('Failed to recognize file format')) {
+          _finish(error);
+        }
+      }, onDone: cancel),
+    ];
+    _timer = Timer(_timeout, () => _finish('打开超时'));
+  }
+
+  /// 打开的上限，超时按失败处理，之后可重新取地址并打开
+  static const _timeout = Duration(seconds: 20);
+
+  final _completer = Completer<String?>();
+  late final List<StreamSubscription<Object>> _subscriptions;
+  late final Timer _timer;
+
+  Future<String?> get result => _completer.future;
+
+  void cancel() => _finish(null);
+
+  void _finish(String? failure) {
+    if (_completer.isCompleted) return;
+    _timer.cancel();
+    for (final subscription in _subscriptions) {
+      subscription.cancel();
+    }
+    _completer.complete(failure);
+  }
 }
 
 final class _AudioLinkedTarget implements LinkedTarget {
