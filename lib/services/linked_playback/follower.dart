@@ -3,6 +3,7 @@ import 'dart:math' show max;
 
 import 'package:PiliPlus/grpc/bilibili/app/listener/v1.pbenum.dart'
     show PlaylistSource;
+import 'package:PiliPlus/services/linked_playback/background_frames.dart';
 import 'package:PiliPlus/services/linked_playback/clock.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
 import 'package:PiliPlus/services/linked_playback/player_access.dart';
@@ -95,6 +96,11 @@ class FollowerSession {
   static const _seekMarginUs = 150000;
 
   static const _resyncIntervalUs = 10000000;
+
+  /// 打开内容期间应用在后台时驱动帧的上限，与主控等待加载的时间相同；
+  /// 加载完成后再驱动一段时间以完成页面转场
+  static const _openFrames = Duration(seconds: 20);
+  static const _settleFrames = Duration(seconds: 1);
   static const _stallTicks = 4;
 
   /// 主控在播放而本机未跟上超过此时间时请求主控重新发送内容
@@ -166,6 +172,12 @@ class FollowerSession {
   Player? _speedPlayer;
   double? _appliedSpeed;
   Player? _syncedPlayer;
+
+  /// 当前定位所用的延迟偏移；起播时与当前偏移不同则定位已过期
+  int? _positionedOffsetUs;
+
+  /// 应跟随播放而被本机暂停（音频焦点、媒体控制等），本机恢复播放后重新对齐
+  bool _localPaused = false;
 
   /// 跳转中：本机已暂停并定位，等待到时起播
   bool _jumping = false;
@@ -255,6 +267,8 @@ class FollowerSession {
   /// 本机定时关闭到期，请主控一起停止
   void stopAll() {
     _halt();
+    // 已就绪的轮次不再接受起播
+    _readyRound = null;
     if (isConnected) {
       _transport.send(const {'t': LinkMessageType.stopAll});
     } else {
@@ -299,6 +313,13 @@ class FollowerSession {
     );
   }
 
+  /// 会话启动时登记已打开的听视频页
+  void adopt(LinkedTarget target) {
+    if (target.kind == LinkedKind.audio) {
+      _audioTarget = target;
+    }
+  }
+
   void releaseTarget(LinkedTarget target) {
     if (identical(target, _audioTarget)) {
       _audioTarget = null;
@@ -313,6 +334,7 @@ class FollowerSession {
   }
 
   void _onLoaded() {
+    LinkedFrames.finish(_settleFrames);
     _loaded = true;
     _failure = null;
     _transport.send({'t': LinkMessageType.loaded, 'round': _round});
@@ -475,6 +497,7 @@ class FollowerSession {
         player != null &&
         _pendingRound == null &&
         !player.state.playing) {
+      _positionedOffsetUs = null;
       _target!.seek(Duration(microseconds: max(0, pausePos - _offsetUs)));
     }
   }
@@ -483,6 +506,8 @@ class FollowerSession {
 
   /// 当前页面可直接切换时在页内切换，否则打开新页面，替换最上层的播放页
   void _openContent(LinkedContent content) {
+    // 熄屏、后台时页面需要帧才能挂载
+    LinkedFrames.keep(_openFrames);
     final route = Get.currentRoute.split('?').first;
     final target = _targetFor(content.kind);
     final pageRoute = switch (content.kind) {
@@ -538,9 +563,17 @@ class FollowerSession {
     }
     // 文件打开前无法定位
     if (await LinkedPlayer.waitLoaded(player, isCurrent) == null) return;
-    final destination = max(0, pos - _offsetUs);
-    await target.seek(Duration(microseconds: destination));
-    if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) return;
+    // 定位期间延迟偏移变化时按新偏移重新定位
+    int offset;
+    do {
+      offset = _offsetUs;
+      final destination = max(0, pos - offset);
+      await target.seek(Duration(microseconds: destination));
+      if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) {
+        return;
+      }
+    } while (offset != _offsetUs);
+    _positionedOffsetUs = offset;
     while (!_clock.isReady) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       if (!isCurrent()) return;
@@ -576,8 +609,15 @@ class FollowerSession {
     final now = LinkClock.nowUs;
     _settleUntil = now + _settleUs;
     _judgeAfter = now + _judgeUs;
-    _learnAt = now + _learnUs;
+    _localPaused = false;
     _stall = 0;
+    // 定位后延迟偏移又有变化：不用于起播补偿的学习，并立即追到新目标
+    if (_positionedOffsetUs == _offsetUs) {
+      _learnAt = now + _learnUs;
+    } else {
+      _learnAt = null;
+      _tracking = true;
+    }
   }
 
   /// 主控在播放而本机未参与起播（重新连接、加载较慢、错过本轮）
@@ -628,10 +668,14 @@ class FollowerSession {
       final at = begin + (seekCostUs * _seekLeadFactor).round() + _seekMarginUs;
       final leaderPos = _leaderPosition(at);
       if (leaderPos == null) break;
-      final destination = max(0, leaderPos - _offsetUs);
+      final offset = _offsetUs;
+      final destination = max(0, leaderPos - offset);
       await target.seek(Duration(microseconds: destination));
       if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) return;
       _learnSeekCost(LinkClock.nowUs - begin);
+      // 定位期间延迟偏移变化时重新定位
+      if (offset != _offsetUs) continue;
+      _positionedOffsetUs = offset;
       final playAt = at + startBiasUs;
       if (LinkClock.nowUs < playAt) {
         _startTimer = LinkedPlayer.scheduleAt(playAt, () {
@@ -735,6 +779,7 @@ class FollowerSession {
   void _resetCorrection() {
     _jumpToken++;
     _jumping = false;
+    _localPaused = false;
     _intercepts.clear();
     _drifts.clear();
     _correcting = false;
@@ -878,6 +923,7 @@ class FollowerSession {
       return LinkedPeerState.preparing;
     }
     if (_shouldPlay) {
+      if (_localPaused) return LinkedPeerState.localPaused;
       return player.state.buffering
           ? LinkedPeerState.buffering
           : LinkedPeerState.playing;
@@ -899,7 +945,22 @@ class FollowerSession {
       if (_jumping) {
         // 等待跳转后起播
       } else if (_shouldPlay) {
-        if (player.state.playing) {
+        if (!player.state.playing) {
+          // 起播后稳定期过后仍未播放：被本机暂停，不强行恢复
+          if (!_localPaused && _startTimer == null && now >= _settleUntil) {
+            _localPaused = true;
+            _correcting = false;
+            _tracking = false;
+            _factor = 1.0;
+            _drifts.clear();
+            _applySpeed(player);
+          }
+        } else if (_localPaused) {
+          // 本机恢复播放（打断结束、用户播放）后跳转重新对齐
+          _localPaused = false;
+          _jumps = 0;
+          _realign(target, player, now);
+        } else {
           drift = _follow(target, player, now);
         }
       } else if (_canJoin(now)) {

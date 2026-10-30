@@ -183,15 +183,15 @@ class AudioController extends GetxController
     final hasAudioUrl = audioUrl != null;
     if (hasAudioUrl) {
       _querySponsorBlock();
-      final load = shutdownTimerService.beginLoad();
+      final request = _beginRequest();
       _onOpenMedia(
         audioUrl,
         ua: BrowserUa.pc,
         referer: HttpString.baseUrl,
         volume: _videoDetailController?.volume,
         start: _takeStart(),
-        load: load,
-      ).whenComplete(() => shutdownTimerService.endLoad(load));
+        request: request,
+      ).whenComplete(() => shutdownTimerService.endLoad(request.load));
     }
     ConnectivityUtils.isWiFi.then((isWiFi) {
       cacheAudioQa = isWiFi ? Pref.defaultAudioQa : Pref.defaultAudioQaCellular;
@@ -238,6 +238,8 @@ class AudioController extends GetxController
   /// 视频开始播放时暂停本页并交出系统媒体控制，返回本页时取回
   void _onVideoPlayback() {
     _yielded = true;
+    // 主控的联动内容不再是本页
+    linkedPlayback.releaseTarget(_linkedTarget);
     _stopStatusTimer();
     if (isPlaying()) {
       onPause();
@@ -364,23 +366,28 @@ class AudioController extends GetxController
   Future<bool> _queryPlayUrl() async {
     _querySponsorBlock();
     final start = _takeStart();
-    final load = shutdownTimerService.beginLoad();
+    final request = _beginRequest();
+    final load = request.load;
     final res = await AudioGrpc.audioPlayUrl(
       itemType: itemType,
       oid: oid,
       subId: subId,
     );
+    if (isClosed || !identical(_openingLoad, load)) {
+      shutdownTimerService.endLoad(load);
+      return false;
+    }
     if (res case Success(:final response)) {
       _onPlay(
         response,
-        load,
+        request,
         start,
       ).whenComplete(() => shutdownTimerService.endLoad(load));
       return true;
     } else {
       shutdownTimerService.endLoad(load);
       if (res case Error(:final errMsg)) {
-        _linkedFailed(errMsg ?? '获取播放地址失败');
+        _linkedFailed(request.cid, errMsg ?? '获取播放地址失败');
       }
       res.toast();
       return false;
@@ -389,7 +396,7 @@ class AudioController extends GetxController
 
   Future<void> _onPlay(
     PlayURLResp data,
-    ShutdownLoad load,
+    _AudioRequest request,
     Duration? start,
   ) async {
     final PlayInfo? playInfo = data.playerInfo.values.firstOrNull;
@@ -411,7 +418,7 @@ class AudioController extends GetxController
         final playDash = playInfo.playDash;
         final audios = playDash.audio;
         if (audios.isEmpty) {
-          _linkedFailed('没有可播放的音频');
+          _linkedFailed(request.cid, '没有可播放的音频');
           return;
         }
         position.value = 0;
@@ -420,13 +427,13 @@ class AudioController extends GetxController
           VideoUtils.getCdnUrl(audio.playUrls),
           volume: volume,
           start: start,
-          load: load,
+          request: request,
         );
       } else if (playInfo.hasPlayUrl()) {
         final playUrl = playInfo.playUrl;
         final durls = playUrl.durl;
         if (durls.isEmpty) {
-          _linkedFailed('没有可播放的音频');
+          _linkedFailed(request.cid, '没有可播放的音频');
           return;
         }
         final durl = durls.first;
@@ -435,7 +442,7 @@ class AudioController extends GetxController
           VideoUtils.getCdnUrl(durl.playUrls),
           volume: volume,
           start: start,
-          load: load,
+          request: request,
         );
       }
     }
@@ -444,15 +451,25 @@ class AudioController extends GetxController
   /// 最近一次打开播放源的请求
   ShutdownLoad? _openingLoad;
 
+  /// 发出请求时固定分P 与联动内容，以最近一次请求为准，迟到的旧结果不再打开
+  _AudioRequest _beginRequest() {
+    final load = _openingLoad = shutdownTimerService.beginLoad();
+    return _AudioRequest(
+      load: load,
+      cid: (subId.firstOrNull ?? oid).toInt(),
+      content: _linkedContent,
+    );
+  }
+
   Future<void> _onOpenMedia(
     String url, {
     String ua = Constants.userAgentApp,
     String? referer,
     http_model.Volume? volume,
     Duration? start,
-    required ShutdownLoad load,
+    required _AudioRequest request,
   }) async {
-    _openingLoad = load;
+    final load = request.load;
     await _initPlayerIfNeeded();
     final player = this.player;
     if (player == null || !identical(_openingLoad, load)) {
@@ -465,12 +482,15 @@ class AudioController extends GetxController
       headers: {'Referer': ?referer},
     );
     _loadedCid = null;
-    final content = _linkedContent;
-    final linkedLoad = linkedPlayback.gateLoad(
-      content,
-      _linkedTarget,
-      autoplay: !_yielded && shutdownTimerService.canAutoplay(load),
-    );
+    // 已让出给视频时不登记为联动内容
+    final linkedLoad = _yielded
+        ? null
+        : linkedPlayback.gateLoad(
+            request.content,
+            _linkedTarget,
+            autoplay: () =>
+                !_yielded && shutdownTimerService.canAutoplay(load),
+          );
     await player.open(
       Media(url, start: linkedLoad?.position ?? start, extras: extras),
       play: false,
@@ -481,10 +501,15 @@ class AudioController extends GetxController
         !identical(this.player, player)) {
       return;
     }
-    _loadedCid = (subId.firstOrNull ?? oid).toInt();
+    _loadedCid = request.cid;
     _failedCid = null;
     if (linkedLoad != null) {
-      linkedLoad.loaded();
+      if (_yielded) {
+        // 加载期间让出给视频
+        linkedPlayback.releaseTarget(_linkedTarget);
+      } else {
+        linkedLoad.loaded();
+      }
       return;
     }
     // 定时关闭在加载期间到期或已让出给视频时不再播放
@@ -517,9 +542,8 @@ class AudioController extends GetxController
     );
   }
 
-  void _linkedFailed(String reason) {
+  void _linkedFailed(int cid, String reason) {
     if (!isUgc) return;
-    final cid = (subId.firstOrNull ?? oid).toInt();
     _failedCid = cid;
     _failure = reason;
     linkedPlayback.loadFailed(LinkedKind.audio, cid, reason);
@@ -1002,6 +1026,19 @@ class AudioController extends GetxController
     animController.dispose();
     super.onClose();
   }
+}
+
+/// 一次播放地址请求：发出时的加载许可、分P 与联动内容
+class _AudioRequest {
+  const _AudioRequest({
+    required this.load,
+    required this.cid,
+    required this.content,
+  });
+
+  final ShutdownLoad load;
+  final int cid;
+  final LinkedContent? content;
 }
 
 final class _AudioLinkedTarget implements LinkedTarget {

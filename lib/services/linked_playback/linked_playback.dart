@@ -90,6 +90,10 @@ class LinkedPlayback {
   final RxnDouble driftMs = RxnDouble();
   final RxnDouble rttMs = RxnDouble();
 
+  /// 最近加载内容的页面及其内容（为空表示不支持联动），会话启动时据此接管
+  final Rxn<LinkedContent> current = Rxn<LinkedContent>();
+  LinkedTarget? _currentTarget;
+
   LeaderSession? _leader;
   FollowerSession? _follower;
 
@@ -137,13 +141,15 @@ class LinkedPlayback {
       syncOn.value &&
       ((_leader?.hasPeers ?? false) || (_follower?.isConnected ?? false));
 
-  /// 页面加载内容前调用，[content] 为空表示该内容不支持联动；返回非空时
-  /// 本次加载由联动播放接管
+  /// 页面加载内容前调用，[content] 为空表示该内容不支持联动；[autoplay]
+  /// 为页面当前是否许可自动播放，共同起播前复核。返回非空时本次加载由联动播放接管
   LinkedLoad? gateLoad(
     LinkedContent? content,
     LinkedTarget target, {
-    required bool autoplay,
+    required bool Function() autoplay,
   }) {
+    current.value = content;
+    _currentTarget = target;
     if (_leader case final leader?) {
       return leader.gateLoad(content, target, autoplay: autoplay);
     }
@@ -152,6 +158,10 @@ class LinkedPlayback {
 
   /// 页面关闭时调用
   void releaseTarget(LinkedTarget target) {
+    if (identical(_currentTarget, target)) {
+      current.value = null;
+      _currentTarget = null;
+    }
     _leader?.releaseTarget(target);
     _follower?.releaseTarget(target);
   }
@@ -334,6 +344,9 @@ class LinkedPlayback {
           },
           onPeersChanged: (list) => peers.value = list,
         );
+        if (_currentTarget case final target?) {
+          session.adopt(current.value, target);
+        }
         await session.start();
         if (await _getSystemVolume() case final value?) {
           leaderVolume.value = value;
@@ -367,6 +380,9 @@ class LinkedPlayback {
         );
         if (await _getSystemVolume() case final value?) {
           volume.value = volume.value.copyWith(actual: value);
+        }
+        if (_currentTarget case final target?) {
+          session.adopt(target);
         }
         await session.start();
       }

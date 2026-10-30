@@ -774,50 +774,62 @@ class VideoDetailController extends GetxController
   }) async {
     // 页面已关闭或播放器已交给其他页面、小窗时不再加载
     if (isClosed || PlPlayerController.playOwner?.tag != heroTag) return;
+    // 联动的共同起播在加载完成后，同样受本次加载的许可约束
+    final ownLoad = load == null ? shutdownTimerService.beginLoad() : null;
+    load ??= ownLoad!;
+    final permit = load;
     final linkedLoad = linkedPlayback.gateLoad(
       _linkedContent,
       const VideoLinkedTarget(),
-      autoplay: autoplay ?? _autoPlay.value,
+      autoplay: () =>
+          (autoplay ?? _autoPlay.value) &&
+          shutdownTimerService.canAutoplay(permit),
     );
     Duration? seek = linkedLoad?.position ?? defaultST ?? playedTime;
     if (seek == .zero) seek = null;
     seek ??= getFirstSegment();
-    await plPlayerController.setDataSource(
-      isFileSource
-          ? FileSource(
-              dir: args['dirPath'],
-              typeTag: entry.typeTag!,
-              isMp4: entry.mediaType == 1,
-              hasDashAudio: entry.hasDashAudio,
-            )
-          : NetworkSource(
-              videoSource: videoUrl!,
-              audioSource: audioUrl,
-            ),
-      seekTo: seek,
-      duration: data.timeLength == null
-          ? null
-          : Duration(milliseconds: data.timeLength!),
-      isVertical: isVertical.value,
-      aid: aid,
-      bvid: bvid,
-      cid: cid.value,
-      autoplay: linkedLoad == null ? autoplay ?? _autoPlay.value : false,
-      epid: isUgc ? null : epId,
-      seasonId: isUgc ? null : seasonId,
-      pgcType: isUgc ? null : pgcType,
-      videoType: videoType,
-      onInit: () {
-        videoState.value = true;
-        setSubtitle(vttSubtitlesIndex.value);
-      },
-      width: firstVideo.width,
-      height: firstVideo.height,
-      volume: volume,
-      autoFullScreenFlag: autoFullScreenFlag,
-      rotate: _rotate,
-      load: load,
-    );
+    try {
+      await plPlayerController.setDataSource(
+        isFileSource
+            ? FileSource(
+                dir: args['dirPath'],
+                typeTag: entry.typeTag!,
+                isMp4: entry.mediaType == 1,
+                hasDashAudio: entry.hasDashAudio,
+              )
+            : NetworkSource(
+                videoSource: videoUrl!,
+                audioSource: audioUrl,
+              ),
+        seekTo: seek,
+        duration: data.timeLength == null
+            ? null
+            : Duration(milliseconds: data.timeLength!),
+        isVertical: isVertical.value,
+        aid: aid,
+        bvid: bvid,
+        cid: cid.value,
+        autoplay: linkedLoad == null ? autoplay ?? _autoPlay.value : false,
+        epid: isUgc ? null : epId,
+        seasonId: isUgc ? null : seasonId,
+        pgcType: isUgc ? null : pgcType,
+        videoType: videoType,
+        onInit: () {
+          videoState.value = true;
+          setSubtitle(vttSubtitlesIndex.value);
+        },
+        width: firstVideo.width,
+        height: firstVideo.height,
+        volume: volume,
+        autoFullScreenFlag: autoFullScreenFlag,
+        rotate: _rotate,
+        load: load,
+      );
+    } finally {
+      if (ownLoad != null) {
+        shutdownTimerService.endLoad(ownLoad);
+      }
+    }
 
     linkedLoad?.loaded();
 

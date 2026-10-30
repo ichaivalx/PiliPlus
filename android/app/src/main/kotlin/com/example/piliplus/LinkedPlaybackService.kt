@@ -49,7 +49,9 @@ class LinkedPlaybackService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
         acquireLocks()
-        return START_STICKY
+        // 进程被回收后不由系统重建：此时没有应用会话，单独的服务无法恢复联动，
+        // 用户重新打开应用即恢复
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -205,14 +207,14 @@ class LinkedPlaybackService : Service() {
         private const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
         private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
 
-        /** 本机设置音量后，此时间内系统回报的相同音量视为本机设置所致 */
+        /** 本机设置音量后，等待系统回报的最长时间 */
         private const val OWN_CHANGE_MS = 1500L
 
         private var lastText = ""
         private var channel: MethodChannel? = null
         private val mainHandler = Handler(Looper.getMainLooper())
 
-        /** 最近由本机设置的音量档位及时间 */
+        /** 本机设置、尚待系统回报确认的音量档位及时间，按设置顺序 */
         private val ownChanges = ArrayDeque<Pair<Int, Long>>()
 
         private fun notifyDart(method: String, arguments: Any? = null) {
@@ -224,12 +226,23 @@ class LinkedPlaybackService : Service() {
             return if (max > 0) index.toDouble() / max else 0.0
         }
 
+        /**
+         * 系统回报的音量是否为本机设置所致：与待确认的设置一致时消费该记录（及其之前的），
+         * 否则为用户调整，清除所有待确认记录
+         */
         private fun isOwnChange(index: Int): Boolean = synchronized(ownChanges) {
             val now = SystemClock.elapsedRealtime()
             while (ownChanges.isNotEmpty() && now - ownChanges.first().second > OWN_CHANGE_MS) {
                 ownChanges.removeFirst()
             }
-            ownChanges.any { it.first == index }
+            val match = ownChanges.indexOfFirst { it.first == index }
+            if (match < 0) {
+                ownChanges.clear()
+                false
+            } else {
+                repeat(match + 1) { ownChanges.removeFirst() }
+                true
+            }
         }
 
         /** 设置媒体音量（取最接近的档位），不显示系统音量界面，返回实际音量 */

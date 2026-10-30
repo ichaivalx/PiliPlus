@@ -1806,7 +1806,12 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
                         !plPlayerController.showControls.value ||
                         plPlayerController.controlsLock.value ||
                         !linkedPlayback.enabled.value ||
-                        !linkedPlayback.syncOn.value,
+                        !linkedPlayback.syncOn.value ||
+                        // 只在本播放器的内容支持联动时显示（番剧等不显示）
+                        linkedPlayback.current.value?.kind !=
+                            LinkedKind.video ||
+                        linkedPlayback.current.value?.cid !=
+                            plPlayerController.cid,
                     child: LinkedOffsetOverlay(
                       length: (maxHeight - 160).clamp(56.0, 140.0),
                       onInteraction: () => plPlayerController.controls = true,

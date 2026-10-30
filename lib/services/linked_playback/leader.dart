@@ -35,6 +35,10 @@ class _Round {
   /// 就绪后是否开始播放；期间用户的播放、暂停更新此值
   bool intendsPlay;
 
+  /// 页面加载时的自动播放许可（如定时关闭在加载期间到期后不再许可），
+  /// 起播前复核；用户手动播放后不再受限
+  bool Function()? permits;
+
   bool selfLoaded;
   bool selfReady = false;
   _Phase phase = _Phase.loading;
@@ -188,10 +192,20 @@ class LeaderSession {
 
   // 页面接入
 
+  /// 会话启动时接管页面已加载的内容与播放状态
+  void adopt(LinkedContent? content, LinkedTarget target) {
+    _content = content;
+    _target = target;
+    if (_loadedPlayer case final player?) {
+      _attach(player);
+      _expectPlaying = player.state.playing;
+    }
+  }
+
   LinkedLoad? gateLoad(
     LinkedContent? content,
     LinkedTarget target, {
-    required bool autoplay,
+    required bool Function() autoplay,
   }) {
     _content = content;
     _target = target;
@@ -206,7 +220,8 @@ class LeaderSession {
       _transport.broadcast(const {'t': LinkMessageType.stop});
       return null;
     }
-    final round = _beginRound(intendsPlay: autoplay, selfLoaded: false);
+    final round = _beginRound(intendsPlay: autoplay(), selfLoaded: false)
+      ..permits = autoplay;
     _transport.broadcast(_open(round.id));
     return LinkedLoad(onLoaded: () => _onSelfLoaded(round));
   }
@@ -290,7 +305,17 @@ class LeaderSession {
 
   /// 本机与各跟随端一起停止，进行中的共同起播不再开始播放
   void pauseAll() {
-    _round?.intendsPlay = false;
+    final round = _round;
+    if (round != null) {
+      round.intendsPlay = false;
+      if (round.phase == _Phase.starting) {
+        // 已约定起播时刻：作废本机的定时起播，跟随端收到暂停后作废其定时起播
+        _cancelRound();
+        if (_loadedPlayer case final player?) {
+          _broadcastPause(player);
+        }
+      }
+    }
     final player = _loadedPlayer;
     if (player != null && player.state.playing) {
       _target!.pause();
@@ -412,7 +437,7 @@ class LeaderSession {
 
   void _start(_Round round) {
     round.timer?.cancel();
-    if (!round.intendsPlay) {
+    if (!round.intendsPlay || !(round.permits?.call() ?? true)) {
       _finishRound(round);
       // 未参与本轮的跟随端也定位到暂停位置
       if (_loadedPlayer case final player?) {
@@ -439,6 +464,7 @@ class LeaderSession {
     round.timer = LinkedPlayer.scheduleAt(at, () {
       if (!identical(_round, round)) return;
       _finishRound(round);
+      if (!round.intendsPlay) return;
       final target = _target;
       if (target == null || _loadedPlayer == null) return;
       _expectPlaying = true;
@@ -564,7 +590,9 @@ class LeaderSession {
         _resync(intendsPlay: true);
         return;
       }
-      round.intendsPlay = true;
+      round
+        ..intendsPlay = true
+        ..permits = null;
       if (round.phase == _Phase.loading && round.selfLoaded) {
         // 等待跟随端加载期间本机照常播放
         _expectPlaying = true;

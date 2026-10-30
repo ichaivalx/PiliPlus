@@ -190,6 +190,7 @@ enum LinkedPeerState {
   buffering('缓冲中'),
   playing('同步播放中'),
   paused('已暂停'),
+  localPaused('被本机暂停'),
   failed('播放失败'),
   offline('离线');
 
