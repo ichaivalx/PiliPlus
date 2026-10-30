@@ -47,6 +47,11 @@ class _Round {
 
   bool selfLoaded;
   bool selfReady = false;
+
+  /// 本机就绪时本轮自身的定位已完成；就绪等待超时时可能仍在定位，此后的定位中
+  /// 状态不能当作用户再次拖动
+  bool seekSettled = false;
+
   _Phase phase = _Phase.loading;
   int? position;
 
@@ -611,7 +616,9 @@ class LeaderSession {
     }
     await target.seek(Duration(microseconds: pos));
     if (!await LinkedPlayer.waitReady(player, pos, isCurrent)) return;
-    round.selfReady = true;
+    round
+      ..selfReady = true
+      ..seekSettled = player.getProperty('seeking') != 'yes';
     _advance(round);
   }
 
@@ -646,7 +653,8 @@ class LeaderSession {
       if (round.intendsPlay && seekTogether()) {
         if (_loadedPlayer case final player?
             when identical(player, _player) &&
-                (player.getProperty('seeking') == 'yes' ||
+                ((round.seekSettled &&
+                        player.getProperty('seeking') == 'yes') ||
                     _movedFrom(round, player))) {
           // 约定起播期间拖动了进度：作废本次起播，按最新位置重新共同就绪
           _reprepare(round, hint: LinkedPlayer.timePos(player));

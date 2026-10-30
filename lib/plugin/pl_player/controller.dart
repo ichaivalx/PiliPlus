@@ -1399,6 +1399,8 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   /// 保持控制条显示，直到对应的 [releaseControls]
   void holdControls() => _controlsHolds++;
 
+  bool get controlsHeld => _controlsHolds > 0;
+
   /// 结束一次 [holdControls]，全部结束后重新开始隐藏计时
   void releaseControls() {
     if (_controlsHolds == 0) return;

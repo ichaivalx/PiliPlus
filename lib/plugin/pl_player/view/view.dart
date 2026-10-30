@@ -1987,8 +1987,10 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
               : MouseCursor.defer,
           onEnter: (_) => plPlayerController.controls = true,
           onHover: (_) => plPlayerController.controls = true,
+          // 弹出层等要求保持显示时，鼠标移入伸出播放器的弹出层也不隐藏
           onExit: (_) => plPlayerController.controls =
-              widget.videoDetailController?.showSteinEdgeInfo.value ?? false,
+              plPlayerController.controlsHeld ||
+              (widget.videoDetailController?.showSteinEdgeInfo.value ?? false),
           child: child,
         ),
       );
