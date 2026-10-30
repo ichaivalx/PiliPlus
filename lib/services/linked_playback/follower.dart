@@ -1097,10 +1097,13 @@ class FollowerSession {
             identical(player, _loadedPlayer)) {
           _onLocalResume(player);
         }
-      } else if (_expectOwnPause) {
-        _expectOwnPause = false;
       } else if (_isLocallyPaused(player)) {
         _markLocalPaused(player);
+      } else {
+        // 转为非播放而非本机暂停（联动自身暂停、自然播完、页面交出播放器、播放源
+        // 停止等），之后可能随主控的指令再次起播：当下登记，不留空窗
+        _expectOwnPause = false;
+        _awaitStart();
       }
     });
   }
