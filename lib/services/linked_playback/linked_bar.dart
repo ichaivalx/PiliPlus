@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
@@ -22,9 +24,6 @@ class LinkedBarControls extends StatelessWidget {
   static const double _height = 34;
   static const double _gap = 8;
   static const double _buttonWidth = 40;
-  static const double _syncWidth = 78;
-  static const double _offsetWidth = 204;
-  static const double _volumeWidth = 256;
   static const double _peerWidth = 64;
 
   /// 本播放器：只在其内容是联动的内容时显示偏移与音量
@@ -33,58 +32,90 @@ class LinkedBarControls extends StatelessWidget {
   /// 操作期间调用，保持播放器控件显示
   final VoidCallback onInteraction;
 
+  /// 拖动拨轮期间不自动隐藏播放器控件
+  void _onDragging(bool dragging) {
+    if (dragging) {
+      controller.holdControls();
+    } else {
+      controller.releaseControls();
+    }
+  }
+
+  /// 是否显示偏移与音量、可调音量的跟随端数量；在 Obx 中调用
+  static ({bool adjust, int volumePeers}) _state(
+    PlPlayerController controller,
+  ) {
+    final current = linkedPlayback.current.value;
+    // 登记内容先于播放器更新分P，加载完成后再按分P核对
+    controller.dataStatus.value;
+    final cid = controller.cid;
+    final adjust =
+        linkedPlayback.syncOn.value &&
+        current?.kind == LinkedKind.video &&
+        current?.cid == cid;
+    return (
+      adjust: adjust,
+      volumePeers: adjust ? _LinkedVolumeControl.peerCount : 0,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final widths = _Widths.of(context);
     return Obx(() {
-      final current = linkedPlayback.current.value;
-      // 登记内容先于播放器更新分P，加载完成后再按分P核对
-      controller.dataStatus.value;
-      final cid = controller.cid;
-      final adjust =
-          linkedPlayback.syncOn.value &&
-          current?.kind == LinkedKind.video &&
-          current?.cid == cid;
-      final volumePeers = _LinkedVolumeControl.peerCount;
-      final volume = adjust && volumePeers > 0;
+      final (:adjust, :volumePeers) = _state(controller);
+      final volume = volumePeers > 0;
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
           final volumeWidth =
-              _volumeWidth + (volumePeers > 1 ? _peerWidth + _gap : 0);
+              widths.volume + (volumePeers > 1 ? _peerWidth + _gap : 0);
           final List<Widget> children;
           if (!adjust) {
             children = [
-              if (width >= _syncWidth)
-                const _LinkedSyncSwitch()
+              if (width >= widths.sync)
+                _LinkedSyncSwitch(widths: widths)
               else
-                _panelButton(sync: true, adjust: false, volume: false),
+                _panelButton(widths, sync: true, offset: false),
             ];
           } else if (width >=
-              _syncWidth +
+              widths.sync +
                   _gap +
-                  _offsetWidth +
+                  widths.offset +
                   (volume ? _gap + volumeWidth : 0)) {
             children = [
-              if (volume) _LinkedVolumeControl(onInteraction: onInteraction),
-              _LinkedOffsetControl(onInteraction: onInteraction),
-              const _LinkedSyncSwitch(),
+              if (volume)
+                _LinkedVolumeControl(
+                  widths: widths,
+                  onInteraction: onInteraction,
+                  onDragging: _onDragging,
+                ),
+              _LinkedOffsetControl(
+                widths: widths,
+                onInteraction: onInteraction,
+                onDragging: _onDragging,
+              ),
+              _LinkedSyncSwitch(widths: widths),
             ];
           } else if (volume &&
-              width >= _syncWidth + _gap + _offsetWidth + _gap + _buttonWidth) {
+              width >=
+                  widths.sync + _gap + widths.offset + _gap + _buttonWidth) {
             children = [
-              _panelButton(sync: false, adjust: false, volume: true),
-              _LinkedOffsetControl(onInteraction: onInteraction),
-              const _LinkedSyncSwitch(),
+              _panelButton(widths, sync: false, offset: false),
+              _LinkedOffsetControl(
+                widths: widths,
+                onInteraction: onInteraction,
+                onDragging: _onDragging,
+              ),
+              _LinkedSyncSwitch(widths: widths),
             ];
-          } else if (width >= _syncWidth + _gap + _buttonWidth) {
+          } else if (width >= widths.sync + _gap + _buttonWidth) {
             children = [
-              _panelButton(sync: false, adjust: true, volume: volume),
-              const _LinkedSyncSwitch(),
+              _panelButton(widths, sync: false, offset: true),
+              _LinkedSyncSwitch(widths: widths),
             ];
           } else {
-            children = [
-              _panelButton(sync: true, adjust: true, volume: volume),
-            ];
+            children = [_panelButton(widths, sync: true, offset: true)];
           }
           return SizedBox(
             height: _height,
@@ -99,34 +130,29 @@ class LinkedBarControls extends StatelessWidget {
     });
   }
 
-  /// 收起的控件：点击后在弹出层中显示
-  Widget _panelButton({
+  /// 收起的控件：点击后在弹出层中显示；[sync] 含同步开关，[offset] 含偏移，
+  /// 音量总在其中，内容随联动状态更新
+  Widget _panelButton(
+    _Widths widths, {
     required bool sync,
-    required bool adjust,
-    required bool volume,
+    required bool offset,
   }) {
     return PopupMenuButton<void>(
-      tooltip: sync ? '联动播放' : (adjust ? '联动调节' : '跟随端音量'),
+      tooltip: sync ? '联动播放' : (offset ? '联动调节' : '跟随端音量'),
       requestFocus: false,
       color: Colors.black.withValues(alpha: 0.8),
-      constraints: const BoxConstraints(minWidth: 260, maxWidth: 320),
+      constraints: BoxConstraints(
+        minWidth: 260,
+        maxWidth: math.max(320.0, widths.panel + 2 * _PanelEntry._padding),
+      ),
       onOpened: onInteraction,
       itemBuilder: (context) => [
         _PanelEntry(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            spacing: 6,
-            children: [
-              if (sync) const _LinkedSyncSwitch(),
-              if (adjust) _LinkedOffsetControl(onInteraction: onInteraction),
-              if (volume)
-                _LinkedVolumeControl(
-                  onInteraction: onInteraction,
-                  stacked: true,
-                ),
-            ],
-          ),
+          controller: controller,
+          sync: sync,
+          offset: offset,
+          onInteraction: onInteraction,
+          onDragging: _onDragging,
         ),
       ],
       child: SizedBox(
@@ -145,7 +171,7 @@ class LinkedBarControls extends StatelessWidget {
                   );
                 })
               : Icon(
-                  adjust ? Icons.tune_rounded : Icons.volume_up_outlined,
+                  offset ? Icons.tune_rounded : Icons.volume_up_outlined,
                   size: 20,
                   color: Colors.white,
                 ),
@@ -155,11 +181,105 @@ class LinkedBarControls extends StatelessWidget {
   }
 }
 
-/// 弹出层中不可选的整块内容
-class _PanelEntry extends PopupMenuEntry<void> {
-  const _PanelEntry({required this.child});
+/// 控件宽度：文本部分按当前字体、缩放与粗体设置实际排版量出
+class _Widths {
+  const _Widths({
+    required this.sync,
+    required this.offsetValue,
+    required this.offsetZero,
+    required this.toggle,
+    required this.volumeValue,
+  });
 
-  final Widget child;
+  factory _Widths.of(BuildContext context) {
+    final scaler = MediaQuery.textScalerOf(context);
+    var base = DefaultTextStyle.of(context).style;
+    if (MediaQuery.boldTextOf(context)) {
+      base = base.merge(const TextStyle(fontWeight: FontWeight.bold));
+    }
+    double measure(String text, TextStyle style) {
+      final painter = TextPainter(
+        text: TextSpan(text: text, style: base.merge(style)),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+        maxLines: 1,
+      )..layout();
+      final width = painter.width.ceilToDouble();
+      painter.dispose();
+      return width;
+    }
+
+    var toggle = 2.0;
+    for (final mode in LinkedVolumeMode.values) {
+      toggle += measure(mode.label, _textStyle) + 2 * _modePadding;
+    }
+    return _Widths(
+      sync:
+          _switchWidth +
+          _spacing +
+          math.max(measure('同步', _textStyle), measure('未连接', _textStyle)),
+      offsetValue: math.max(60.0, measure('-88.8 ms', _textStyle)),
+      offsetZero: math.max(36.0, measure('归零', _dimTextStyle) + 12),
+      toggle: toggle,
+      volumeValue: math.max(
+        40.0,
+        math.max(measure('-100', _textStyle), measure('100%', _textStyle)),
+      ),
+    );
+  }
+
+  static const double _switchWidth = 38;
+  static const double _spacing = 4;
+  static const double _modePadding = 7;
+  static const double _offsetDial = 104;
+  static const double _volumeDial = 84;
+  static const double _volumeIcon = 18;
+
+  final double sync;
+
+  /// 偏移值文本与归零按钮
+  final double offsetValue;
+  final double offsetZero;
+
+  /// 音量模式切换
+  final double toggle;
+
+  /// 音量值文本
+  final double volumeValue;
+
+  double get offset => offsetValue + _spacing + _offsetDial + offsetZero;
+
+  double get volume =>
+      _volumeIcon +
+      _spacing +
+      toggle +
+      _spacing +
+      volumeValue +
+      _spacing +
+      _volumeDial;
+
+  /// 弹出层内容
+  double get panel => math.max(sync, math.max(offset, volume));
+}
+
+/// 弹出层中不可选的整块内容：打开期间保持播放器控件显示；内容随联动状态
+/// 更新，没有可显示的内容时关闭
+class _PanelEntry extends PopupMenuEntry<void> {
+  const _PanelEntry({
+    required this.controller,
+    required this.sync,
+    required this.offset,
+    required this.onInteraction,
+    required this.onDragging,
+  });
+
+  static const double _padding = 12;
+
+  final PlPlayerController controller;
+  final bool sync;
+  final bool offset;
+  final VoidCallback onInteraction;
+  final ValueChanged<bool> onDragging;
 
   @override
   double get height => LinkedBarControls._height;
@@ -172,16 +292,88 @@ class _PanelEntry extends PopupMenuEntry<void> {
 }
 
 class _PanelEntryState extends State<_PanelEntry> {
+  late final PlPlayerController _controller;
+  bool _closing = false;
+
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-    child: widget.child,
-  );
+  void initState() {
+    super.initState();
+    _controller = widget.controller..holdControls();
+  }
+
+  @override
+  void dispose() {
+    _controller.releaseControls();
+    super.dispose();
+  }
+
+  void _close(ModalRoute<Object?>? route) {
+    if (_closing) return;
+    _closing = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || route == null || !route.isActive) return;
+      if (route.isCurrent) {
+        route.navigator?.pop();
+      } else {
+        route.navigator?.removeRoute(route);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final widths = _Widths.of(context);
+    final route = ModalRoute.of(context);
+    return Obx(() {
+      final (:adjust, :volumePeers) = LinkedBarControls._state(
+        widget.controller,
+      );
+      final children = [
+        if (widget.sync) _LinkedSyncSwitch(widths: widths),
+        if (widget.offset && adjust)
+          _LinkedOffsetControl(
+            widths: widths,
+            onInteraction: widget.onInteraction,
+            onDragging: widget.onDragging,
+          ),
+        if (volumePeers > 0)
+          _LinkedVolumeControl(
+            widths: widths,
+            onInteraction: widget.onInteraction,
+            onDragging: widget.onDragging,
+            stacked: true,
+          ),
+      ];
+      if (children.isEmpty) {
+        _close(route);
+        return const SizedBox.shrink();
+      }
+      return Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: _PanelEntry._padding,
+          vertical: 4,
+        ),
+        // 屏幕窄于内容时整体缩小
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerRight,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            spacing: 6,
+            children: children,
+          ),
+        ),
+      );
+    });
+  }
 }
 
 /// 同步开关：两端共用；已开启但未连接时点击只重连，不改动开关
 class _LinkedSyncSwitch extends StatelessWidget {
-  const _LinkedSyncSwitch();
+  const _LinkedSyncSwitch({required this.widths});
+
+  final _Widths widths;
 
   static void _onTap() {
     if (linkedPlayback.syncOn.value && !linkedPlayback.isConnected) {
@@ -208,16 +400,16 @@ class _LinkedSyncSwitch extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: _onTap,
           child: SizedBox(
-            width: LinkedBarControls._syncWidth,
+            width: widths.sync,
             height: LinkedBarControls._height,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
-              spacing: 4,
+              spacing: _Widths._spacing,
               children: [
                 Opacity(
                   opacity: on && !connected ? 0.5 : 1,
                   child: SizedBox(
-                    width: 38,
+                    width: _Widths._switchWidth,
                     height: 24,
                     child: FittedBox(
                       child: Switch(
@@ -229,7 +421,16 @@ class _LinkedSyncSwitch extends StatelessWidget {
                     ),
                   ),
                 ),
-                Text(on && !connected ? '未连接' : '同步', style: _textStyle),
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      on && !connected ? '未连接' : '同步',
+                      maxLines: 1,
+                      style: _textStyle,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -241,34 +442,44 @@ class _LinkedSyncSwitch extends StatelessWidget {
 
 /// 延迟偏移：当前值、横向拨轮（每格 0.5ms）、归零
 class _LinkedOffsetControl extends StatelessWidget {
-  const _LinkedOffsetControl({required this.onInteraction});
+  const _LinkedOffsetControl({
+    required this.widths,
+    required this.onInteraction,
+    required this.onDragging,
+  });
 
+  final _Widths widths;
   final VoidCallback onInteraction;
+  final ValueChanged<bool> onDragging;
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: LinkedBarControls._offsetWidth,
+      width: widths.offset,
       height: LinkedBarControls._height,
       child: Row(
         children: [
           SizedBox(
-            width: 60,
-            child: Obx(
-              () => Text(
-                formatLinkedOffset(linkedPlayback.offsetUs.value),
-                textAlign: TextAlign.right,
-                maxLines: 1,
-                style: _textStyle,
+            width: widths.offsetValue,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerRight,
+              child: Obx(
+                () => Text(
+                  formatLinkedOffset(linkedPlayback.offsetUs.value),
+                  maxLines: 1,
+                  style: _textStyle,
+                ),
               ),
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: _Widths._spacing),
           LinkedOffsetDial(
             axis: Axis.horizontal,
-            length: 104,
+            length: _Widths._offsetDial,
             thickness: 26,
             onInteraction: onInteraction,
+            onDragging: onDragging,
           ),
           Expanded(
             child: GestureDetector(
@@ -277,7 +488,12 @@ class _LinkedOffsetControl extends StatelessWidget {
                 onInteraction();
                 linkedPlayback.setOffset(0);
               },
-              child: const Center(child: Text('归零', style: _dimTextStyle)),
+              child: const Center(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text('归零', maxLines: 1, style: _dimTextStyle),
+                ),
+              ),
             ),
           ),
         ],
@@ -290,11 +506,15 @@ class _LinkedOffsetControl extends StatelessWidget {
 /// 跟随端，多台时点击设备名依次切换
 class _LinkedVolumeControl extends StatefulWidget {
   const _LinkedVolumeControl({
+    required this.widths,
     required this.onInteraction,
+    required this.onDragging,
     this.stacked = false,
   });
 
+  final _Widths widths;
   final VoidCallback onInteraction;
+  final ValueChanged<bool> onDragging;
 
   /// 在弹出层中：设备名单独一行
   final bool stacked;
@@ -320,45 +540,52 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
   static String _signed(int value) => '${value > 0 ? '+' : ''}$value';
 
   Widget _modeToggle(LinkedVolume volume, ValueChanged<LinkedVolume> onChanged) {
+    // 字体放大时随文本增高，再由外层整体缩小到底栏高度内
     return Container(
-      height: 24,
+      constraints: const BoxConstraints(minHeight: 24),
       decoration: BoxDecoration(
         border: Border.all(color: Colors.white38),
         borderRadius: const BorderRadius.all(Radius.circular(12)),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final mode in LinkedVolumeMode.values)
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                widget.onInteraction();
-                if (mode != volume.mode) {
-                  onChanged(
-                    volume.switchTo(mode, linkedPlayback.leaderVolume.value),
-                  );
-                }
-              },
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: mode == volume.mode
-                      ? Colors.white.withValues(alpha: 0.25)
-                      : null,
-                  borderRadius: const BorderRadius.all(Radius.circular(12)),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 7),
-                  child: Center(
-                    child: Text(
-                      mode.label,
-                      style: mode == volume.mode ? _textStyle : _dimTextStyle,
+      child: IntrinsicHeight(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final mode in LinkedVolumeMode.values)
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  widget.onInteraction();
+                  if (mode != volume.mode) {
+                    onChanged(
+                      volume.switchTo(mode, linkedPlayback.leaderVolume.value),
+                    );
+                  }
+                },
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: mode == volume.mode
+                        ? Colors.white.withValues(alpha: 0.25)
+                        : null,
+                    borderRadius: const BorderRadius.all(Radius.circular(12)),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: _Widths._modePadding,
+                    ),
+                    child: Center(
+                      child: Text(
+                        mode.label,
+                        maxLines: 1,
+                        style: mode == volume.mode ? _textStyle : _dimTextStyle,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -370,21 +597,25 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
       mainAxisSize: MainAxisSize.min,
       children: [
         SizedBox(
-          width: 40,
-          child: Text(
-            follow ? _signed(volume.offset) : '$index%',
-            textAlign: TextAlign.right,
-            maxLines: 1,
-            style: _textStyle,
+          width: widget.widths.volumeValue,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerRight,
+            child: Text(
+              follow ? _signed(volume.offset) : '$index%',
+              maxLines: 1,
+              style: _textStyle,
+            ),
           ),
         ),
-        const SizedBox(width: 4),
+        const SizedBox(width: _Widths._spacing),
         LinkedDial(
           index: index,
           axis: Axis.horizontal,
-          length: 84,
+          length: _Widths._volumeDial,
           thickness: 26,
           onInteraction: widget.onInteraction,
+          onDragging: widget.onDragging,
           onSteps: (steps) => onChanged(
             follow
                 ? volume.copyWith(
@@ -453,14 +684,23 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
             )
           : null;
       final controls = SizedBox(
-        width: LinkedBarControls._volumeWidth,
+        width: widget.widths.volume,
         height: LinkedBarControls._height,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.end,
-          spacing: 4,
+          spacing: _Widths._spacing,
           children: [
-            const Icon(Icons.volume_up_outlined, size: 18, color: Colors.white),
-            _modeToggle(volume, onChanged),
+            const Icon(
+              Icons.volume_up_outlined,
+              size: _Widths._volumeIcon,
+              color: Colors.white,
+            ),
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: _modeToggle(volume, onChanged),
+              ),
+            ),
             _adjust(volume, onChanged),
           ],
         ),

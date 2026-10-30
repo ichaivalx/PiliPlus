@@ -15,6 +15,7 @@ class LinkedDial extends StatefulWidget {
     this.color = Colors.white,
     this.indicatorColor,
     this.onInteraction,
+    this.onDragging,
   });
 
   /// 当前值所在的格
@@ -33,6 +34,9 @@ class LinkedDial extends StatefulWidget {
   /// 拖动期间持续调用，供播放器保持控件显示
   final VoidCallback? onInteraction;
 
+  /// 拖动开始时以 true、结束或取消（含拖动中被移除）时以 false 调用
+  final ValueChanged<bool>? onDragging;
+
   @override
   State<LinkedDial> createState() => _LinkedDialState();
 }
@@ -43,6 +47,16 @@ class _LinkedDialState extends State<LinkedDial> {
 
   /// 未满一格的拖动距离，正值为增大方向
   double _drag = 0;
+
+  bool _dragging = false;
+
+  void _setDragging(bool dragging) {
+    if (_dragging == dragging) return;
+    _dragging = dragging;
+    widget.onDragging?.call(dragging);
+  }
+
+  void _onStart(DragStartDetails details) => _setDragging(true);
 
   void _onUpdate(DragUpdateDetails details) {
     widget.onInteraction?.call();
@@ -59,7 +73,14 @@ class _LinkedDialState extends State<LinkedDial> {
   }
 
   void _onEnd([_]) {
+    _setDragging(false);
     setState(() => _drag = 0);
+  }
+
+  @override
+  void dispose() {
+    _setDragging(false);
+    super.dispose();
   }
 
   @override
@@ -67,9 +88,11 @@ class _LinkedDialState extends State<LinkedDial> {
     final vertical = widget.axis == Axis.vertical;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
+      onVerticalDragStart: vertical ? _onStart : null,
       onVerticalDragUpdate: vertical ? _onUpdate : null,
       onVerticalDragEnd: vertical ? _onEnd : null,
       onVerticalDragCancel: vertical ? _onEnd : null,
+      onHorizontalDragStart: vertical ? null : _onStart,
       onHorizontalDragUpdate: vertical ? null : _onUpdate,
       onHorizontalDragEnd: vertical ? null : _onEnd,
       onHorizontalDragCancel: vertical ? null : _onEnd,
@@ -102,6 +125,7 @@ class LinkedOffsetDial extends StatelessWidget {
     this.color = Colors.white,
     this.indicatorColor,
     this.onInteraction,
+    this.onDragging,
   });
 
   final Axis axis;
@@ -110,6 +134,7 @@ class LinkedOffsetDial extends StatelessWidget {
   final Color color;
   final Color? indicatorColor;
   final VoidCallback? onInteraction;
+  final ValueChanged<bool>? onDragging;
 
   @override
   Widget build(BuildContext context) {
@@ -125,6 +150,7 @@ class LinkedOffsetDial extends StatelessWidget {
         color: color,
         indicatorColor: indicatorColor,
         onInteraction: onInteraction,
+        onDragging: onDragging,
       ),
     );
   }

@@ -1386,11 +1386,25 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   void hideTaskControls() {
     _timer?.cancel();
     _timer = Timer(showControlDuration, () {
-      if (!isSeeking.value && !tripling) {
+      if (!isSeeking.value && !tripling && _controlsHolds == 0) {
         controls = false;
       }
       _timer = null;
     });
+  }
+
+  /// 要求保持控制条显示的数量，如底栏弹出层打开、拖动拨轮期间
+  int _controlsHolds = 0;
+
+  /// 保持控制条显示，直到对应的 [releaseControls]
+  void holdControls() => _controlsHolds++;
+
+  /// 结束一次 [holdControls]，全部结束后重新开始隐藏计时
+  void releaseControls() {
+    if (_controlsHolds == 0) return;
+    if (--_controlsHolds == 0 && showControls.value) {
+      hideTaskControls();
+    }
   }
 
   void onSeekStart(int seekFrom) {

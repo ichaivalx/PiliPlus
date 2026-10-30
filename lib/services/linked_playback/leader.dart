@@ -572,8 +572,9 @@ class LeaderSession {
     _advance(round);
   }
 
-  /// 本机与各跟随端暂停并定位到本机当前位置，等待就绪
-  Future<void> _prepare(_Round round) async {
+  /// 本机与各跟随端暂停并定位到本机当前位置，等待就绪；跟随端先于本机等待定位
+  /// 完成就暂停，已知新位置 [hint] 时同时预先定位
+  Future<void> _prepare(_Round round, {int? hint}) async {
     round
       ..phase = _Phase.preparing
       ..timer?.cancel();
@@ -585,6 +586,10 @@ class LeaderSession {
       return;
     }
     _attach(player);
+    final pause = {'t': LinkMessageType.pause, 'pos': ?hint};
+    for (final peer in round.participants) {
+      peer.send(pause);
+    }
     if (player.state.playing) {
       _expectPlaying = false;
       await target.pause();
@@ -638,6 +643,16 @@ class LeaderSession {
     }
     round.timer = LinkedPlayer.scheduleAt(at, () {
       if (!identical(_round, round)) return;
+      if (round.intendsPlay && seekTogether()) {
+        if (_loadedPlayer case final player?
+            when identical(player, _player) &&
+                (player.getProperty('seeking') == 'yes' ||
+                    _movedFrom(round, player))) {
+          // 约定起播期间拖动了进度：作废本次起播，按最新位置重新共同就绪
+          _reprepare(round, hint: LinkedPlayer.timePos(player));
+          return;
+        }
+      }
       final permitted = round.permits?.call() ?? true;
       _finishRound(round);
       if (!round.intendsPlay) return;
@@ -655,7 +670,7 @@ class LeaderSession {
       final moved = _movedFrom(round, player);
       target.play();
       if (moved && _active) {
-        // 约定起播期间拖动了进度：跟随端已按旧位置起播，各自跳转对齐
+        // 追赶方式下约定起播期间拖动了进度：跟随端已按旧位置起播，跳转对齐
         _seekAt = LinkClock.nowUs;
         _transport.broadcast({
           't': LinkMessageType.seek,
@@ -675,23 +690,25 @@ class LeaderSession {
     return pos != null && (pos - position).abs() > _seekJumpUs;
   }
 
-  /// 定位就绪期间本机拖动了进度：作废旧的定位，按最新位置重新就绪
-  void _reprepare(_Round old) {
+  /// 定位就绪（两端一起对齐时含约定起播）期间本机拖动了进度：作废旧的定位，
+  /// 按最新位置重新就绪
+  void _reprepare(_Round old, {int? hint}) {
     final round = _beginRound(
       intendsPlay: old.intendsPlay,
       selfLoaded: true,
       loading: const [],
       inherit: old,
     );
-    _prepare(round);
+    _prepare(round, hint: hint);
   }
 
   /// 同一内容共同暂停后重新共同起播；没有在线的跟随端时本机照常播放，
   /// 跟随端恢复后自行跳转加入
   /// 返回是否开始了共同起播
-  bool _resync({required bool intendsPlay}) {
+  bool _resync({required bool intendsPlay, int? hint}) {
     final player = _loadedPlayer;
-    if (!_active || player == null) return false;
+    // 不支持联动的内容不共同起播
+    if (!_active || player == null || _content == null) return false;
     final round = _beginRound(
       intendsPlay: intendsPlay,
       selfLoaded: true,
@@ -703,7 +720,7 @@ class LeaderSession {
       _lastPosition = null;
       return false;
     }
-    _prepare(round);
+    _prepare(round, hint: hint);
     return true;
   }
 
@@ -862,7 +879,7 @@ class LeaderSession {
       _stall = 0;
       if (seekTogether()) {
         // 两端共同暂停、定位到新位置后共同起播
-        _resync(intendsPlay: true);
+        _resync(intendsPlay: true, hint: pos);
         return;
       }
       // 本机在新位置继续播放，跟随端立即预先定位，收到新进度后跳转对齐
@@ -888,10 +905,11 @@ class LeaderSession {
     final player = _loadedPlayer;
     if (player == null) return;
     if (_round case final round?) {
-      if (round.phase == _Phase.preparing &&
+      if ((round.phase == _Phase.preparing ||
+              (round.phase == _Phase.starting && seekTogether())) &&
           identical(player, _player) &&
           _movedFrom(round, player)) {
-        _reprepare(round);
+        _reprepare(round, hint: LinkedPlayer.timePos(player));
       }
       return;
     }

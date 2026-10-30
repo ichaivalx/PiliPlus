@@ -272,9 +272,18 @@ class AudioController extends GetxController
   }
 
   Future<void>? onPlay() {
-    // 联动主控需要与跟随端共同起播时由联动接管，到约定时刻才出声
-    if (linkedPlayback.takePlay(_linkedTarget)) return Future.value();
+    if (_takeLinkedPlay()) return Future.value();
     return player?.play();
+  }
+
+  /// 本页开始播放前调用：重新取得播放归属的（如返回本页后继续）先重新成为联动的
+  /// 内容，再由联动决定是否接管；主控需要与跟随端共同起播时到约定时刻才出声。
+  /// 返回是否已接管
+  bool _takeLinkedPlay() {
+    final player = this.player;
+    if (player == null || player.state.playing) return false;
+    _resumeLinked();
+    return linkedPlayback.takePlay(_linkedTarget);
   }
 
   Future<void>? onPause() {
@@ -592,7 +601,7 @@ class AudioController extends GetxController
     linkedPlayback.loadFailed(LinkedKind.audio, cid, reason);
   }
 
-  /// 继续播放已加载的内容（如返回本页后继续）时重新成为联动的内容
+  /// 开始或继续播放已加载的内容（如返回本页后继续）时重新成为联动的内容
   void _resumeLinked() {
     final cid = _loadedCid;
     if (_yielded || cid == null) return;
@@ -945,12 +954,7 @@ class AudioController extends GetxController
   }
 
   Future<void>? playOrPause() {
-    final player = this.player;
-    if (player != null &&
-        !player.state.playing &&
-        linkedPlayback.takePlay(_linkedTarget)) {
-      return Future.value();
-    }
+    if (_takeLinkedPlay()) return Future.value();
     return player?.playOrPause();
   }
 
