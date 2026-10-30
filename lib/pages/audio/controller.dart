@@ -568,6 +568,12 @@ class AudioController extends GetxController
   void _resumeLinked() {
     final cid = _loadedCid;
     if (_yielded || cid == null) return;
+    // 只有最上层本页的主动恢复或仍持有归属时才重新登记；后台页的自动重播、迟到的
+    // 播放事件不覆盖前台页面已登记的内容
+    if (!(route?.isCurrent ?? false) &&
+        !linkedPlayback.isCurrentOwner(_linkedTarget)) {
+      return;
+    }
     final content = _linkedContent;
     if (content != null && content.cid != cid) return;
     linkedPlayback.resume(content, _linkedTarget);

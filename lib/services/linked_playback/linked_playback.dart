@@ -107,10 +107,15 @@ class LinkedPlayback {
 
   /// 最上层页面发起新的播放请求：取得播放归属，此后其他页面的续播不再登记
   void claim(LinkedTarget target) {
-    if (identical(_currentTarget, target)) return;
+    final previous = _currentTarget;
+    if (identical(previous, target)) return;
     current.value = null;
     _currentTarget = target;
     _epoch++;
+    // 原页面进行中的共同起播（含等待自行起播）不再起播
+    if (previous != null) {
+      _leader?.supersede(previous);
+    }
   }
 
   /// 页面继续播放已加载的内容（未经加载流程，如返回听视频页继续播放）：
@@ -169,7 +174,10 @@ class LinkedPlayback {
       : leader.value != null;
 
   /// 正在跟随主控，本机不自行决定下一项、不上报历史、不跳过片段
-  bool get isFollowing => _follower?.isFollowing ?? false;
+  bool get isFollowing => _follower?.isFollowing ?? _exitingAsFollower;
+
+  /// 定时退出时会话已结束，退出前的进度同步仍按跟随端处理（不上报历史）
+  bool _exitingAsFollower = false;
 
   /// 正在与对端一起播放，熄屏、后台时不暂停
   bool get holdsPlayback =>
@@ -324,6 +332,7 @@ class LinkedPlayback {
     // 退出应用：结束会话，等停止消息发出
     final leader = _leader;
     final follower = _follower;
+    _exitingAsFollower = follower?.isFollowing ?? false;
     _leader = null;
     _follower = null;
     await Future.wait<void>([

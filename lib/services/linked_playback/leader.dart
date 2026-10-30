@@ -236,6 +236,20 @@ class LeaderSession {
     return LinkedLoad(onLoaded: () => _onSelfLoaded(round));
   }
 
+  /// 其他页面取得播放归属：[target] 进行中的共同起播（含等待自行起播）作废，不再起播
+  void supersede(LinkedTarget target) {
+    if (!identical(_target, target)) return;
+    final round = _round;
+    _cancelRound();
+    _standaloneRound = null;
+    // 跟随端可能已在定位或已约定起播时刻：广播暂停作废其起播
+    if (round != null && round.phase != _Phase.loading && _active) {
+      if (_loadedPlayer case final player?) {
+        _broadcastPause(player);
+      }
+    }
+  }
+
   /// 页面继续播放已加载的内容（未经加载流程，如返回听视频页继续播放）：
   /// 改由该页面联动，跟随端按其进度加入
   void takeOver(LinkedContent? content, LinkedTarget target) {
