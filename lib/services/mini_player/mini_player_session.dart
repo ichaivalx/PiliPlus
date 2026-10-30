@@ -170,11 +170,29 @@ class MiniPlayerSession {
   /// 处作为实时背景，展开结束（或撤销）后离开
   TransitionRoute<dynamic>? _heldPop;
 
+  /// 被停住的页面出栈时的收尾（如 WebView 页面移除 platform view），在其
+  /// 真正离开时执行
+  VoidCallback? _heldTeardown;
+
+  /// [route] 正作为展开的实时背景被停住时，出栈收尾推迟到其离开时执行，
+  /// 返回 true；否则返回 false，由调用方照常收尾
+  bool deferPopTeardown(Route<dynamic>? route, VoidCallback teardown) {
+    if (route == null || !identical(route, _heldPop)) {
+      return false;
+    }
+    _heldTeardown = teardown;
+    return true;
+  }
+
+  /// 展开结束或撤销：停住的页面继续离开（已被移除时只执行收尾）
   void _releaseHeldPop() {
     final route = _heldPop;
+    final teardown = _heldTeardown;
     _heldPop = null;
+    _heldTeardown = null;
+    teardown?.call();
     // ignore: invalid_use_of_protected_member
-    final controller = route?.controller;
+    final controller = route?.navigator == null ? null : route!.controller;
     if (controller != null &&
         !controller.isAnimating &&
         !controller.isDismissed) {
@@ -725,17 +743,24 @@ class MiniPlayerSession {
     _liveBackdrop = live;
     _restoreStage = null;
     restoring.value = true;
+    if (live) {
+      // 在路由的其他出栈通知（如页面的 RouteAware.didPop）之前记下，页面
+      // 据此推迟其出栈收尾
+      _heldPop = route;
+    }
     // ignore: invalid_use_of_protected_member
     final controller = route.controller;
     Future.microtask(() {
-      if (controller == null || !controller.isAnimating) {
-        return;
-      }
-      if (live && restoring.value) {
-        controller.stop();
-        _heldPop = route;
-      } else {
-        controller.value = controller.lowerBound;
+      if (!live) {
+        if (controller != null && controller.isAnimating) {
+          controller.value = controller.lowerBound;
+        }
+      } else if (identical(_heldPop, route)) {
+        if (controller != null && controller.isAnimating) {
+          controller.stop();
+        } else {
+          _releaseHeldPop();
+        }
       }
     });
   }

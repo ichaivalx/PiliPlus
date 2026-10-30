@@ -8,6 +8,14 @@ class MiniPlayerPlatformView extends StatefulWidget {
 
   final Widget child;
 
+  /// 页面出栈时的收尾（如移除 platform view）：所在路由正作为小窗展开的
+  /// 实时背景时推迟到其真正离开时执行，否则立即执行
+  static void onPop(BuildContext context, VoidCallback teardown) {
+    if (!miniPlayerSession.deferPopTeardown(ModalRoute.of(context), teardown)) {
+      teardown();
+    }
+  }
+
   @override
   State<MiniPlayerPlatformView> createState() => _MiniPlayerPlatformViewState();
 }

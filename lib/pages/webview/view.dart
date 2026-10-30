@@ -84,9 +84,13 @@ class _WebviewPageState extends State<WebviewPage> with RouteAware {
   bool _isPop = false;
   @override
   void didPop() {
-    setState(() {
-      _webViewController = null;
-      _isPop = true;
+    MiniPlayerPlatformView.onPop(context, () {
+      if (mounted) {
+        setState(() {
+          _webViewController = null;
+          _isPop = true;
+        });
+      }
     });
     super.didPop();
   }
