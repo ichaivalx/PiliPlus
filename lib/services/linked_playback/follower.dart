@@ -340,7 +340,11 @@ class FollowerSession {
   // 页面接入
 
   /// 跟随时本机的加载都不自动播放；与主控的内容一致时加载后回报
-  LinkedLoad? gateLoad(LinkedContent? content, LinkedTarget target) {
+  LinkedLoad? gateLoad(
+    LinkedContent? content,
+    LinkedTarget target, {
+    required ShutdownLoad load,
+  }) {
     if (target.kind == LinkedKind.audio) {
       _audioTarget = target;
     }
@@ -365,6 +369,8 @@ class FollowerSession {
       return null;
     }
     final token = ++_loadToken;
+    // 承接页面本次加载已有的暂缓、停止状态
+    _awaitStart(from: load);
     _halt();
     _loaded = false;
     _failure = null;
@@ -411,6 +417,14 @@ class FollowerSession {
     final load = _resumeLoad;
     _resumeLoad = null;
     if (load != null) shutdownTimerService.endLoad(load);
+  }
+
+  /// 进入等待随主控起播（加载、定位、等待起播、跳转、随主控暂停）：在暂停播放器
+  /// 之前同步登记，使紧随其后的音频打断能暂缓起播；定时检查只作兜底。
+  /// [from] 为页面本次加载的登记，沿用其已有的暂缓、停止状态
+  void _awaitStart({ShutdownLoad? from}) {
+    if (!isFollowing || _localPaused) return;
+    _startLoad ??= shutdownTimerService.beginLoad(from: from);
   }
 
   void _endStartLoad() {
@@ -922,7 +936,7 @@ class FollowerSession {
     final token = ++_jumpToken;
     _jumping = true;
     _shouldPlay = true;
-    _startLoad ??= shutdownTimerService.beginLoad();
+    _awaitStart();
     _correcting = false;
     _tracking = false;
     _factor = 1.0;
@@ -992,6 +1006,7 @@ class FollowerSession {
 
   /// 停止跟随播放，保留已加载的内容
   void _halt() {
+    _awaitStart();
     _startTimer?.cancel();
     _startTimer = null;
     _shouldPlay = false;
@@ -1063,6 +1078,7 @@ class FollowerSession {
 
   /// 联动自身发起的暂停（调用方已确认正在播放，暂停事件随后到来）
   Future<void> _pause(LinkedTarget target) {
+    _awaitStart();
     _expectOwnPause = true;
     return target.pause();
   }
@@ -1108,10 +1124,11 @@ class FollowerSession {
   /// 本机恢复播放（打断结束、用户播放）：主控在播时跳转重新对齐（含暂停期间主控
   /// 切换到的新内容），主控已暂停时随主控暂停；未连接时重连后再对齐
   void _onLocalResume(Player player) {
-    final target = _target;
-    if (target == null || !syncOn() || !_restored || !isConnected) return;
+    // 先结束本机暂停：未连接或尚未恢复主控状态时，之后由主控的指令与周期检查对齐
     _localPaused = false;
     _cancelResume();
+    final target = _target;
+    if (target == null || !syncOn() || !_restored || !isConnected) return;
     final now = LinkClock.nowUs;
     if (_shouldPlay || _canJoin(now)) {
       _jumps = 0;

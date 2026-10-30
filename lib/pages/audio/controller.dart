@@ -1102,16 +1102,23 @@ class _AudioRequest {
 }
 
 /// 等待一次播放源实际打开：时长可用即打开成功，返回 null；打开失败、超时返回原因；
-/// 被新请求取代、页面关闭、播放器释放时提前结束并返回 null，由调用方按已被取代处理
+/// 被新请求取代、页面关闭、播放器释放时提前结束并返回 null，由调用方按已被取代处理。
+/// 在打开前订阅以捕获新源早期的失败；打开时先停止旧源并发出零时长，此前的事件
+/// 属于旧源，不计入
 final class _OpenWait {
   _OpenWait(Player player) {
     _subscriptions = [
       player.stream.duration.listen((duration) {
-        if (duration > Duration.zero) _finish(null);
+        if (duration == Duration.zero) {
+          _started = true;
+        } else if (_started) {
+          _finish(null);
+        }
       }, onDone: cancel),
       player.stream.error.listen((error) {
-        if (error.startsWith('Failed to open') ||
-            error.startsWith('Failed to recognize file format')) {
+        if (_started &&
+            (error.startsWith('Failed to open') ||
+                error.startsWith('Failed to recognize file format'))) {
           _finish(error);
         }
       }, onDone: cancel),
@@ -1121,6 +1128,9 @@ final class _OpenWait {
 
   /// 打开的上限，超时按失败处理，之后可重新取地址并打开
   static const _timeout = Duration(seconds: 20);
+
+  /// 旧源已停止，此后的事件属于本次打开
+  bool _started = false;
 
   final _completer = Completer<String?>();
   late final List<StreamSubscription<Object>> _subscriptions;

@@ -217,7 +217,7 @@ class LinkedPlayback {
     if (_leader case final leader?) {
       return leader.gateLoad(content, target, autoplay: autoplay, load: load);
     }
-    return _follower?.gateLoad(content, target);
+    return _follower?.gateLoad(content, target, load: load);
   }
 
   /// 页面关闭时调用
