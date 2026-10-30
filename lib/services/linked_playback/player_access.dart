@@ -1,13 +1,11 @@
 import 'dart:async';
 import 'dart:math' show min;
 
-import 'package:PiliPlus/plugin/pl_player/controller.dart';
-import 'package:PiliPlus/plugin/pl_player/models/data_status.dart';
 import 'package:PiliPlus/services/linked_playback/clock.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:media_kit/media_kit.dart';
 
-/// 联动播放对视频播放器的访问
+/// 联动播放对 mpv 播放器的访问
 abstract final class LinkedPlayer {
   /// 就绪需要的已缓冲时长
   static const _readyAheadUs = 1000000;
@@ -20,23 +18,6 @@ abstract final class LinkedPlayer {
 
   /// 定时起播提前醒来的时间，剩余部分忙等以减少定时器误差
   static const _spinUs = 4000;
-
-  /// 已加载 [cid] 的视频播放器
-  static PlPlayerController? withContent(int? cid) {
-    final controller = PlPlayerController.instance;
-    if (cid == null ||
-        controller == null ||
-        controller.isLive ||
-        controller.cid != cid ||
-        !controller.dataStatus.loaded) {
-      return null;
-    }
-    final player = controller.videoPlayerController;
-    if (player == null || player.disposed) {
-      return null;
-    }
-    return controller;
-  }
 
   static double? _seconds(Player player, String property) {
     if (player.disposed) return null;

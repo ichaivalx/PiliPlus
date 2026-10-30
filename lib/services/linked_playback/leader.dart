@@ -1,10 +1,10 @@
 import 'dart:async';
 
-import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/services/linked_playback/clock.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
 import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
+import 'package:PiliPlus/services/linked_playback/target.dart';
 import 'package:PiliPlus/services/linked_playback/transport.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:media_kit/media_kit.dart';
@@ -48,26 +48,51 @@ class _Round {
 }
 
 class _PeerState {
+  _PeerState(this.address);
+
+  final String address;
+
+  /// 跟随端的设备标识与名称，收到 hello 后才有
+  String? id;
+  String? name;
+
+  /// 被同一设备的新连接取代，断开时不显示为离线
+  bool replaced = false;
+
   /// 尚未收到本机当前播放的内容
-  bool needsContent = true;
+  bool needsContent = false;
 
   /// 未及时响应而被跳过的轮次，之后回报时重新共同起播
   int? missedRound;
 
+  LinkedPeerState state = LinkedPeerState.idle;
+  String? reason;
   double? driftMs;
   double? rttMs;
+  double? volume;
+
+  LinkedPeerInfo info({LinkedPeerState? state}) => LinkedPeerInfo(
+    id: id ?? address,
+    name: name ?? address,
+    address: address,
+    state: state ?? this.state,
+    reason: reason,
+    driftMs: driftMs,
+    rttMs: rttMs,
+    volume: volume,
+  );
 }
 
 /// 主控：本机播放的内容与播放操作同步给所有跟随端
 class LeaderSession {
   LeaderSession({
     required this.offsetMs,
+    required this.syncOn,
+    required this.onSyncRequest,
     required this.onPeersChanged,
   });
 
   static const _tickInterval = Duration(milliseconds: 250);
-  static const _heartbeatUs = 2000000;
-  static const _peerTimeoutUs = 6000000;
   static const _loadTimeout = Duration(seconds: 20);
   static const _prepareTimeout = Duration(seconds: 10);
 
@@ -80,10 +105,12 @@ class LeaderSession {
   /// 暂停时位置变化超过此值时同步给跟随端
   static const _pausedMoveUs = 150000;
 
-  /// 连续卡顿的检查次数，达到后重新共同起播
+  /// 连续卡顿的检查次数，达到后共同暂停并重新共同起播
   static const _stallTicks = 3;
 
   final int Function() offsetMs;
+  final bool Function() syncOn;
+  final void Function(bool) onSyncRequest;
   final void Function(List<LinkedPeerInfo>) onPeersChanged;
 
   late final _transport = LeaderTransport(
@@ -92,10 +119,14 @@ class LeaderSession {
     onDisconnected: _onDisconnected,
   );
   final Map<LinkConnection, _PeerState> _peers = {};
+
+  /// 曾连接过、当前离线的跟随端
+  final Map<String, LinkedPeerInfo> _offline = {};
   Timer? _ticker;
 
-  /// 本机当前播放的可联动内容
+  /// 本机当前播放的可联动内容及所在页面
   LinkedContent? _content;
+  LinkedTarget? _target;
   int _roundId = 0;
   _Round? _round;
 
@@ -108,9 +139,11 @@ class LeaderSession {
   ({int pos, int at})? _lastPosition;
   int? _pausedPos;
   int _stall = 0;
-  int _lastHeartbeat = 0;
 
-  bool get _hasPeers => _transport.connections.isNotEmpty;
+  bool get hasPeers => _transport.connections.isNotEmpty;
+
+  /// 正在与跟随端一起播放
+  bool get _active => hasPeers && syncOn();
 
   Future<void> start() async {
     await _transport.start();
@@ -128,6 +161,8 @@ class LeaderSession {
     _detach();
   }
 
+  void refresh() => _transport.refresh();
+
   void updateOffset() => _transport.broadcast(_config);
 
   Map<String, Object?> get _config => {
@@ -135,13 +170,26 @@ class LeaderSession {
     'offset': offsetMs(),
   };
 
-  PlPlayerController? get _controller => LinkedPlayer.withContent(_content?.cid);
+  Map<String, Object?> get _syncMessage => {
+    't': LinkMessageType.sync,
+    'on': syncOn(),
+  };
+
+  Player? get _loadedPlayer {
+    final content = _content;
+    return content == null ? null : _target?.playerFor(content.cid);
+  }
 
   // 页面接入
 
-  LinkedLoad? gateLoad(LinkedContent? content, {required bool autoplay}) {
+  LinkedLoad? gateLoad(
+    LinkedContent? content,
+    LinkedTarget target, {
+    required bool autoplay,
+  }) {
     _content = content;
-    if (!_hasPeers) return null;
+    _target = target;
+    if (!_active) return null;
     _cancelRound();
     _expectPlaying = false;
     for (final state in _peers.values) {
@@ -152,13 +200,20 @@ class LeaderSession {
       _transport.broadcast(const {'t': LinkMessageType.stop});
       return null;
     }
-    final round = _beginRound(
-      intendsPlay: autoplay,
-      selfLoaded: false,
-      loading: _transport.connections,
-    );
+    final round = _beginRound(intendsPlay: autoplay, selfLoaded: false);
     _transport.broadcast(_open(round));
     return LinkedLoad(onLoaded: () => _onSelfLoaded(round));
+  }
+
+  /// 页面关闭，不再持有播放器
+  void releaseTarget(LinkedTarget target) {
+    if (!identical(_target, target)) return;
+    _target = null;
+    _content = null;
+    _cancelRound();
+    _expectPlaying = false;
+    _detach();
+    _transport.broadcast(const {'t': LinkMessageType.stop});
   }
 
   Map<String, Object?> _open(_Round round) => {
@@ -169,32 +224,81 @@ class LeaderSession {
 
   void _onSelfLoaded(_Round round) {
     if (!identical(_round, round)) return;
-    final controller = _controller;
-    if (controller == null) {
+    final player = _loadedPlayer;
+    if (player == null) {
       // 加载失败
       _cancelRound();
       _transport.broadcast(const {'t': LinkMessageType.stop});
       return;
     }
-    _attach(controller);
+    _attach(player);
     round.selfLoaded = true;
     _advance(round);
   }
 
+  // 同步开关、音量、定时关闭
+
+  /// 同步开关变化后调用
+  void applySync() {
+    _transport.broadcast(_syncMessage);
+    if (syncOn()) {
+      for (final state in _peers.values) {
+        state.needsContent = state.id != null;
+      }
+      _sendContent();
+      return;
+    }
+    final round = _round;
+    _cancelRound();
+    _restorePlayer();
+    _transport.broadcast(const {'t': LinkMessageType.stop});
+    final player = _loadedPlayer;
+    if (round != null &&
+        round.intendsPlay &&
+        player != null &&
+        !player.state.playing) {
+      _target!.play();
+    }
+  }
+
+  void setVolume(String id, double volume) {
+    for (final MapEntry(key: peer, value: state) in _peers.entries) {
+      if (state.id == id) {
+        state.volume = volume;
+        peer.send({'t': LinkMessageType.volume, 'v': volume});
+      }
+    }
+    _notifyPeers();
+  }
+
+  /// 本机与各跟随端一起停止，进行中的共同起播不再开始播放
+  void pauseAll() {
+    _round?.intendsPlay = false;
+    final player = _loadedPlayer;
+    if (player != null && player.state.playing) {
+      _target!.pause();
+    }
+  }
+
   // 轮次
 
+  /// [loading] 为空时等待所有跟随端加载
   _Round _beginRound({
     required bool intendsPlay,
     required bool selfLoaded,
-    required Iterable<LinkConnection> loading,
+    Iterable<LinkConnection>? loading,
   }) {
     _cancelRound();
+    final participants = {
+      for (final MapEntry(key: peer, value: state) in _peers.entries)
+        if (state.id != null) peer,
+    };
     final round = _round = _Round(
       ++_roundId,
       intendsPlay: intendsPlay,
       selfLoaded: selfLoaded,
-      participants: _transport.connections.toSet(),
-      loading: loading.toSet(),
+      participants: participants,
+      loading: (loading ?? participants).toSet(),
     );
     round.timer = Timer(_loadTimeout, () => _onLoadTimeout(round));
     return round;
@@ -258,15 +362,16 @@ class LeaderSession {
       ..phase = _Phase.preparing
       ..timer?.cancel();
     bool isCurrent() => identical(_round, round);
-    final controller = _controller;
-    if (controller == null) {
+    final target = _target;
+    final player = _loadedPlayer;
+    if (target == null || player == null) {
       _cancelRound();
       return;
     }
-    final player = _attach(controller);
+    _attach(player);
     if (player.state.playing) {
       _expectPlaying = false;
-      await controller.pause(isInterrupt: true);
+      await target.pause();
     }
     final pos = await LinkedPlayer.waitLoaded(player, isCurrent);
     if (pos == null) return;
@@ -283,7 +388,7 @@ class LeaderSession {
     for (final peer in round.participants) {
       peer.send(prepare);
     }
-    await controller.seek(Duration(microseconds: pos));
+    await target.seek(Duration(microseconds: pos));
     if (!await LinkedPlayer.waitReady(player, pos, isCurrent)) return;
     round.selfReady = true;
     _advance(round);
@@ -296,8 +401,8 @@ class LeaderSession {
       _finishRound(round);
       return;
     }
-    final controller = _controller;
-    if (controller == null) {
+    final player = _loadedPlayer;
+    if (player == null) {
       _cancelRound();
       return;
     }
@@ -307,7 +412,7 @@ class LeaderSession {
       't': LinkMessageType.start,
       'round': round.id,
       'at': at,
-      'rate': controller.videoPlayerController!.state.rate,
+      'rate': player.state.rate,
     };
     for (final peer in round.participants) {
       peer.send(start);
@@ -315,18 +420,18 @@ class LeaderSession {
     round.timer = LinkedPlayer.scheduleAt(at, () {
       if (!identical(_round, round)) return;
       _finishRound(round);
-      final controller = _controller;
-      if (controller == null) return;
+      final target = _target;
+      if (target == null || _loadedPlayer == null) return;
       _expectPlaying = true;
       _lastPosition = null;
       _stall = 0;
-      controller.play();
+      target.play();
     });
   }
 
-  /// 同一内容重新共同起播
+  /// 同一内容共同暂停后重新共同起播
   void _resync({required bool intendsPlay}) {
-    if (!_hasPeers || _controller == null) return;
+    if (!_active || _loadedPlayer == null) return;
     _prepare(
       _beginRound(
         intendsPlay: intendsPlay,
@@ -338,20 +443,21 @@ class LeaderSession {
 
   /// 把本机当前的内容发给尚未收到的跟随端，本机已加载时在其加载期间照常播放
   void _sendContent() {
+    if (!_active || _content == null) return;
     final waiting = [
       for (final MapEntry(key: peer, value: state) in _peers.entries)
         if (state.needsContent) peer,
     ];
-    if (waiting.isEmpty || _content == null) return;
+    if (waiting.isEmpty) return;
     var round = _round;
     if (round != null && round.phase == _Phase.loading) {
       round
         ..participants.addAll(waiting)
         ..loading.addAll(waiting);
     } else {
-      final controller = _controller;
-      if (controller == null) return;
-      final player = _attach(controller);
+      final player = _loadedPlayer;
+      if (player == null) return;
+      _attach(player);
       final intendsPlay = round?.intendsPlay ?? player.state.playing;
       if (round == null) {
         _expectPlaying = player.state.playing;
@@ -378,8 +484,7 @@ class LeaderSession {
 
   // 本机播放器
 
-  Player _attach(PlPlayerController controller) {
-    final player = controller.videoPlayerController!;
+  void _attach(Player player) {
     if (!identical(player, _player)) {
       _detach();
       _player = player;
@@ -388,11 +493,10 @@ class LeaderSession {
         player.stream.position.listen(_onPosition),
       ]);
     }
-    if (!_synced && _hasPeers) {
+    if (!_synced && _active && _target?.kind == LinkedKind.video) {
       _synced = true;
       LinkedPlayer.setVideoSync(player, linked: true);
     }
-    return player;
   }
 
   void _detach() {
@@ -415,11 +519,12 @@ class LeaderSession {
 
   /// 播放器的播放状态与预期不符时，按用户或页面的播放、暂停操作同步
   void _onPlaying(bool playing) {
-    if (playing == _expectPlaying || !_hasPeers) return;
-    final controller = _controller;
-    if (controller == null) return;
-    final player = controller.videoPlayerController!;
-    if (!identical(player, _player)) return;
+    if (playing == _expectPlaying || !_active) return;
+    final target = _target;
+    final player = _loadedPlayer;
+    if (target == null || player == null || !identical(player, _player)) {
+      return;
+    }
     final round = _round;
     if (playing) {
       if (round == null) {
@@ -432,7 +537,7 @@ class LeaderSession {
         _expectPlaying = true;
         return;
       }
-      controller.pause(isInterrupt: true);
+      target.pause();
     } else {
       _expectPlaying = false;
       round?.intendsPlay = false;
@@ -443,7 +548,7 @@ class LeaderSession {
   }
 
   void _onPosition(Duration position) {
-    if (!_expectPlaying || _round != null || !_hasPeers) return;
+    if (!_expectPlaying || _round != null || !_active) return;
     final player = _player;
     if (player == null || !player.state.playing) return;
     final now = LinkClock.nowUs;
@@ -458,33 +563,23 @@ class LeaderSession {
   }
 
   void _tick(Timer _) {
-    final now = LinkClock.nowUs;
-    for (final peer in _transport.connections.toList()) {
-      if (now - peer.lastReceived > _peerTimeoutUs) {
-        peer.close();
-      }
-    }
-    if (!_hasPeers) return;
-    if (now - _lastHeartbeat > _heartbeatUs) {
-      _lastHeartbeat = now;
-      _transport.broadcast(const {'t': LinkMessageType.heartbeat});
-    }
-    if (_content == null) return;
-    _sendContent();
-    final controller = _controller;
-    if (controller == null) {
-      // 播放器已销毁，本机不再播放该内容
-      if (_round == null &&
-          PlPlayerController.instance?.videoPlayerController == null) {
+    if (!_active || _content == null) return;
+    final target = _target;
+    if (target == null || !target.isActive) {
+      // 页面已不再持有播放器
+      if (_round == null) {
         _content = null;
+        _target = null;
         _expectPlaying = false;
         _detach();
         _transport.broadcast(const {'t': LinkMessageType.stop});
       }
       return;
     }
-    if (_round != null) return;
-    final player = _attach(controller);
+    _sendContent();
+    final player = _loadedPlayer;
+    if (player == null || _round != null) return;
+    _attach(player);
     final state = player.state;
     if (_expectPlaying && state.playing) {
       _pausedPos = null;
@@ -499,6 +594,7 @@ class LeaderSession {
       if (LinkedPlayer.sample(player) case final sample?) {
         _transport.broadcast({
           't': LinkMessageType.position,
+          'cid': _content!.cid,
           'pos': sample.pos,
           'at': sample.at,
           'rate': state.rate,
@@ -517,20 +613,69 @@ class LeaderSession {
   // 跟随端
 
   void _onConnected(LinkConnection peer) {
-    _peers[peer] = _PeerState();
+    _peers[peer] = _PeerState(peer.address);
     _notifyPeers();
-    SmartDialog.showToast('联动播放：跟随端 ${peer.address} 已连接');
+  }
+
+  void _onHello(LinkConnection peer, _PeerState state, LinkMessage message) {
+    final id = message['id'];
+    final name = message['name'];
+    if (id is! String) return;
+    state
+      ..id = id
+      ..name = name is String && name.isNotEmpty ? name : peer.address;
+    // 同一设备重新连接时取代旧连接
+    final wasOffline = _offline.remove(id) != null;
+    var replacing = false;
+    for (final MapEntry(key: other, value: otherState) in _peers.entries
+        .toList()) {
+      if (!identical(other, peer) && otherState.id == id) {
+        otherState.replaced = true;
+        replacing = true;
+        other.close();
+      }
+    }
+    if (!replacing) {
+      SmartDialog.showToast(
+        '联动播放：${state.name} ${wasOffline ? '已重新连接' : '已连接'}',
+      );
+    }
+    peer
+      ..send(_config)
+      ..send(_syncMessage);
+    if (message['sync'] case final bool on when on != syncOn()) {
+      onSyncRequest(on);
+    }
+    if (message['stopAll'] == true) {
+      pauseAll();
+    }
+    state.needsContent = true;
+    _sendContent();
+    _notifyPeers();
   }
 
   void _onMessage(LinkConnection peer, LinkMessage message) {
     final state = _peers[peer];
     if (state == null) return;
+    if (message['t'] == LinkMessageType.hello) {
+      _onHello(peer, state, message);
+      return;
+    }
+    if (state.id == null) return;
     final id = message['round'];
     final round = _round;
     switch (message['t']) {
-      case LinkMessageType.hello:
-        peer.send(_config);
-        _sendContent();
+      case LinkMessageType.sync:
+        if (message['on'] case final bool on) {
+          onSyncRequest(on);
+        }
+      case LinkMessageType.stopAll:
+        pauseAll();
+      case LinkMessageType.want:
+        if (round == null || !round.participants.contains(peer)) {
+          state.needsContent = true;
+          _sendContent();
+        }
       case LinkMessageType.loaded:
         if (round != null) {
           if (round.id == id && round.loading.remove(peer)) {
@@ -555,17 +700,27 @@ class LeaderSession {
       case LinkMessageType.report:
         final drift = message['drift'];
         final rtt = message['rtt'];
+        final volume = message['volume'];
+        final reason = message['reason'];
         state
+          ..state =
+              LinkedPeerState.values.asNameMap()[message['state']] ??
+              LinkedPeerState.idle
+          ..reason = reason is String ? reason : null
           ..driftMs = drift is num ? drift.toDouble() : null
-          ..rttMs = rtt is num ? rtt.toDouble() : null;
+          ..rttMs = rtt is num ? rtt.toDouble() : null
+          ..volume = volume is num ? volume.toDouble() : state.volume;
         _notifyPeers();
     }
   }
 
   void _onDisconnected(LinkConnection peer) {
-    _peers.remove(peer);
+    final state = _peers.remove(peer);
+    if (state != null && state.id != null && !state.replaced) {
+      _offline[state.id!] = state.info(state: LinkedPeerState.offline);
+      SmartDialog.showToast('联动播放：${state.name} 已离线');
+    }
     _notifyPeers();
-    SmartDialog.showToast('联动播放：跟随端 ${peer.address} 已断开');
     final round = _round;
     if (round != null) {
       round
@@ -573,30 +728,27 @@ class LeaderSession {
         ..loading.remove(peer)
         ..preparing.remove(peer);
     }
-    if (_hasPeers) {
+    if (hasPeers) {
       if (round != null) _advance(round);
       return;
     }
     // 没有跟随端时恢复为普通播放
     _cancelRound();
     _restorePlayer();
-    final controller = _controller;
+    final player = _loadedPlayer;
     if (round != null &&
         round.intendsPlay &&
-        controller != null &&
-        !controller.videoPlayerController!.state.playing) {
-      controller.play();
+        player != null &&
+        !player.state.playing) {
+      _target!.play();
     }
   }
 
   void _notifyPeers() {
     onPeersChanged([
-      for (final MapEntry(key: peer, value: state) in _peers.entries)
-        LinkedPeerInfo(
-          address: peer.address,
-          driftMs: state.driftMs,
-          rttMs: state.rttMs,
-        ),
+      for (final state in _peers.values)
+        if (!state.replaced) state.info(),
+      ..._offline.values,
     ]);
   }
 }

@@ -29,6 +29,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/danmaku_options.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
 import 'package:PiliPlus/services/playback_focus.dart';
 import 'package:PiliPlus/services/service_locator.dart';
@@ -140,10 +141,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
   late final RxBool continuePlayInBackground =
       Pref.continuePlayInBackground.obs;
 
-  /// 未开启后台播放时应用在后台不播放；inactive（分屏失焦、系统画中画）仍可见
+  /// 未开启后台播放时应用在后台不播放；inactive（分屏失焦、系统画中画）仍可见；
+  /// 联动播放期间始终继续播放
   bool get pausesInBackground {
     final state = WidgetsBinding.instance.lifecycleState;
     return !continuePlayInBackground.value &&
+        !linkedPlayback.holdsPlayback &&
         !(Platform.isIOS && IOSPipHelper.isActive) &&
         (state == .hidden || state == .paused || state == .detached);
   }
@@ -1711,8 +1714,10 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     dynamic pgcType,
     VideoType? videoType,
   }) {
+    // 联动播放的历史记录只由主控上报
     if (isLive ||
         !enableHeart ||
+        linkedPlayback.isFollowing ||
         progress == 0 ||
         (playerStatus.isPaused && !isManual)) {
       return null;

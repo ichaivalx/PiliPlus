@@ -3,8 +3,11 @@ import 'dart:convert';
 typedef LinkMessage = Map<String, dynamic>;
 
 abstract final class LinkProtocol {
-  /// 发现与时钟校准共用的 UDP 端口，主控与跟随端都监听此端口
+  /// 发现用的 UDP 端口，主控与跟随端都监听此端口
   static const discoveryPort = 41763;
+
+  /// 主控优先使用的控制端口，跟随端可不经发现直接连接上次的主控
+  static const controlPort = 41764;
 
   /// 区分本功能的报文
   static const app = 'PiliPlus.linked';
@@ -29,21 +32,24 @@ abstract final class LinkDatagram {
 
   /// 跟随端寻找主控，主控以 [beacon] 单播回应
   static const probe = 'probe';
-
-  /// 时钟校准请求与回应
-  static const ping = 'ping';
-  static const pong = 'pong';
 }
 
 /// 控制连接上的消息类型（字段 `t`）
 ///
 /// 位置与时刻均为微秒，时刻使用主控的单调时钟
 abstract final class LinkMessageType {
-  /// 跟随端 → 主控：连接后的第一条消息
+  /// 时钟校准请求与回应，也用于确认连接存活
+  static const ping = 'ping';
+  static const pong = 'pong';
+
+  /// 跟随端 → 主控：连接后的第一条消息，带设备标识
   static const hello = 'hello';
 
   /// 主控 → 跟随端：延迟偏移（毫秒）
   static const config = 'config';
+
+  /// 主控 → 跟随端：是否一起播放；跟随端 → 主控：请求切换
+  static const sync = 'sync';
 
   /// 主控 → 跟随端：本轮播放的内容，跟随端开始加载
   static const open = 'open';
@@ -72,9 +78,15 @@ abstract final class LinkMessageType {
   /// 跟随端 → 主控：偏差过大或卡顿，请求重新共同起播
   static const resync = 'resync';
 
-  /// 跟随端 → 主控：实测偏差与往返时间
+  /// 跟随端 → 主控：没有跟上主控的内容，请求重新发送
+  static const want = 'want';
+
+  /// 跟随端 → 主控：定时关闭到期，请求一起停止
+  static const stopAll = 'stopAll';
+
+  /// 跟随端 → 主控：状态、实测偏差、往返时间与音量
   static const report = 'report';
 
-  /// 主控 → 跟随端：保持连接
-  static const heartbeat = 'hb';
+  /// 主控 → 跟随端：设置音量
+  static const volume = 'volume';
 }

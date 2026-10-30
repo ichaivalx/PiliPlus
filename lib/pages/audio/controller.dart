@@ -29,6 +29,7 @@ import 'package:PiliPlus/pages/video/introduction/ugc/widgets/triple_mixin.dart'
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/playback_focus.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
@@ -378,6 +379,9 @@ class AudioController extends GetxController
       return true;
     } else {
       shutdownTimerService.endLoad(load);
+      if (res case Error(:final errMsg)) {
+        _linkedFailed(errMsg ?? '获取播放地址失败');
+      }
       res.toast();
       return false;
     }
@@ -407,6 +411,7 @@ class AudioController extends GetxController
         final playDash = playInfo.playDash;
         final audios = playDash.audio;
         if (audios.isEmpty) {
+          _linkedFailed('没有可播放的音频');
           return;
         }
         position.value = 0;
@@ -421,6 +426,7 @@ class AudioController extends GetxController
         final playUrl = playInfo.playUrl;
         final durls = playUrl.durl;
         if (durls.isEmpty) {
+          _linkedFailed('没有可播放的音频');
           return;
         }
         final durl = durls.first;
@@ -458,17 +464,75 @@ class AudioController extends GetxController
       // mpv cannot clear referer option
       headers: {'Referer': ?referer},
     );
-    await player.open(Media(url, start: start, extras: extras), play: false);
+    _loadedCid = null;
+    final content = _linkedContent;
+    final linkedLoad = linkedPlayback.gateLoad(
+      content,
+      _linkedTarget,
+      autoplay: !_yielded && shutdownTimerService.canAutoplay(load),
+    );
+    await player.open(
+      Media(url, start: linkedLoad?.position ?? start, extras: extras),
+      play: false,
+    );
     // 已被新请求取代或页面已关闭时不播放
     if (isClosed ||
         !identical(_openingLoad, load) ||
         !identical(this.player, player)) {
       return;
     }
+    _loadedCid = (subId.firstOrNull ?? oid).toInt();
+    _failedCid = null;
+    if (linkedLoad != null) {
+      linkedLoad.loaded();
+      return;
+    }
     // 定时关闭在加载期间到期或已让出给视频时不再播放
     if (!_yielded && shutdownTimerService.canAutoplay(load)) {
       player.play();
     }
+  }
+
+  // 联动播放
+
+  late final _linkedTarget = _AudioLinkedTarget(this);
+
+  /// 已打开的分P，打开新的播放源期间为空
+  int? _loadedCid;
+  int? _failedCid;
+  String? _failure;
+
+  /// 可联动播放的内容：普通视频的分P
+  LinkedContent? get _linkedContent {
+    if (!isUgc) return null;
+    final aid = oid.toInt();
+    final arc = audioItem.value?.arc;
+    return LinkedContent(
+      kind: LinkedKind.audio,
+      bvid: IdUtils.av2bv(aid),
+      aid: aid,
+      cid: (subId.firstOrNull ?? oid).toInt(),
+      title: arc?.title,
+      cover: arc?.cover,
+    );
+  }
+
+  void _linkedFailed(String reason) {
+    if (!isUgc) return;
+    final cid = (subId.firstOrNull ?? oid).toInt();
+    _failedCid = cid;
+    _failure = reason;
+    linkedPlayback.loadFailed(LinkedKind.audio, cid, reason);
+  }
+
+  /// 联动播放切换到同页面的另一内容
+  void _openLinked(LinkedContent content) {
+    id = oid = Int64(content.aid);
+    subId = [Int64(content.cid)];
+    itemType = 1;
+    _videoDetailController = null;
+    _queryPlayList(isInit: true);
+    _queryPlayUrl();
   }
 
   PlayerStatus _playerStatus = .paused;
@@ -548,7 +612,8 @@ class AudioController extends GetxController
           _startStatusTimer();
           if (shutdownTimerService.isWaiting) {
             shutdownTimerService.handleWaiting();
-          } else {
+          } else if (!linkedPlayback.isFollowing) {
+            // 联动跟随时由主控决定下一项
             switch (playMode.value) {
               case PlayRepeat.pause:
                 break;
@@ -921,6 +986,7 @@ class AudioController extends GetxController
 
   @override
   void onClose() {
+    linkedPlayback.releaseTarget(_linkedTarget);
     _stopStatusTimer();
     shutdownTimerService.removeTarget(_shutdownTarget);
     playbackFocus.removeListener(_onVideoPlayback);
@@ -935,6 +1001,67 @@ class AudioController extends GetxController
     player = null;
     animController.dispose();
     super.onClose();
+  }
+}
+
+final class _AudioLinkedTarget implements LinkedTarget {
+  _AudioLinkedTarget(this._controller);
+
+  final AudioController _controller;
+
+  @override
+  LinkedKind get kind => LinkedKind.audio;
+
+  @override
+  bool get isActive => !_controller.isClosed && _controller.player != null;
+
+  @override
+  bool get isLoading => _controller._loadedCid == null;
+
+  @override
+  Player? playerFor(int cid) {
+    final player = _controller.player;
+    if (_controller.isClosed ||
+        player == null ||
+        player.disposed ||
+        _controller._loadedCid != cid) {
+      return null;
+    }
+    return player;
+  }
+
+  @override
+  String? failureFor(int cid) =>
+      _controller._failedCid == cid ? _controller._failure : null;
+
+  @override
+  double get rate => _controller.speed;
+
+  @override
+  Future<void> setRate(double rate) async {
+    _controller.setSpeed(rate);
+  }
+
+  @override
+  Future<void> play() async {
+    await _controller.onPlay();
+  }
+
+  @override
+  Future<void> pause() async {
+    await _controller.onPause();
+  }
+
+  @override
+  Future<void> seek(Duration position) async {
+    await _controller.player?.seek(position);
+  }
+
+  @override
+  bool open(LinkedContent content) {
+    if (_controller.isClosed) return false;
+    _controller._openLinked(content);
+    return true;
   }
 }
 

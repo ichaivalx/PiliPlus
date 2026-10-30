@@ -9,6 +9,7 @@ import 'package:PiliPlus/models/common/sponsor_block/segment_model.dart';
 import 'package:PiliPlus/models/common/sponsor_block/segment_type.dart';
 import 'package:PiliPlus/models/common/sponsor_block/skip_type.dart';
 import 'package:PiliPlus/models_new/sponsor_block/segment_item.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:easy_debounce/easy_throttle.dart';
@@ -257,6 +258,8 @@ mixin BlockMixin on GetxController {
     bool isSkip = true,
     bool isSeek = true,
   }) async {
+    // 跟随联动播放时进度由主控决定
+    if (linkedPlayback.isFollowing) return;
     try {
       await seekTo(
         Duration(milliseconds: item.segment.$2),
@@ -480,6 +483,7 @@ mixin BlockMixin on GetxController {
   }
 
   Duration? getFirstSegment([int pos = 0]) {
+    if (linkedPlayback.isFollowing) return null;
     for (var i in _segmentList..sort()) {
       final (start, end) = i.segment;
       if (start == end) {

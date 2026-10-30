@@ -1,34 +1,56 @@
 import 'dart:async';
 import 'dart:math' show max;
 
-import 'package:PiliPlus/models_new/video/video_detail/episode.dart';
-import 'package:PiliPlus/pages/video/controller.dart';
-import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
-import 'package:PiliPlus/plugin/pl_player/controller.dart';
+import 'package:PiliPlus/grpc/bilibili/app/listener/v1.pbenum.dart'
+    show PlaylistSource;
 import 'package:PiliPlus/services/linked_playback/clock.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
 import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
+import 'package:PiliPlus/services/linked_playback/target.dart';
 import 'package:PiliPlus/services/linked_playback/transport.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
+import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:get/get.dart';
 import 'package:media_kit/media_kit.dart';
 
 /// 跟随端：按主控打开内容、定位、起播，并持续追齐主控的播放进度
 class FollowerSession {
   FollowerSession({
+    required this.deviceId,
+    required this.deviceName,
+    required this.syncOn,
+    required this.onSyncChanged,
+    required this.startBiasUs,
+    required this.onStartBias,
+    required String? lastLeader,
+    required void Function(String) onLeader,
     required this.leader,
     required this.driftMs,
     required this.rttMs,
-  });
+  }) {
+    _transport = FollowerTransport(
+      onConnected: _onConnected,
+      onMessage: _onMessage,
+      onDisconnected: _onDisconnected,
+      onLeader: onLeader,
+      lastLeader: lastLeader,
+    );
+  }
 
   static const _tickInterval = Duration(milliseconds: 250);
   static const _reportUs = 1000000;
-  static const _leaderTimeoutUs = 6000000;
 
   /// 起播后音频输出稳定前不做校正
   static const _settleUs = 1500000;
+
+  /// 起播后在此时刻测量起播偏差，用于下次起播的补偿
+  static const _learnUs = 1250000;
+  static const _learnRate = 0.5;
+  static const _maxStartBiasUs = 300000;
+  static const _learnMaxDriftMs = 300.0;
+  static const _learnMaxRttMs = 50.0;
 
   static const _interceptWindow = 8;
   static const _driftWindow = 4;
@@ -37,7 +59,7 @@ class FollowerSession {
   static const _enterMs = 15.0;
   static const _exitMs = 4.0;
 
-  /// 偏差超过此值时请求主控重新共同起播
+  /// 偏差超过此值时请求主控共同暂停后重新共同起播
   static const _hardMs = 400.0;
 
   /// 微调倍速按偏差在约此时长内追平，且不超过 [_maxAdjust]
@@ -48,25 +70,39 @@ class FollowerSession {
   static const _resyncIntervalUs = 10000000;
   static const _stallTicks = 4;
 
+  /// 主控在播放而本机未跟上超过此时间时请求主控重新发送内容
+  static const _lostUs = 6000000;
+  static const _wantIntervalUs = 10000000;
+
+  final String deviceId;
+  final String deviceName;
+  final bool Function() syncOn;
+  final void Function(bool) onSyncChanged;
+  int startBiasUs;
+  final void Function(int) onStartBias;
   final RxnString leader;
   final RxnDouble driftMs;
   final RxnDouble rttMs;
 
-  late final _transport = FollowerTransport(
-    onConnected: _onConnected,
-    onMessage: _onMessage,
-    onDisconnected: _onDisconnected,
-  );
+  late final FollowerTransport _transport;
   ClockSync get _clock => _transport.clock;
   Timer? _ticker;
+
+  /// 连接前请求的同步开关与定时关闭到期，连接后发给主控
+  bool? _pendingSync;
+  bool _pendingStopAll = false;
 
   /// 主控本轮播放的内容
   LinkedContent? _content;
   int _round = 0;
 
+  /// 最近打开的听视频页
+  LinkedTarget? _audioTarget;
+
   /// 内容已在本机加载
   bool _loaded = false;
   int _loadToken = 0;
+  String? _failure;
 
   /// 待定位的轮次与主控位置
   int? _pendingRound;
@@ -78,25 +114,50 @@ class FollowerSession {
   bool _shouldPlay = false;
   Timer? _startTimer;
   int _offsetUs = 0;
+  int? _pausePos;
 
   /// 主控的播放进度模型：位置 = 截距 + 倍速 × 主控时刻
   double _rate = 1.0;
   final List<int> _intercepts = [];
   final List<double> _drifts = [];
   bool _correcting = false;
+
+  /// 延迟偏移变化后追到新目标前不受进入阈值限制
+  bool _tracking = false;
   double _factor = 1.0;
   Player? _speedPlayer;
   double? _appliedSpeed;
   Player? _syncedPlayer;
 
   int _settleUntil = 0;
+  int? _learnAt;
   int _lastResync = -_resyncIntervalUs;
   int _lastReport = 0;
   int _stall = 0;
 
+  /// 主控最近一次播放位置的时刻及内容
+  int _leaderPosAt = -_lostUs;
+  int? _leaderCid;
+  int _lastProgress = 0;
+  int _lastWant = -_wantIntervalUs;
+  LinkedPeerState? _reportedState;
+
   bool get isConnected => _transport.isConnected;
 
-  PlPlayerController? get _controller => LinkedPlayer.withContent(_content?.cid);
+  bool get isFollowing => isConnected && syncOn();
+
+  LinkedTarget? _targetFor(LinkedKind? kind) => switch (kind) {
+    LinkedKind.video => const VideoLinkedTarget(),
+    LinkedKind.audio => _audioTarget,
+    null => null,
+  };
+
+  LinkedTarget? get _target => _targetFor(_content?.kind);
+
+  Player? get _loadedPlayer {
+    final content = _content;
+    return content == null ? null : _target?.playerFor(content.cid);
+  }
 
   Future<void> start() async {
     await _transport.start();
@@ -114,83 +175,156 @@ class FollowerSession {
     rttMs.value = null;
   }
 
+  void wake() => _transport.wake();
+
+  void refresh() => _transport.refresh();
+
+  /// 用户在本机切换同步开关
+  void requestSync(bool on) {
+    if (isConnected) {
+      _transport.send({'t': LinkMessageType.sync, 'on': on});
+    } else {
+      _pendingSync = on;
+      _transport.wake();
+    }
+  }
+
+  /// 本机定时关闭到期，请主控一起停止
+  void stopAll() {
+    _halt();
+    if (isConnected) {
+      _transport.send(const {'t': LinkMessageType.stopAll});
+    } else {
+      _pendingStopAll = true;
+    }
+  }
+
+  /// 同步开关变化后调用
+  void applySync() {
+    if (!syncOn()) {
+      _clearContent();
+    }
+  }
+
   // 页面接入
 
-  /// 主控有内容时本机的加载都不自动播放；与主控的内容一致时加载后回报
-  LinkedLoad? gateLoad(LinkedContent? content) {
+  /// 跟随时本机的加载都不自动播放；与主控的内容一致时加载后回报
+  LinkedLoad? gateLoad(LinkedContent? content, LinkedTarget target) {
+    if (target.kind == LinkedKind.audio) {
+      _audioTarget = target;
+    }
     final current = _content;
-    if (!isConnected || current == null) {
+    if (!isFollowing || current == null) {
       return null;
     }
-    if (content?.cid != current.cid) {
-      return LinkedLoad(onLoaded: () {});
+    if (!current.isSame(content)) {
+      return LinkedLoad(position: Duration.zero, onLoaded: () {});
     }
     final token = ++_loadToken;
     _halt();
     _loaded = false;
+    _failure = null;
     final pendingPos = _pendingPos;
     return LinkedLoad(
-      position: pendingPos == null
-          ? null
-          : Duration(microseconds: max(0, pendingPos - _offsetUs)),
+      position: Duration(
+        microseconds: pendingPos == null ? 0 : max(0, pendingPos - _offsetUs),
+      ),
       onLoaded: () {
-        if (token != _loadToken || _controller == null) return;
-        _loaded = true;
-        _transport.send({'t': LinkMessageType.loaded, 'round': _round});
-        if (_pendingRound != null) {
-          _prepare();
-        }
+        if (token != _loadToken || _loadedPlayer == null) return;
+        _onLoaded();
       },
     );
+  }
+
+  void releaseTarget(LinkedTarget target) {
+    if (identical(target, _audioTarget)) {
+      _audioTarget = null;
+    }
+  }
+
+  void loadFailed(LinkedKind kind, int cid, String reason) {
+    final content = _content;
+    if (content != null && content.kind == kind && content.cid == cid) {
+      _failure = reason;
+    }
+  }
+
+  void _onLoaded() {
+    _loaded = true;
+    _failure = null;
+    _transport.send({'t': LinkMessageType.loaded, 'round': _round});
+    if (_pendingRound != null) {
+      _prepare();
+    }
   }
 
   // 连接
 
   void _onConnected() {
-    _transport.send(const {'t': LinkMessageType.hello});
+    _transport.send({
+      't': LinkMessageType.hello,
+      'id': deviceId,
+      'name': deviceName,
+      'sync': ?_pendingSync,
+      if (_pendingStopAll) 'stopAll': true,
+    });
+    _pendingSync = null;
+    _pendingStopAll = false;
+    _lastProgress = LinkClock.nowUs;
     leader.value = _transport.connection?.address;
     SmartDialog.showToast('联动播放：已连接主控 ${leader.value}');
   }
 
   void _onDisconnected() {
-    _generation++;
-    _loadToken++;
-    _halt();
+    _clearContent();
     _release();
-    _content = null;
-    _loaded = false;
-    _pendingRound = null;
-    _pendingPos = null;
-    _readyRound = null;
     leader.value = null;
     driftMs.value = null;
     rttMs.value = null;
-    SmartDialog.showToast('联动播放：与主控的连接已断开');
+    _reportedState = null;
+    SmartDialog.showToast('联动播放：与主控的连接已断开，正在重新连接');
+  }
+
+  /// 停止跟随并忘记主控的内容
+  void _clearContent() {
+    _generation++;
+    _loadToken++;
+    _halt();
+    _content = null;
+    _loaded = false;
+    _failure = null;
+    _pendingRound = null;
+    _pendingPos = null;
+    _readyRound = null;
+    _pausePos = null;
   }
 
   void _onMessage(LinkMessage message) {
     switch (message['t']) {
       case LinkMessageType.config:
         if (message['offset'] case final num offset) {
-          _offsetUs = (offset * 1000).round();
+          _setOffset((offset * 1000).round());
+        }
+      case LinkMessageType.sync:
+        if (message['on'] case final bool on) {
+          onSyncChanged(on);
+        }
+      case LinkMessageType.volume:
+        if (message['v'] case final num volume) {
+          FlutterVolumeController.updateShowSystemUI(false);
+          FlutterVolumeController.setVolume(volume.toDouble());
         }
       case LinkMessageType.open:
         final round = message['round'];
         final content = LinkedContent.fromJson(message['content']);
-        if (round is! int || content == null) return;
+        if (round is! int || content == null || !syncOn()) return;
+        _clearContent();
         _round = round;
-        _generation++;
-        _loadToken++;
-        _halt();
         _content = content;
-        _pendingRound = null;
-        _pendingPos = null;
-        _readyRound = null;
-        if (_controller != null) {
-          _loaded = true;
-          _transport.send({'t': LinkMessageType.loaded, 'round': round});
+        _lastProgress = LinkClock.nowUs;
+        if (_loadedPlayer != null && !(_target?.isLoading ?? false)) {
+          _onLoaded();
         } else {
-          _loaded = false;
           _openContent(content);
         }
       case LinkMessageType.prepare:
@@ -205,6 +339,8 @@ class FollowerSession {
         _pendingRound = round;
         _pendingPos = pos;
         _readyRound = null;
+        _pausePos = pos;
+        _lastProgress = LinkClock.nowUs;
         if (_loaded) {
           _prepare();
         }
@@ -217,6 +353,7 @@ class FollowerSession {
             at is int &&
             rate is num &&
             _clock.isReady) {
+          _lastProgress = LinkClock.nowUs;
           _scheduleStart(at, rate.toDouble());
         }
       case LinkMessageType.pause:
@@ -224,65 +361,85 @@ class FollowerSession {
         _startTimer = null;
         _shouldPlay = false;
         _resetCorrection();
-        final controller = _controller;
-        if (controller == null) return;
-        if (controller.videoPlayerController!.state.playing) {
-          controller.pause();
+        final player = _loadedPlayer;
+        if (player == null) return;
+        if (player.state.playing) {
+          _target!.pause();
         }
         // 定位中时以定位为准
         if (message['pos'] case final int pos when _pendingRound == null) {
-          controller.seek(Duration(microseconds: max(0, pos - _offsetUs)));
+          _pausePos = pos;
+          _target!.seek(Duration(microseconds: max(0, pos - _offsetUs)));
         }
       case LinkMessageType.position:
         _onLeaderPosition(message);
       case LinkMessageType.stop:
-        _generation++;
-        _loadToken++;
-        _halt();
-        _content = null;
-        _loaded = false;
-        _pendingRound = null;
-        _pendingPos = null;
-        _readyRound = null;
+        _leaderCid = null;
+        _leaderPosAt = -_lostUs;
+        _clearContent();
+    }
+  }
+
+  void _setOffset(int offsetUs) {
+    if (offsetUs == _offsetUs) return;
+    _offsetUs = offsetUs;
+    // 起播后的测量包含旧偏移，不再用于补偿
+    _learnAt = null;
+    if (_shouldPlay) {
+      _drifts.clear();
+      _tracking = true;
+      return;
+    }
+    // 暂停时直接定位到新的目标位置
+    final pausePos = _pausePos;
+    final player = _loadedPlayer;
+    if (pausePos != null &&
+        player != null &&
+        _pendingRound == null &&
+        !player.state.playing) {
+      _target!.seek(Duration(microseconds: max(0, pausePos - _offsetUs)));
     }
   }
 
   // 内容
 
-  /// 当前详情页可直接切换时在页内切换，否则打开新的详情页
+  /// 当前页面可直接切换时在页内切换，否则打开新页面，替换最上层的播放页
   void _openContent(LinkedContent content) {
-    final owner = PlPlayerController.playOwner;
-    if (owner != null &&
-        owner.type == UgcIntroController &&
-        Get.isRegistered<VideoDetailController>(tag: owner.tag) &&
-        Get.isRegistered<UgcIntroController>(tag: owner.tag)) {
-      final detail = Get.find<VideoDetailController>(tag: owner.tag);
-      if (detail.autoPlay && !detail.isPlayAll && !detail.isFileSource) {
-        if (detail.cid.value != content.cid) {
-          Get.find<UgcIntroController>(tag: owner.tag).onChangeEpisode(
-            BaseEpisodeItem(
-              aid: content.aid,
-              bvid: content.bvid,
-              cid: content.cid,
-              cover: content.cover,
-              title: content.title,
-            ),
-          );
-        } else if (!detail.isQuerying &&
-            !(PlPlayerController.instance?.processing ?? false)) {
-          detail.queryVideoUrl();
-        }
-        return;
-      }
+    final route = Get.currentRoute.split('?').first;
+    final target = _targetFor(content.kind);
+    final pageRoute = switch (content.kind) {
+      LinkedKind.video => '/videoV',
+      LinkedKind.audio => '/audio',
+    };
+    if (route == pageRoute && target != null && target.open(content)) {
+      return;
     }
-    PageUtils.toVideoPage(
-      aid: content.aid,
-      bvid: content.bvid,
-      cid: content.cid,
-      cover: content.cover,
-      title: content.title,
-      extraArguments: const {LinkedArgs.open: true},
-    );
+    final replace = route == '/videoV' || route == '/audio';
+    switch (content.kind) {
+      case LinkedKind.video:
+        PageUtils.toVideoPage(
+          aid: content.aid,
+          bvid: content.bvid,
+          cid: content.cid,
+          cover: content.cover,
+          title: content.title,
+          off: replace,
+          extraArguments: const {LinkedArgs.open: true},
+        );
+      case LinkedKind.audio:
+        final arguments = {
+          'oid': content.aid,
+          'subId': [content.cid],
+          'itemType': 1,
+          'from': PlaylistSource.UP_ARCHIVE,
+          LinkedArgs.open: true,
+        };
+        if (replace) {
+          Get.offNamed('/audio', arguments: arguments);
+        } else {
+          Get.toNamed('/audio', arguments: arguments);
+        }
+    }
   }
 
   // 定位与起播
@@ -290,20 +447,22 @@ class FollowerSession {
   Future<void> _prepare() async {
     final round = _pendingRound;
     final pos = _pendingPos;
-    final controller = _controller;
-    if (round == null || pos == null || controller == null) return;
+    final target = _target;
+    final player = _loadedPlayer;
+    if (round == null || pos == null || target == null || player == null) {
+      return;
+    }
     final generation = _generation;
     bool isCurrent() => generation == _generation && isConnected;
-    final player = controller.videoPlayerController!;
     _link(player);
     if (player.state.playing) {
-      await controller.pause(isInterrupt: true);
+      await target.pause();
     }
     // 文件打开前无法定位
     if (await LinkedPlayer.waitLoaded(player, isCurrent) == null) return;
-    final target = max(0, pos - _offsetUs);
-    await controller.seek(Duration(microseconds: target));
-    if (!await LinkedPlayer.waitReady(player, target, isCurrent)) return;
+    final destination = max(0, pos - _offsetUs);
+    await target.seek(Duration(microseconds: destination));
+    if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) return;
     while (!_clock.isReady) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       if (!isCurrent()) return;
@@ -314,22 +473,27 @@ class FollowerSession {
   }
 
   void _scheduleStart(int leaderAt, double rate) {
-    final controller = _controller;
-    if (controller == null) return;
-    _setRate(controller, rate);
+    final target = _target;
+    if (target == null || _loadedPlayer == null) return;
+    _setRate(target, rate);
     _resetCorrection();
     final generation = _generation;
     _startTimer?.cancel();
-    _startTimer = LinkedPlayer.scheduleAt(_clock.toLocal(leaderAt), () {
-      _startTimer = null;
-      if (generation != _generation) return;
-      final controller = _controller;
-      if (controller == null) return;
-      _shouldPlay = true;
-      _settleUntil = LinkClock.nowUs + _settleUs;
-      _stall = 0;
-      controller.play();
-    });
+    _startTimer = LinkedPlayer.scheduleAt(
+      _clock.toLocal(leaderAt) + startBiasUs,
+      () {
+        _startTimer = null;
+        if (generation != _generation) return;
+        final target = _target;
+        if (target == null || _loadedPlayer == null) return;
+        final now = LinkClock.nowUs;
+        _shouldPlay = true;
+        _settleUntil = now + _settleUs;
+        _learnAt = now + _learnUs;
+        _stall = 0;
+        target.play();
+      },
+    );
   }
 
   /// 停止跟随播放，保留已加载的内容
@@ -337,27 +501,31 @@ class FollowerSession {
     _startTimer?.cancel();
     _startTimer = null;
     _shouldPlay = false;
+    _learnAt = null;
     _resetCorrection();
-    final controller = _controller;
-    if (controller != null &&
-        controller.videoPlayerController!.state.playing) {
-      controller.pause();
+    final player = _loadedPlayer;
+    if (player != null && player.state.playing) {
+      _target!.pause();
     }
   }
 
   void _link(Player player) {
-    if (identical(player, _syncedPlayer)) return;
+    if (identical(player, _syncedPlayer) || _content?.kind != LinkedKind.video) {
+      return;
+    }
     _syncedPlayer = player;
     LinkedPlayer.setVideoSync(player, linked: true);
   }
 
   /// 恢复播放器的同步方式与倍速
   void _release() {
-    for (final player in {?_syncedPlayer, ?_speedPlayer}) {
-      if (!player.disposed) {
-        LinkedPlayer.setVideoSync(player, linked: false);
-        LinkedPlayer.setSpeed(player, player.state.rate);
-      }
+    final synced = _syncedPlayer;
+    if (synced != null && !synced.disposed) {
+      LinkedPlayer.setVideoSync(synced, linked: false);
+    }
+    final speed = _speedPlayer;
+    if (speed != null && !speed.disposed) {
+      LinkedPlayer.setSpeed(speed, speed.state.rate);
     }
     _syncedPlayer = null;
     _speedPlayer = null;
@@ -366,16 +534,15 @@ class FollowerSession {
 
   // 追齐
 
-  void _setRate(PlPlayerController controller, double rate) {
-    final changed = rate != _rate;
-    _rate = rate;
-    if (changed) {
+  void _setRate(LinkedTarget target, double rate) {
+    if (rate != _rate) {
+      _rate = rate;
       _intercepts.clear();
       _drifts.clear();
     }
-    if (controller.playbackSpeed != rate) {
-      controller.setPlaybackSpeed(rate).whenComplete(() {
-        if (controller.videoPlayerController case final player?) {
+    if (target.rate != rate) {
+      target.setRate(rate).whenComplete(() {
+        if (_loadedPlayer case final player?) {
           _applySpeed(player, force: true);
         }
       });
@@ -387,9 +554,11 @@ class FollowerSession {
     final at = message['at'];
     final rate = message['rate'];
     if (pos is! int || at is! int || rate is! num) return;
-    final controller = _controller;
-    if (controller != null && rate.toDouble() != _rate) {
-      _setRate(controller, rate.toDouble());
+    _leaderPosAt = LinkClock.nowUs;
+    _leaderCid = message['cid'] as int?;
+    final target = _target;
+    if (target != null && rate.toDouble() != _rate) {
+      _setRate(target, rate.toDouble());
     }
     _intercepts.add(pos - (_rate * at).round());
     if (_intercepts.length > _interceptWindow) {
@@ -401,8 +570,9 @@ class FollowerSession {
     _intercepts.clear();
     _drifts.clear();
     _correcting = false;
+    _tracking = false;
     _factor = 1.0;
-    if (_controller?.videoPlayerController case final player?) {
+    if (_loadedPlayer case final player?) {
       _applySpeed(player);
     }
   }
@@ -450,6 +620,25 @@ class FollowerSession {
     _resetCorrection();
   }
 
+  /// 按起播后的实测偏差调整下次起播的补偿
+  void _learnStartBias(double drift) {
+    _learnAt = null;
+    final rtt = _clock.rttUs;
+    if (drift.abs() > _learnMaxDriftMs ||
+        rtt == null ||
+        rtt / 1000 > _learnMaxRttMs) {
+      return;
+    }
+    final bias = (startBiasUs + drift * 1000 * _learnRate)
+        .round()
+        .clamp(-_maxStartBiasUs, _maxStartBiasUs)
+        .toInt();
+    if (bias != startBiasUs) {
+      startBiasUs = bias;
+      onStartBias(bias);
+    }
+  }
+
   double? _follow(Player player, int now) {
     if (player.state.buffering) {
       if (++_stall >= _stallTicks) {
@@ -460,13 +649,21 @@ class FollowerSession {
     }
     _stall = 0;
     final drift = _measure(player);
-    if (drift == null || now < _settleUntil) return drift;
+    if (drift == null) return null;
+    final learnAt = _learnAt;
+    if (learnAt != null && now >= learnAt && _drifts.length >= 3) {
+      _learnStartBias(drift);
+    }
+    if (now < _settleUntil) return drift;
     final magnitude = drift.abs();
     if (magnitude > _hardMs) {
       _requestResync(now);
       return drift;
     }
-    if (_correcting) {
+    if (_tracking) {
+      _correcting = magnitude >= _exitMs;
+      _tracking = _correcting;
+    } else if (_correcting) {
       _correcting = magnitude >= _exitMs;
     } else {
       _correcting = magnitude > _enterMs;
@@ -483,45 +680,91 @@ class FollowerSession {
     return drift;
   }
 
-  void _tick(Timer _) {
-    final connection = _transport.connection;
-    if (connection == null) return;
-    final now = LinkClock.nowUs;
-    if (now - connection.lastReceived > _leaderTimeoutUs) {
-      connection.close();
-      return;
+  LinkedPeerState _state(Player? player) {
+    final content = _content;
+    if (!syncOn() || content == null) return LinkedPeerState.idle;
+    if (_failure != null || _target?.failureFor(content.cid) != null) {
+      return LinkedPeerState.failed;
     }
+    if (player == null ||
+        !_loaded ||
+        _pendingRound != null ||
+        _startTimer != null) {
+      return LinkedPeerState.preparing;
+    }
+    if (_shouldPlay) {
+      return player.state.buffering
+          ? LinkedPeerState.buffering
+          : LinkedPeerState.playing;
+    }
+    return LinkedPeerState.paused;
+  }
+
+  void _tick(Timer _) {
+    if (!isConnected) return;
+    final now = LinkClock.nowUs;
     double? drift;
-    final controller = _controller;
-    if (controller != null) {
-      if (!_loaded && !controller.processing) {
+    final target = _target;
+    final player = _loadedPlayer;
+    if (syncOn() && target != null && player != null) {
+      if (!_loaded && !target.isLoading) {
         // 未经联动接管的加载（如用户在本机打开了同一视频）
-        _loaded = true;
-        _transport.send({'t': LinkMessageType.loaded, 'round': _round});
-        if (_pendingRound != null) {
-          _prepare();
-        }
+        _onLoaded();
       }
-      final player = controller.videoPlayerController!;
       if (!_shouldPlay) {
         // 跟随端只按主控的指令播放
         if (player.state.playing && _startTimer == null) {
-          controller.pause();
+          target.pause();
         }
       } else if (player.state.playing) {
         drift = _follow(player, now);
       }
     }
-    if (now - _lastReport >= _reportUs) {
+    _watch(now);
+    // 状态变化时立即回报
+    final state = _state(player);
+    if (state != _reportedState || now - _lastReport >= _reportUs) {
       _lastReport = now;
-      final rtt = _clock.rttUs;
-      rttMs.value = rtt == null ? null : rtt / 1000;
-      driftMs.value = drift;
-      _transport.send({
-        't': LinkMessageType.report,
-        'drift': drift,
-        'rtt': rttMs.value,
-      });
+      _reportedState = state;
+      _report(state, drift);
     }
+  }
+
+  /// 主控在播放而本机长时间没有跟上时，请主控重新发送内容
+  void _watch(int now) {
+    if (!syncOn() || now - _leaderPosAt > _reportUs * 2) {
+      _lastProgress = now;
+      return;
+    }
+    if (_shouldPlay && _content?.cid == _leaderCid) {
+      _lastProgress = now;
+      return;
+    }
+    if (now - _lastProgress > _lostUs && now - _lastWant > _wantIntervalUs) {
+      _lastWant = now;
+      _transport.send({'t': LinkMessageType.want});
+    }
+  }
+
+  Future<void> _report(LinkedPeerState state, double? drift) async {
+    final rtt = _clock.rttUs;
+    rttMs.value = rtt == null ? null : rtt / 1000;
+    driftMs.value = drift;
+    double? volume;
+    try {
+      volume = await FlutterVolumeController.getVolume();
+    } catch (_) {}
+    final content = _content;
+    _transport.send({
+      't': LinkMessageType.report,
+      'state': state.name,
+      'reason': state == LinkedPeerState.failed
+          ? _failure ??
+                (content == null ? null : _target?.failureFor(content.cid))
+          : null,
+      'drift': drift,
+      'rtt': rttMs.value,
+      'volume': volume,
+    });
   }
 }

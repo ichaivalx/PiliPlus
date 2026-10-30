@@ -776,6 +776,7 @@ class VideoDetailController extends GetxController
     if (isClosed || PlPlayerController.playOwner?.tag != heroTag) return;
     final linkedLoad = linkedPlayback.gateLoad(
       _linkedContent,
+      const VideoLinkedTarget(),
       autoplay: autoplay ?? _autoPlay.value,
     );
     Duration? seek = linkedLoad?.position ?? defaultST ?? playedTime;
@@ -845,6 +846,7 @@ class VideoDetailController extends GetxController
     final detail = ugcIntroCtr.videoDetail.value;
     if (graphVersion != null || detail.rights?.isSteinGate == 1) return null;
     return LinkedContent(
+      kind: LinkedKind.video,
       bvid: bvid,
       aid: aid,
       cid: cid.value,
@@ -1055,6 +1057,7 @@ class VideoDetailController extends GetxController
           return;
         } else {
           SmartDialog.showToast('视频资源不存在');
+          linkedPlayback.loadFailed(LinkedKind.video, cid.value, '视频资源不存在');
           _autoPlay.value = false;
           videoState.value = false;
           if (_ownsPlayer && plPlayerController.isFullScreen.value) {
@@ -1101,6 +1104,13 @@ class VideoDetailController extends GetxController
       videoState.value = false;
       if (_ownsPlayer && plPlayerController.isFullScreen.value) {
         plPlayerController.triggerFullScreen(status: false);
+      }
+      if (result case Error(:final errMsg)) {
+        linkedPlayback.loadFailed(
+          LinkedKind.video,
+          cid.value,
+          errMsg ?? '获取播放地址失败',
+        );
       }
       result.toast();
     }

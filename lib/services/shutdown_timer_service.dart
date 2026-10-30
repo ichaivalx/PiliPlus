@@ -55,6 +55,18 @@ class ShutdownTimerService {
 
   void removeTarget(ShutdownTarget target) => _targets.remove(target);
 
+  final List<VoidCallback> _expiredListeners = [];
+
+  /// 定时关闭到期（含播完后停止）时通知
+  void addExpiredListener(VoidCallback listener) =>
+      _expiredListeners.add(listener);
+
+  void _notifyExpired() {
+    for (final listener in _expiredListeners.toList()) {
+      listener();
+    }
+  }
+
   final Rxn<DateTime> _deadline = Rxn<DateTime>();
   DateTime? get deadline => _deadline.value;
   Timer? _shutdownTimer;
@@ -155,6 +167,7 @@ class ShutdownTimerService {
         _isWaiting.value = true;
         return;
       }
+      _notifyExpired();
       if (_shutdownType == _ShutdownType.exit) {
         _syncProgressAndExit();
         return;
@@ -162,16 +175,20 @@ class ShutdownTimerService {
       _blockLoads();
       _pause();
       SmartDialog.showToast('定时时间已到，已暂停');
-    } else if (_shutdownType == _ShutdownType.exit) {
-      _syncProgressAndExit();
-      return;
-    } else if (_blockLoads()) {
-      SmartDialog.showToast('定时时间已到，已暂停');
+    } else {
+      _notifyExpired();
+      if (_shutdownType == _ShutdownType.exit) {
+        _syncProgressAndExit();
+        return;
+      } else if (_blockLoads()) {
+        SmartDialog.showToast('定时时间已到，已暂停');
+      }
     }
     _durationInMinutes = 0;
   }
 
   void handleWaiting() {
+    _notifyExpired();
     switch (_shutdownType) {
       case .pause:
         _blockLoads();
