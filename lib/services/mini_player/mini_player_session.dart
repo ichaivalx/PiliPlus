@@ -1103,7 +1103,7 @@ class MiniPlayerSession {
   Future<void> _whenReady(MiniPlayerHostEntry host) => Future(() async {
     await host.attached;
     await host.page?.whenMiniContentReady();
-  }).timeout(MiniPlayerMotion.revealTimeout * 2, onTimeout: () {});
+  }).timeout(MiniPlayerMotion.revealTimeout, onTimeout: () {});
 
   // 状态切换
 

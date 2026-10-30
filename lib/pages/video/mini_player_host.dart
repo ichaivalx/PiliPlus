@@ -365,7 +365,15 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       playOwner: (tag: ctr.heroTag, type: introController.runtimeType),
     );
     if (!ctr.autoPlay) {
-      // 与不自动播放时打开页面相同，由用户开始播放
+      // 与不自动播放时打开页面相同：由用户开始播放，开启提前初始化时
+      // 不播放地加载；请求中时由请求完成后照常处理
+      if (!ctr.isQuerying && ctr.videoUrl != null) {
+        final init = ctr.initPlayerIfNeeded(false, load);
+        if (init != null) {
+          init.whenComplete(endLoad);
+          return;
+        }
+      }
       endLoad();
       return;
     }
