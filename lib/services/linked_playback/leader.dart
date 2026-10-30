@@ -719,6 +719,10 @@ class LeaderSession {
     if (message['stopAll'] == true) {
       pauseAll();
     }
+    if (_content == null) {
+      // 断开期间本机已停止：跟随端不再自行播放
+      peer.send(const {'t': LinkMessageType.stop});
+    }
     state.needsContent = true;
     _sendContent();
     _notifyPeers();

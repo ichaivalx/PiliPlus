@@ -139,7 +139,7 @@ class LinkedPlayback {
   /// 正在与对端一起播放，熄屏、后台时不暂停
   bool get holdsPlayback =>
       syncOn.value &&
-      ((_leader?.hasPeers ?? false) || (_follower?.isConnected ?? false));
+      ((_leader?.hasPeers ?? false) || (_follower?.isFollowing ?? false));
 
   /// 页面加载内容前调用，[content] 为空表示该内容不支持联动；[autoplay]
   /// 为页面当前是否许可自动播放，共同起播前复核。返回非空时本次加载由联动播放接管

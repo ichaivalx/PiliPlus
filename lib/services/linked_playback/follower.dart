@@ -177,6 +177,9 @@ class FollowerSession {
   double? _appliedSpeed;
   Player? _syncedPlayer;
 
+  /// 连接后已收到主控当前的内容（或得知主控没有内容），此前不按主控进度对齐
+  bool _restored = false;
+
   /// 当前定位所用的延迟偏移；起播时与当前偏移不同则定位已过期
   int? _positionedOffsetUs;
 
@@ -209,7 +212,8 @@ class FollowerSession {
 
   bool get isConnected => _transport.isConnected;
 
-  bool get isFollowing => isConnected && syncOn();
+  /// 跟随中：已连接主控，或断开后仍在自行播放主控的内容；本机不自行推进下一项
+  bool get isFollowing => syncOn() && (isConnected || _content != null);
 
   LinkedTarget? _targetFor(LinkedKind? kind) => switch (kind) {
     LinkedKind.video => const VideoLinkedTarget(),
@@ -301,6 +305,11 @@ class FollowerSession {
     if (!isFollowing || current == null) {
       return null;
     }
+    if (!isConnected) {
+      // 断开期间本机的加载由用户发起，不再跟随原内容
+      _clearContent();
+      return null;
+    }
     if (!current.isSame(content)) {
       return LinkedLoad(position: Duration.zero, onLoaded: () {});
     }
@@ -353,6 +362,7 @@ class FollowerSession {
   // 连接
 
   void _onConnected() {
+    _restored = false;
     _transport.send({
       't': LinkMessageType.hello,
       'id': deviceId,
@@ -368,10 +378,24 @@ class FollowerSession {
     SmartDialog.showToast('联动播放：已连接主控 ${leader.value}');
   }
 
+  /// 断开期间按当前内容与倍速继续自行播放，播完即停；进行中的定位、起播作废
   void _onDisconnected() {
     _volume.disconnect();
-    _clearContent();
-    _release();
+    _restored = false;
+    _generation++;
+    _startTimer?.cancel();
+    _startTimer = null;
+    _pendingRound = null;
+    _readyRound = null;
+    // 跳转中：从已定位处继续；等待主控新进度时：停在原处，重连后加入
+    final wasJumping = _jumping;
+    if (_awaitingSeek) {
+      _shouldPlay = false;
+    }
+    _resetCorrection();
+    if (wasJumping && _shouldPlay) {
+      _target?.play();
+    }
     leader.value = null;
     driftMs.value = null;
     rttMs.value = null;
@@ -384,6 +408,7 @@ class FollowerSession {
     _generation++;
     _loadToken++;
     _halt();
+    _release();
     _content = null;
     _loaded = false;
     _failure = null;
@@ -425,10 +450,17 @@ class FollowerSession {
         final round = message['round'];
         final content = LinkedContent.fromJson(message['content']);
         if (round is! int || content == null || !syncOn()) return;
+        _restored = true;
+        _lastProgress = LinkClock.nowUs;
+        if (content.isSame(_content) && _loaded && _loadedPlayer != null) {
+          // 内容未变（如重新连接）：保留本机的播放，之后按主控的状态对齐
+          _round = round;
+          _transport.send({'t': LinkMessageType.loaded, 'round': round});
+          return;
+        }
         _clearContent();
         _round = round;
         _content = content;
-        _lastProgress = LinkClock.nowUs;
         if (_loadedPlayer != null && !(_target?.isLoading ?? false)) {
           _onLoaded();
         } else {
@@ -483,6 +515,7 @@ class FollowerSession {
       case LinkMessageType.seek:
         _onLeaderSeek();
       case LinkMessageType.stop:
+        _restored = true;
         _leaderCid = null;
         _leaderPosAt = -_lostUs;
         _clearContent();
@@ -653,6 +686,7 @@ class FollowerSession {
 
   /// 本机暂停并定位到主控在预留时间后的位置，到时起播；主控不受影响
   void _jump(LinkedTarget target, Player player) {
+    _link(player);
     final token = ++_jumpToken;
     _jumping = true;
     _shouldPlay = true;
@@ -775,6 +809,7 @@ class FollowerSession {
     if (pos is! int || at is! int || rate is! num) return;
     _leaderPosAt = LinkClock.nowUs;
     _leaderCid = message['cid'] as int?;
+    if (_leaderCid != _content?.cid) return;
     final target = _target;
     if (target != null && rate.toDouble() != _rate) {
       _setRate(target, rate.toDouble());
@@ -970,7 +1005,7 @@ class FollowerSession {
     double? drift;
     final target = _target;
     final player = _loadedPlayer;
-    if (syncOn() && target != null && player != null) {
+    if (syncOn() && _restored && target != null && player != null) {
       if (!_loaded && !target.isLoading) {
         // 未经联动接管的加载（如用户在本机打开了同一视频）
         _onLoaded();
