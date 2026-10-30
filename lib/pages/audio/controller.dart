@@ -451,10 +451,12 @@ class AudioController extends GetxController
   /// 最近一次打开播放源的请求
   ShutdownLoad? _openingLoad;
 
+  /// 本页所在的路由，用于判断本页实例是否在最上层
+  ModalRoute<Object?>? route;
+
   /// 本页持有播放归属：最近登记播放内容的是本页，或本页正显示在最上层（用户在本页操作）
   bool get _ownsPlayback =>
-      linkedPlayback.isCurrentOwner(_linkedTarget) ||
-      Get.currentRoute.split('?').first == '/audio';
+      linkedPlayback.isCurrentOwner(_linkedTarget) || (route?.isCurrent ?? false);
 
   /// 发出请求时固定分P 与联动内容，以最近一次请求为准，迟到的旧结果不再打开
   _AudioRequest _beginRequest() {

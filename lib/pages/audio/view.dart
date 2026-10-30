@@ -97,7 +97,9 @@ class _AudioPageState extends State<AudioPage>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _controller.didChangeDependencies(context);
+    _controller
+      ..didChangeDependencies(context)
+      ..route = ModalRoute.of(context);
   }
 
   @override

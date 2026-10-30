@@ -91,9 +91,6 @@ class FollowerSession {
   /// 跳转目标距结尾不足此值时不再跳转加入，等主控进入下一项
   static const _endMarginUs = 1000000;
 
-  /// 联动自身发起暂停后，播放器回报暂停事件的等待时间
-  static const _ownPauseUs = 500000;
-
   /// 距结尾此时长内的暂停视为播完，不视为本机暂停
   static const _endPauseWindow = Duration(milliseconds: 500);
 
@@ -199,8 +196,8 @@ class FollowerSession {
   Player? _observedPlayer;
   StreamSubscription<bool>? _playingSubscription;
 
-  /// 联动自身发起暂停后，此时刻前的暂停事件不视为本机暂停
-  int _ownPauseUntil = 0;
+  /// 联动自身发起了暂停，期待的暂停事件到来时消费；播放器开始播放时清除
+  bool _expectOwnPause = false;
 
   /// 主控拖动了进度：本机已暂停，等待主控新进度后跳转
   bool _awaitingSeek = false;
@@ -861,9 +858,9 @@ class FollowerSession {
     }
   }
 
-  /// 联动自身发起的暂停
+  /// 联动自身发起的暂停（调用方已确认正在播放，暂停事件随后到来）
   Future<void> _pause(LinkedTarget target) {
-    _ownPauseUntil = LinkClock.nowUs + _ownPauseUs;
+    _expectOwnPause = true;
     return target.pause();
   }
 
@@ -871,27 +868,32 @@ class FollowerSession {
     if (identical(player, _observedPlayer)) return;
     _playingSubscription?.cancel();
     _observedPlayer = player;
+    _expectOwnPause = false;
     _playingSubscription = player.stream.playing.listen((playing) {
-      if (!playing) _onPaused(player);
+      if (playing) {
+        _expectOwnPause = false;
+      } else if (_expectOwnPause) {
+        _expectOwnPause = false;
+      } else if (_isLocallyPaused(player)) {
+        _markLocalPaused(player);
+      }
     });
   }
 
-  /// 播放器暂停：应跟随播放、且不是联动自身发起或播完时，为本机暂停
-  void _onPaused(Player player) {
-    if (LinkClock.nowUs < _ownPauseUntil ||
+  /// 应跟随播放却未在播放，且不是联动自身发起、等待起播或播完：为本机暂停
+  bool _isLocallyPaused(Player player) {
+    if (_expectOwnPause ||
         !identical(player, _loadedPlayer) ||
         !_shouldPlay ||
         _jumping ||
         _awaitingSeek ||
-        _startTimer != null ||
-        _localPaused) {
-      return;
+        _startTimer != null) {
+      return false;
     }
     final state = player.state;
-    if (state.completed || state.position >= state.duration - _endPauseWindow) {
-      return;
-    }
-    _markLocalPaused(player);
+    return !state.playing &&
+        !state.completed &&
+        state.position < state.duration - _endPauseWindow;
   }
 
   void _markLocalPaused(Player player) {
@@ -907,8 +909,13 @@ class FollowerSession {
   void _onLeaderSeek() {
     _intercepts.clear();
     _drifts.clear();
-    // 被本机暂停时保持暂停，本机恢复播放后按新进度对齐
+    // 被本机暂停时保持暂停，本机恢复播放后按新进度对齐；同时按播放器的实际状态
+    // 核验，暂停事件可能尚未处理
     if (!_shouldPlay || _localPaused) return;
+    if (_loadedPlayer case final player? when _isLocallyPaused(player)) {
+      _markLocalPaused(player);
+      return;
+    }
     _jumpToken++;
     _jumping = false;
     _startTimer?.cancel();

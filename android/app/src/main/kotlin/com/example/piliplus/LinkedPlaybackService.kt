@@ -54,6 +54,7 @@ class LinkedPlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        resetVolume()
         releaseLocks()
         super.onDestroy()
     }
@@ -251,6 +252,13 @@ class LinkedPlaybackService : Service() {
             return true
         }
 
+        /** 联动停止：作废待确认、排队的设置及超时回调 */
+        private fun resetVolume() {
+            pendingIndex = null
+            queuedIndex = null
+            pendingToken++
+        }
+
         private fun applyQueued() {
             val queued = queuedIndex ?: return
             queuedIndex = null
@@ -306,6 +314,7 @@ class LinkedPlaybackService : Service() {
                             }
 
                             "stop" -> {
+                                resetVolume()
                                 appContext.stopService(
                                     Intent(appContext, LinkedPlaybackService::class.java)
                                 )
