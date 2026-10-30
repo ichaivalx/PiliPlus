@@ -11,6 +11,7 @@ import 'package:PiliPlus/services/linked_playback/protocol.dart';
 import 'package:PiliPlus/services/linked_playback/target.dart';
 import 'package:PiliPlus/services/linked_playback/transport.dart';
 import 'package:PiliPlus/services/linked_playback/volume.dart';
+import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
@@ -198,8 +199,9 @@ class FollowerSession {
   bool _localPaused = false;
 
   /// 本机暂停期间收到恢复（音频打断结束）而当前内容尚无可用的播放器（加载中、
-  /// 加载失败后重试），加载完成后恢复
-  bool _resumePending = false;
+  /// 加载失败后重试），加载完成后恢复。登记为待自动播放：之后的音频打断暂缓到
+  /// 打断结束，拔出耳机、定时关闭等停止播放使其作废；恢复前复核
+  ShutdownLoad? _resumeLoad;
 
   /// 监听播放状态的播放器，暂停时及时识别是否为本机暂停
   Player? _observedPlayer;
@@ -262,6 +264,7 @@ class FollowerSession {
     _generation++;
     _halt();
     _release();
+    _cancelResume();
     final closing = _transport.dispose();
     leader.value = null;
     driftMs.value = null;
@@ -303,6 +306,7 @@ class FollowerSession {
   /// 本机定时关闭到期，请主控一起停止；同步已关闭时各端互不影响
   void stopAll() {
     _halt();
+    _cancelResume();
     // 已就绪的轮次不再接受起播
     _readyRound = null;
     if (!syncOn()) return;
@@ -318,7 +322,7 @@ class FollowerSession {
     if (!syncOn()) {
       _clearContent();
       _localPaused = false;
-      _resumePending = false;
+      _cancelResume();
       // 关闭同步前排队的一起停止不再发出
       _pendingStopAll = false;
     }
@@ -343,7 +347,7 @@ class FollowerSession {
       // 断开期间本机打开了其他内容：用户接管，不再跟随
       _clearContent();
       _localPaused = false;
-      _resumePending = false;
+      _cancelResume();
       return null;
     }
     if (!isConnected) {
@@ -374,13 +378,19 @@ class FollowerSession {
     if (!_localPaused || !isFollowing) return false;
     final target = _target;
     final player = _loadedPlayer;
+    _cancelResume();
     if (target != null && player != null && LinkedPlayer.isOpened(player)) {
-      _resumePending = false;
       target.resume();
     } else {
-      _resumePending = true;
+      _resumeLoad = shutdownTimerService.beginLoad();
     }
     return true;
+  }
+
+  void _cancelResume() {
+    final load = _resumeLoad;
+    _resumeLoad = null;
+    if (load != null) shutdownTimerService.endLoad(load);
   }
 
   /// 会话启动时登记已打开的听视频页
@@ -1194,14 +1204,17 @@ class FollowerSession {
         _openCheckedAt = now;
       }
     }
-    if (_resumePending) {
+    if (_resumeLoad case final load?) {
       if (!_localPaused) {
-        _resumePending = false;
+        // 已由其他方式恢复
+        _cancelResume();
       } else if (target != null &&
           player != null &&
-          LinkedPlayer.isOpened(player)) {
-        // 加载完成：恢复播放，随后按本机恢复对齐
-        _resumePending = false;
+          LinkedPlayer.isOpened(player) &&
+          shutdownTimerService.canAutoplay(load)) {
+        // 加载完成且未被之后的打断暂缓、未被停止播放作废：恢复播放，
+        // 随后按本机恢复对齐
+        _cancelResume();
         target.resume();
       }
     }
