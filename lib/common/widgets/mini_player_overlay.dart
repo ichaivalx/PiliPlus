@@ -101,6 +101,10 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   /// 展开接近终点，页面层与详情页在截图下方提前显示
   bool _warm = false;
+
+  /// 每次开始、结束或撤销展开、收起时递增；截图、静止帧等异步步骤只在其
+  /// 所属的过渡仍在进行时继续
+  int _generation = 0;
   final _childKey = GlobalKey();
 
   double get _progress => MiniPlayerMotion.curve.transform(_animation.value);
@@ -150,6 +154,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
 
   /// 结束或撤销展开、收起
   void _stopContainer() {
+    _generation++;
     _expanding = _collapsing = _liveBackdrop = _warm = false;
     _container = null;
     _disposeAfterFrame(_pageImage);
@@ -161,6 +166,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     if (_visible) {
       _retire();
     }
+    _animation.stop();
     _visible = _fadingOut = false;
     _from = _frozenTarget = _lastRect = _restoreTarget = null;
     _restoreTimer?.cancel();
@@ -309,6 +315,7 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 截取当前画面（路由变化前的最后一帧，详情页不在其中）作为背景，当前
   /// 页面含 platform view 时以实时页面为背景
   void _beginRestore() {
+    _generation++;
     if (_collapsing) {
       // 收起尚未结束时小窗停在收起的终点
       _stopContainer();
@@ -346,8 +353,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     });
   }
 
-  bool _awaitsExpand(Rect player) =>
+  bool _awaitsExpand(Rect player, int generation) =>
       mounted &&
+      generation == _generation &&
       _expanding &&
       _container == null &&
       identical(_restoreTarget, player);
@@ -356,13 +364,14 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
   /// 不再绘制；以起点画面静止后开始过渡，截图与页面的首次绘制都不落在
   /// 动画中
   Future<void> _beginExpand(Rect player) async {
+    final generation = _generation;
     _session.restoreStage = MiniRestoreStage.capture;
     await WidgetsBinding.instance.endOfFrame;
-    if (!_awaitsExpand(player)) {
+    if (!_awaitsExpand(player, generation)) {
       return;
     }
     final image = await _session.captureRestorePage();
-    if (!_awaitsExpand(player)) {
+    if (!_awaitsExpand(player, generation)) {
       image?.dispose();
       return;
     }
@@ -380,7 +389,9 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
       _container = container;
     });
     await _holdStill();
-    if (mounted && identical(_container, container)) {
+    if (mounted &&
+        generation == _generation &&
+        identical(_container, container)) {
       _animation.forward(from: 0);
     }
   }
@@ -393,21 +404,28 @@ class _AppMiniPlayerOverlayState extends State<AppMiniPlayerOverlay>
     Rect player,
     Future<void>? ready,
   ) {
+    _generation++;
     _collapsing = true;
     _pageImage = snapshot;
     final container = _container = _containerFor(mini, player);
     _animation.value = 0;
-    _startCollapse(container, ready);
+    _startCollapse(container, ready, _generation);
   }
 
-  Future<void> _startCollapse(_Container container, Future<void>? ready) async {
+  Future<void> _startCollapse(
+    _Container container,
+    Future<void>? ready,
+    int generation,
+  ) async {
     if (ready != null) {
       try {
         await ready.timeout(MiniPlayerMotion.revealTimeout);
       } catch (_) {}
     }
     await _holdStill();
-    if (!mounted || !identical(_container, container)) {
+    if (!mounted ||
+        generation != _generation ||
+        !identical(_container, container)) {
       return;
     }
     if (ready != null) {

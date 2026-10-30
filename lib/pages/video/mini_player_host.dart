@@ -282,7 +282,12 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       createDependency: false,
     );
     final scope = focus is FocusScopeNode ? focus : focus?.enclosingScope;
-    if (scope == null) {
+    final primary = FocusManager.instance.primaryFocus;
+    if (scope == null ||
+        (primary != null &&
+            !identical(primary, scope) &&
+            primary.ancestors.contains(scope))) {
+      // 焦点已在详情页中
       return;
     }
     final node = _playerFocusNode;

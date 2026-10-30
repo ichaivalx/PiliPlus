@@ -55,6 +55,10 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
   /// 展开期间下方页面作为实时背景保持显示，展开结束后由 [reveal] 遮住
   bool _overBackdrop;
 
+  /// 窗口路由的焦点范围，构建后可用
+  FocusNode? _focusScope;
+  FocusNode? get focusScope => _focusScope;
+
   /// 会话主动出栈，不再交给详情页与会话判断
   bool _leaving = false;
 
@@ -220,8 +224,8 @@ class MiniPlayerDormant {
   final MiniPlayerResume resume;
 }
 
-/// 窗口本身没有可获得焦点的内容，焦点落在窗口的焦点范围上时（如其上方的
-/// 弹窗、菜单关闭后）交给详情页
+/// 记下窗口路由的焦点范围：窗口本身没有可获得焦点的内容，焦点落在其上时
+/// （如其上方的弹窗、菜单关闭后）由会话交给详情页
 class _WindowFocus extends StatefulWidget {
   const _WindowFocus({required this.route, required this.child});
 
@@ -233,34 +237,14 @@ class _WindowFocus extends StatefulWidget {
 }
 
 class _WindowFocusState extends State<_WindowFocus> {
-  /// 窗口路由的焦点范围
-  FocusNode? _scope;
-
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final scope = Focus.maybeOf(
+    widget.route._focusScope = Focus.maybeOf(
       context,
       scopeOk: true,
       createDependency: false,
     );
-    if (!identical(scope, _scope)) {
-      _scope?.removeListener(_onFocusChanged);
-      _scope = scope?..addListener(_onFocusChanged);
-    }
-  }
-
-  void _onFocusChanged() {
-    final scope = _scope;
-    if (scope != null && scope.hasPrimaryFocus) {
-      miniPlayerSession.focusWindow(widget.route, scope);
-    }
-  }
-
-  @override
-  void dispose() {
-    _scope?.removeListener(_onFocusChanged);
-    super.dispose();
   }
 
   @override

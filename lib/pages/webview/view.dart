@@ -7,6 +7,7 @@ import 'package:PiliPlus/http/browser_ua.dart';
 import 'package:PiliPlus/main.dart' show webViewEnvironment;
 import 'package:PiliPlus/models/common/webview_menu_type.dart';
 import 'package:PiliPlus/plugin/linux_webview.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_platform_view.dart';
 import 'package:PiliPlus/utils/app_scheme.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/extension/string_ext.dart';
@@ -400,7 +401,7 @@ document.addEventListener('click', function(e) {
       body: _isPop
           ? null
           : SafeArea(
-              child: InAppWebView(
+              child: MiniPlayerPlatformView(child: InAppWebView(
                 webViewEnvironment: webViewEnvironment,
                 initialSettings: InAppWebViewSettings(
                   clearCache: true,
@@ -579,7 +580,7 @@ document.styleSheets[0].insertRule('#app__display-area > div.control-panel {disp
 
                   return .ALLOW;
                 },
-              ),
+              )),
             ),
     );
   }

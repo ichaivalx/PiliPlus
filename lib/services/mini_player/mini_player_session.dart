@@ -105,6 +105,11 @@ class MiniPlayerSession {
   MiniPlayerSession._() {
     // 小窗存在期间不自动进入系统画中画
     mode.listen((_) => PlPlayerController.instance?.updateAutoEnterPip());
+    restoring.listen((restoring) {
+      if (!restoring) {
+        _releaseHeldPop();
+      }
+    });
   }
 
   final Rx<MiniPlayerMode> mode = MiniPlayerMode.none.obs;
@@ -152,6 +157,30 @@ class MiniPlayerSession {
 
   bool _liveBackdrop = false;
   bool get liveBackdrop => _liveBackdrop;
+
+  /// 挂载中的 platform view 及其所在的路由，由 MiniPlayerPlatformView 登记
+  final Map<Object, Route<dynamic>?> _platformViews = {};
+
+  void registerPlatformView(Object view, Route<dynamic>? route) =>
+      _platformViews[view] = route;
+
+  void unregisterPlatformView(Object view) => _platformViews.remove(view);
+
+  /// 返回键回到详情页的位置时上层页面含 platform view：其出栈转场停在开始
+  /// 处作为实时背景，展开结束（或撤销）后离开
+  TransitionRoute<dynamic>? _heldPop;
+
+  void _releaseHeldPop() {
+    final route = _heldPop;
+    _heldPop = null;
+    // ignore: invalid_use_of_protected_member
+    final controller = route?.controller;
+    if (controller != null &&
+        !controller.isAnimating &&
+        !controller.isDismissed) {
+      controller.value = controller.lowerBound;
+    }
+  }
 
   /// 展开中详情页的阶段，展开开始截图前为 null
   MiniRestoreStage? _restoreStage;
@@ -338,6 +367,7 @@ class MiniPlayerSession {
     if (navigator == null) {
       return;
     }
+    _abortRestore();
     final previous = _host;
     final host = MiniPlayerHostEntry(args);
     final window = MiniPlayerWindowRoute(args, host: host);
@@ -481,6 +511,7 @@ class MiniPlayerSession {
       if (navigator != null && identical(navigator, Get.key.currentState)) {
         _userGesture = navigator.userGestureInProgressNotifier
           ..addListener(_updateLayer);
+        FocusManager.instance.addListener(_onPrimaryFocusChanged);
       }
     }
   }
@@ -673,8 +704,9 @@ class MiniPlayerSession {
   }
 
   /// 返回键回到详情页的位置：与主动恢复一样由小窗展开。上层页面的出栈转场
-  /// 在展开开始前直接结束（此时页面层已不可见）；回到详情页后由
-  /// [_scheduleSettle] 给出展开的终点
+  /// 在展开开始前直接结束（此时页面层已不可见），上层页面含 platform view
+  /// 时停在开始处作为实时背景；回到详情页后由 [_scheduleSettle] 给出展开的
+  /// 终点
   void _expandOnPop(Route<dynamic> route) {
     final anchor = _host?.anchor;
     if (!isActive ||
@@ -685,15 +717,24 @@ class MiniPlayerSession {
         (anchor.navigator?.userGestureInProgress ?? true)) {
       return;
     }
+    // 截图不含 platform view 的内容，上层页面含 platform view 时以其为实时
+    // 背景
+    final live = _platformViews.containsValue(route);
     _expandRestore = true;
-    _snapshotRestore = true;
-    _liveBackdrop = false;
+    _snapshotRestore = !live;
+    _liveBackdrop = live;
     _restoreStage = null;
     restoring.value = true;
     // ignore: invalid_use_of_protected_member
     final controller = route.controller;
     Future.microtask(() {
-      if (controller != null && controller.isAnimating) {
+      if (controller == null || !controller.isAnimating) {
+        return;
+      }
+      if (live && restoring.value) {
+        controller.stop();
+        _heldPop = route;
+      } else {
         controller.value = controller.lowerBound;
       }
     });
@@ -842,13 +883,19 @@ class MiniPlayerSession {
       } else {
         visibility = .shown;
       }
+      final active = host.shown && host.ticking;
+      final ticking = visibility == .shown && !restoringHost;
       host.updateLayer(
         visibility: visibility,
-        ticking: visibility == .shown && !restoringHost,
+        ticking: ticking,
         z: lifted ? 1 : index - _routes.length - 1,
         // 入场中位于浏览 Navigator 上方，直接响应操作；离开中的不响应
         direct: lifted && host.state == .shown,
       );
+      if (!active && ticking && host.state == .shown) {
+        // 详情页重新显示（展开结束、上层页面离开、旧视频等待结束等）
+        _scheduleFocus(host);
+      }
     }
   }
 
@@ -1057,6 +1104,7 @@ class MiniPlayerSession {
   /// 上层页面下方不显示地构建，内容到达后上层页面再出栈。新的详情页在原
   /// 详情页交出播放器后接管，按离开时的播放状态恢复
   void _openDormant(MiniPlayerWindowRoute dormant, {_DormantGate? gate}) {
+    _abortRestore();
     final record = dormant.dormant!;
     final above = gate?.above;
     final previous = _host;
@@ -1173,6 +1221,16 @@ class MiniPlayerSession {
     _restoreStage = null;
     restoring.value = false;
     restoreRect.value = null;
+  }
+
+  /// 打开其他视频时撤销进行中的展开：小窗层随之结束过渡并释放截图，
+  /// 详情页按其当前状态由之后的流程处理
+  void _abortRestore() {
+    if (restoring.value) {
+      _restoreStage = null;
+      restoring.value = false;
+      restoreRect.value = null;
+    }
   }
 
   /// 撤销进行中的展开，小窗回到原位
@@ -1300,11 +1358,12 @@ class MiniPlayerSession {
   bool get _showsPlatformView {
     final page = _topPage();
     final index = page == null ? 0 : _routes.indexOf(page);
-    return _routes.skip(index).any(MiniPlayerPolicy.hasPlatformView);
+    final shown = _routes.skip(index).toSet();
+    return _platformViews.values.any(shown.contains);
   }
 
   /// 展开的页面已完全盖住背景，与小窗层停止绘制过渡在同一帧换为实际页面；
-  /// 系统栏、亮度与焦点在交接后的下一帧恢复，不与交接落在同一帧
+  /// 系统栏与亮度在交接后的下一帧恢复，不与交接落在同一帧
   void finishRestore() {
     _restoreStage = null;
     restoring.value = false;
@@ -1314,30 +1373,59 @@ class MiniPlayerSession {
       host.presented?.reveal();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (identical(_host, host) && host.state == .shown && !isActive) {
-          host.page
-            ?..onMiniExpanded()
-            ..focusMiniPlayer();
+          host.page?.onMiniExpanded();
         }
       });
     }
     _updateLayer();
   }
 
-  /// 窗口自身获得焦点（如其上方的弹窗、菜单关闭后焦点回到窗口）：焦点
-  /// 交给所呈现的详情页；详情页随路由变化重新显示时在其构建后交给
-  void focusWindow(MiniPlayerWindowRoute window, FocusNode scope) {
+  /// 焦点落在窗口、浏览 Navigator 或根范围上（如弹窗、菜单关闭后，或离开
+  /// 的详情页交出焦点后）时交给显示中的详情页
+  void _onPrimaryFocusChanged() {
+    if (_host case final host? when host.state == .shown) {
+      _scheduleFocus(host);
+    }
+  }
+
+  final Set<MiniPlayerHostEntry> _focusPending = {};
+
+  /// 详情页显示（不在过渡中）且其窗口为最上层路由时，焦点交给详情页；在
+  /// 本帧之后、等待中的焦点变化生效后判断，不抢走新弹窗、面板的焦点
+  void _scheduleFocus(MiniPlayerHostEntry host) {
+    if (!_focusPending.add(host)) {
+      return;
+    }
     WidgetsBinding.instance
       ..addPostFrameCallback((_) {
-        final host = window.host;
-        if (scope.hasPrimaryFocus &&
-            host != null &&
-            host.state == .shown &&
-            host.shown &&
-            !(restoring.value && identical(host, _host))) {
-          host.page?.focusMiniPlayer();
-        }
+        Future.microtask(() {
+          _focusPending.remove(host);
+          _focusDetail(host);
+        });
       })
       ..scheduleFrame();
+  }
+
+  void _focusDetail(MiniPlayerHostEntry host) {
+    final window = host.window;
+    if (window == null ||
+        !hosts.contains(host) ||
+        host.state != .shown ||
+        !host.shown ||
+        !host.ticking ||
+        !window.isCurrent) {
+      return;
+    }
+    // 焦点在其他路由、浮层（如 SmartDialog 的弹窗）或详情页中时不处理，
+    // 只接管落在窗口、浏览 Navigator 或根范围上的焦点
+    final manager = FocusManager.instance;
+    final primary = manager.primaryFocus;
+    if (primary == null ||
+        identical(primary, window.focusScope) ||
+        identical(primary, window.navigator?.focusNode) ||
+        identical(primary, manager.rootScope)) {
+      host.page?.focusMiniPlayer();
+    }
   }
 
   /// 用户在小窗中暂停：进行中的加载完成后同样保持暂停

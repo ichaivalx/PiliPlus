@@ -4,6 +4,7 @@ import 'dart:io' show Platform;
 import 'package:PiliPlus/http/browser_ua.dart';
 import 'package:PiliPlus/main.dart';
 import 'package:PiliPlus/plugin/linux_webview.dart';
+import 'package:PiliPlus/services/mini_player/mini_player_platform_view.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
@@ -90,7 +91,7 @@ class _GeetestWebviewDialogState extends State<GeetestWebviewDialog> {
 
     return Stack(
       children: [
-        InAppWebView(
+        MiniPlayerPlatformView(child: InAppWebView(
           webViewEnvironment: webViewEnvironment,
           initialSettings: InAppWebViewSettings(
             clearCache: true,
@@ -150,7 +151,7 @@ class _GeetestWebviewDialogState extends State<GeetestWebviewDialog> {
                 callback: (args) => Get.back(),
               );
           },
-        ),
+        )),
         Positioned(
           left: 8,
           top: 8,
