@@ -412,12 +412,13 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
       } else {
         peers = _LinkedVolumeControl._peers;
         if (peers.isEmpty) return const SizedBox.shrink();
-        peer = peers.first;
+        var selected = peers.first;
         for (final item in peers) {
-          if (item.id == _selectedId) peer = item;
+          if (item.id == _selectedId) selected = item;
         }
-        final id = peer.id;
-        volume = peer.volume!;
+        peer = selected;
+        final id = selected.id;
+        volume = selected.volume!;
         onChanged = (value) => linkedPlayback.setVolume(id, value);
       }
       final peerChip = peers.length > 1
