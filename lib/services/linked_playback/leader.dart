@@ -62,9 +62,6 @@ class _PeerState {
   /// 尚未收到本机当前播放的内容
   bool needsContent = false;
 
-  /// 未及时响应而被跳过的轮次，之后回报时重新共同起播
-  int? missedRound;
-
   LinkedPeerState state = LinkedPeerState.idle;
   String? reason;
   double? driftMs;
@@ -108,6 +105,10 @@ class LeaderSession {
 
   /// 连续卡顿的检查次数，达到后共同暂停并重新共同起播
   static const _stallTicks = 3;
+
+  /// 超过此时间未收到消息的跟随端可能已断开，不参与共同起播，
+  /// 恢复后自行跳转加入
+  static const _freshUs = 2500000;
 
   final int Function() offsetUs;
   final void Function(int) onOffsetRequest;
@@ -203,7 +204,7 @@ class LeaderSession {
       return null;
     }
     final round = _beginRound(intendsPlay: autoplay, selfLoaded: false);
-    _transport.broadcast(_open(round));
+    _transport.broadcast(_open(round.id));
     return LinkedLoad(onLoaded: () => _onSelfLoaded(round));
   }
 
@@ -218,9 +219,9 @@ class LeaderSession {
     _transport.broadcast(const {'t': LinkMessageType.stop});
   }
 
-  Map<String, Object?> _open(_Round round) => {
+  Map<String, Object?> _open(int round) => {
     't': LinkMessageType.open,
-    'round': round.id,
+    'round': round,
     'content': _content!.toJson(),
   };
 
@@ -291,9 +292,10 @@ class LeaderSession {
     Iterable<LinkConnection>? loading,
   }) {
     _cancelRound();
+    final now = LinkClock.nowUs;
     final participants = {
       for (final MapEntry(key: peer, value: state) in _peers.entries)
-        if (state.id != null) peer,
+        if (state.id != null && now - peer.lastReceived < _freshUs) peer,
     };
     final round = _round = _Round(
       ++_roundId,
@@ -334,11 +336,9 @@ class LeaderSession {
     }
   }
 
+  /// 未及时响应的跟随端不再等待，之后自行跳转加入
   void _skipPeers(_Round round, Set<LinkConnection> pending) {
-    for (final peer in pending) {
-      round.participants.remove(peer);
-      _peers[peer]?.missedRound = round.id;
-    }
+    round.participants.removeAll(pending);
     pending.clear();
   }
 
@@ -399,8 +399,11 @@ class LeaderSession {
   void _start(_Round round) {
     round.timer?.cancel();
     if (!round.intendsPlay) {
-      _pausedPos = round.position;
       _finishRound(round);
+      // 未参与本轮的跟随端也定位到暂停位置
+      if (_loadedPlayer case final player?) {
+        _broadcastPause(player);
+      }
       return;
     }
     final player = _loadedPlayer;
@@ -431,19 +434,27 @@ class LeaderSession {
     });
   }
 
-  /// 同一内容共同暂停后重新共同起播
+  /// 同一内容共同暂停后重新共同起播；没有在线的跟随端时本机照常播放，
+  /// 跟随端恢复后自行跳转加入
   void _resync({required bool intendsPlay}) {
-    if (!_active || _loadedPlayer == null) return;
-    _prepare(
-      _beginRound(
-        intendsPlay: intendsPlay,
-        selfLoaded: true,
-        loading: const [],
-      ),
+    final player = _loadedPlayer;
+    if (!_active || player == null) return;
+    final round = _beginRound(
+      intendsPlay: intendsPlay,
+      selfLoaded: true,
+      loading: const [],
     );
+    if (round.participants.isEmpty) {
+      _cancelRound();
+      _expectPlaying = player.state.playing;
+      _lastPosition = null;
+      return;
+    }
+    _prepare(round);
   }
 
-  /// 把本机当前的内容发给尚未收到的跟随端，本机已加载时在其加载期间照常播放
+  /// 把本机当前的内容发给尚未收到的跟随端：新内容尚在加载时加入本轮共同起播；
+  /// 本机已在播放或暂停时不打断本机，跟随端加载后自行跳转加入
   void _sendContent() {
     if (!_active || _content == null) return;
     final waiting = [
@@ -451,29 +462,35 @@ class LeaderSession {
         if (state.needsContent) peer,
     ];
     if (waiting.isEmpty) return;
-    var round = _round;
-    if (round != null && round.phase == _Phase.loading) {
+    final round = _round;
+    final Map<String, Object?> open;
+    if (round != null) {
+      // 定位、起播期间稍后再发
+      if (round.phase != _Phase.loading) return;
       round
         ..participants.addAll(waiting)
         ..loading.addAll(waiting);
+      open = _open(round.id);
     } else {
       final player = _loadedPlayer;
       if (player == null) return;
       _attach(player);
-      final intendsPlay = round?.intendsPlay ?? player.state.playing;
-      if (round == null) {
-        _expectPlaying = player.state.playing;
-      }
-      round = _beginRound(
-        intendsPlay: intendsPlay,
-        selfLoaded: true,
-        loading: waiting,
-      );
+      // 没有跟随端期间未跟踪本机的播放状态
+      _expectPlaying = player.state.playing;
+      open = _open(_roundId);
     }
-    final open = _open(round);
     for (final peer in waiting) {
       _peers[peer]!.needsContent = false;
       peer.send(open);
+    }
+  }
+
+  /// 本机暂停时把暂停位置发给刚加载完的跟随端；播放时跟随端按播放进度加入
+  void _sendState(LinkConnection peer) {
+    final player = _loadedPlayer;
+    if (_expectPlaying || player == null || player.state.playing) return;
+    if (LinkedPlayer.timePos(player) case final pos?) {
+      peer.send({'t': LinkMessageType.pause, 'pos': pos});
     }
   }
 
@@ -687,17 +704,14 @@ class LeaderSession {
           if (round.id == id && round.loading.remove(peer)) {
             _advance(round);
           }
-        } else if (id == _roundId) {
-          // 跟随端自行重新加载或此前超时，重新共同起播
-          _resync(intendsPlay: _expectPlaying);
+        } else {
+          _sendState(peer);
         }
       case LinkMessageType.ready:
-        if (round != null) {
-          if (round.id == id && round.preparing.remove(peer)) {
-            _advance(round);
-          }
-        } else if (id == _roundId && state.missedRound == id) {
-          _resync(intendsPlay: _expectPlaying);
+        if (round != null &&
+            round.id == id &&
+            round.preparing.remove(peer)) {
+          _advance(round);
         }
       case LinkMessageType.resync:
         if (round == null && _expectPlaying) {

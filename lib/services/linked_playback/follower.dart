@@ -25,6 +25,8 @@ class FollowerSession {
     required this.onOffsetChanged,
     required this.startBiasUs,
     required this.onStartBias,
+    required this.seekCostUs,
+    required this.onSeekCost,
     required String? lastLeader,
     required void Function(String) onLeader,
     required this.leader,
@@ -60,13 +62,26 @@ class FollowerSession {
   static const _enterMs = 15.0;
   static const _exitMs = 4.0;
 
-  /// 偏差超过此值时请求主控共同暂停后重新共同起播
-  static const _hardMs = 400.0;
-
   /// 微调倍速按偏差在约此时长内追平，且不超过 [_maxAdjust]
   static const _tauSeconds = 2.0;
   static const _maxAdjust = 0.04;
   static const _adjustStep = 0.0025;
+
+  /// 偏差超过此值时不用倍速追赶，本机直接跳转到主控的位置，主控不受影响
+  static const _jumpMs = 100.0;
+
+  /// 起播、跳转后经过此时间才判断是否需要跳转，避免同一偏差反复跳转
+  static const _judgeUs = 2500000;
+
+  /// 连续跳转仍未对齐的次数达到此值时，请主控共同暂停后重新共同起播
+  static const _maxJumps = 2;
+
+  /// 跳转耗时（定位到缓冲就绪）按实测学习，起播时刻按此预留提前量
+  static const _seekCostRate = 0.5;
+  static const _minSeekCostUs = 100000;
+  static const _maxSeekCostUs = 3000000;
+  static const _seekLeadFactor = 1.5;
+  static const _seekMarginUs = 150000;
 
   static const _resyncIntervalUs = 10000000;
   static const _stallTicks = 4;
@@ -85,6 +100,8 @@ class FollowerSession {
   final void Function(int) onOffsetChanged;
   int startBiasUs;
   final void Function(int) onStartBias;
+  int seekCostUs;
+  final void Function(int) onSeekCost;
   final RxnString leader;
   final RxnDouble driftMs;
   final RxnDouble rttMs;
@@ -138,7 +155,15 @@ class FollowerSession {
   double? _appliedSpeed;
   Player? _syncedPlayer;
 
+  /// 跳转中：本机已暂停并定位，等待到时起播
+  bool _jumping = false;
+  int _jumpToken = 0;
+
+  /// 上次对齐成功后的跳转次数
+  int _jumps = 0;
+
   int _settleUntil = 0;
+  int _judgeAfter = 0;
   int? _learnAt;
   int _lastResync = -_resyncIntervalUs;
   int _lastReport = 0;
@@ -316,6 +341,7 @@ class FollowerSession {
     _pendingPos = null;
     _readyRound = null;
     _pausePos = null;
+    _jumps = 0;
   }
 
   void _onMessage(LinkMessage message) {
@@ -514,14 +540,102 @@ class FollowerSession {
         if (generation != _generation) return;
         final target = _target;
         if (target == null || _loadedPlayer == null) return;
-        final now = LinkClock.nowUs;
         _shouldPlay = true;
-        _settleUntil = now + _settleUs;
-        _learnAt = now + _learnUs;
-        _stall = 0;
+        _jumps = 0;
+        _onStarted();
         target.play();
       },
     );
+  }
+
+  void _onStarted() {
+    final now = LinkClock.nowUs;
+    _settleUntil = now + _settleUs;
+    _judgeAfter = now + _judgeUs;
+    _learnAt = now + _learnUs;
+    _stall = 0;
+  }
+
+  /// 主控在播放而本机未参与起播（重新连接、加载较慢、错过本轮）
+  bool _canJoin(int now) =>
+      _loaded &&
+      _pendingRound == null &&
+      _startTimer == null &&
+      _intercepts.isNotEmpty &&
+      _clock.isReady &&
+      _leaderCid == _content?.cid &&
+      now - _leaderPosAt < _reportUs;
+
+  /// 跳转对齐；多次跳转仍未对齐时请主控共同暂停后重新共同起播
+  void _realign(LinkedTarget target, Player player, int now) {
+    if (_jumps >= _maxJumps) {
+      if (_requestResync(now)) {
+        _jumps = 0;
+      }
+      return;
+    }
+    _jumps++;
+    _jump(target, player);
+  }
+
+  /// 本机暂停并定位到主控在预留时间后的位置，到时起播；主控不受影响
+  void _jump(LinkedTarget target, Player player) {
+    final token = ++_jumpToken;
+    _jumping = true;
+    _shouldPlay = true;
+    _correcting = false;
+    _tracking = false;
+    _factor = 1.0;
+    _drifts.clear();
+    _learnAt = null;
+    _applySpeed(player);
+    _runJump(target, player, token);
+  }
+
+  Future<void> _runJump(LinkedTarget target, Player player, int token) async {
+    bool isCurrent() => token == _jumpToken && _shouldPlay && isConnected;
+    if (player.state.playing) {
+      await target.pause();
+    }
+    // 定位慢于预留时间时按更新后的耗时再试一次
+    for (var attempt = 0; attempt < 2; attempt++) {
+      if (!isCurrent()) return;
+      final begin = LinkClock.nowUs;
+      final at = begin + (seekCostUs * _seekLeadFactor).round() + _seekMarginUs;
+      final leaderPos = _leaderPosition(at);
+      if (leaderPos == null) break;
+      final destination = max(0, leaderPos - _offsetUs);
+      await target.seek(Duration(microseconds: destination));
+      if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) return;
+      _learnSeekCost(LinkClock.nowUs - begin);
+      final playAt = at + startBiasUs;
+      if (LinkClock.nowUs < playAt) {
+        _startTimer = LinkedPlayer.scheduleAt(playAt, () {
+          _startTimer = null;
+          if (!isCurrent()) return;
+          _jumping = false;
+          _onStarted();
+          target.play();
+        });
+        return;
+      }
+    }
+    if (isCurrent()) {
+      // 未能对齐，稍后重新加入
+      _jumping = false;
+      _shouldPlay = false;
+    }
+  }
+
+  void _learnSeekCost(int cost) {
+    final value = (seekCostUs + (cost - seekCostUs) * _seekCostRate)
+        .round()
+        .clamp(_minSeekCostUs, _maxSeekCostUs)
+        .toInt();
+    if (value != seekCostUs) {
+      seekCostUs = value;
+      onSeekCost(value);
+    }
   }
 
   /// 停止跟随播放，保留已加载的内容
@@ -595,6 +709,8 @@ class FollowerSession {
   }
 
   void _resetCorrection() {
+    _jumpToken++;
+    _jumping = false;
     _intercepts.clear();
     _drifts.clear();
     _correcting = false;
@@ -627,25 +743,31 @@ class FollowerSession {
         : (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
+  /// 本机时刻 [localUs] 时主控的位置
+  int? _leaderPosition(int localUs) {
+    if (_intercepts.isEmpty || !_clock.isReady) return null;
+    return (_median(_intercepts) + _rate * _clock.toRemote(localUs)).round();
+  }
+
   /// 本机相对主控（已扣除延迟偏移）的偏差，正值表示本机超前（毫秒）
   double? _measure(Player player) {
-    if (_intercepts.isEmpty || !_clock.isReady) return null;
     final sample = LinkedPlayer.sample(player);
     if (sample == null) return null;
-    final leaderPos =
-        _median(_intercepts) + _rate * _clock.toRemote(sample.at) - _offsetUs;
-    _drifts.add((sample.pos - leaderPos) / 1000);
+    final leaderPos = _leaderPosition(sample.at);
+    if (leaderPos == null) return null;
+    _drifts.add((sample.pos - leaderPos + _offsetUs) / 1000);
     if (_drifts.length > _driftWindow) {
       _drifts.removeAt(0);
     }
     return _median(_drifts);
   }
 
-  void _requestResync(int now) {
-    if (now - _lastResync < _resyncIntervalUs) return;
+  bool _requestResync(int now) {
+    if (now - _lastResync < _resyncIntervalUs) return false;
     _lastResync = now;
     _transport.send({'t': LinkMessageType.resync, 'round': _round});
     _resetCorrection();
+    return true;
   }
 
   /// 按起播后的实测偏差调整下次起播的补偿
@@ -667,7 +789,7 @@ class FollowerSession {
     }
   }
 
-  double? _follow(Player player, int now) {
+  double? _follow(LinkedTarget target, Player player, int now) {
     if (player.state.buffering) {
       if (++_stall >= _stallTicks) {
         _stall = 0;
@@ -684,9 +806,19 @@ class FollowerSession {
     }
     if (now < _settleUntil) return drift;
     final magnitude = drift.abs();
-    if (magnitude > _hardMs) {
-      _requestResync(now);
+    if (magnitude > _jumpMs) {
+      // 大偏差不用倍速追赶
+      _correcting = false;
+      _tracking = false;
+      _factor = 1.0;
+      _applySpeed(player);
+      if (now >= _judgeAfter && _drifts.length >= _driftWindow) {
+        _realign(target, player, now);
+      }
       return drift;
+    }
+    if (now >= _judgeAfter) {
+      _jumps = 0;
     }
     if (_tracking) {
       _correcting = magnitude >= _exitMs;
@@ -717,7 +849,8 @@ class FollowerSession {
     if (player == null ||
         !_loaded ||
         _pendingRound != null ||
-        _startTimer != null) {
+        _startTimer != null ||
+        _jumping) {
       return LinkedPeerState.preparing;
     }
     if (_shouldPlay) {
@@ -739,13 +872,17 @@ class FollowerSession {
         // 未经联动接管的加载（如用户在本机打开了同一视频）
         _onLoaded();
       }
-      if (!_shouldPlay) {
-        // 跟随端只按主控的指令播放
-        if (player.state.playing && _startTimer == null) {
-          target.pause();
+      if (_jumping) {
+        // 等待跳转后起播
+      } else if (_shouldPlay) {
+        if (player.state.playing) {
+          drift = _follow(target, player, now);
         }
-      } else if (player.state.playing) {
-        drift = _follow(player, now);
+      } else if (_canJoin(now)) {
+        _realign(target, player, now);
+      } else if (player.state.playing && _startTimer == null) {
+        // 跟随端只按主控的指令播放
+        target.pause();
       }
     }
     _watch(now);

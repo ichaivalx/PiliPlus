@@ -32,6 +32,7 @@ class LinkedPlayback {
   static const _syncKey = 'linkedPlaybackSync';
   static const _deviceIdKey = 'linkedPlaybackDeviceId';
   static const _startBiasKey = 'linkedPlaybackStartBias';
+  static const _seekCostKey = 'linkedPlaybackSeekCost';
   static const _lastLeaderKey = 'linkedPlaybackLastLeader';
 
   /// 保持熄屏、后台下连接与播放的前台服务
@@ -276,6 +277,9 @@ class LinkedPlayback {
           startBiasUs:
               GStorage.setting.get(_startBiasKey, defaultValue: 0) as int,
           onStartBias: (value) => GStorage.setting.put(_startBiasKey, value),
+          seekCostUs:
+              GStorage.setting.get(_seekCostKey, defaultValue: 500000) as int,
+          onSeekCost: (value) => GStorage.setting.put(_seekCostKey, value),
           lastLeader: GStorage.setting.get(_lastLeaderKey) as String?,
           onLeader: (value) => GStorage.setting.put(_lastLeaderKey, value),
           leader: leader,
