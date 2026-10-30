@@ -8,6 +8,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/danmaku_options.dart';
 import 'package:PiliPlus/utils/danmaku_utils.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -42,6 +43,27 @@ class _PlDanmakuState extends State<PlDanmaku> {
   late final PlDanmakuController _plDanmakuController;
   DanmakuController<DanmakuExtra>? _controller;
   int latestAddedPosition = -1;
+
+  /// 所在页面的动画停止（如页面不显示）期间不加入弹幕，停止时清空，恢复后
+  /// 从当前进度继续，不积压
+  ValueListenable<bool>? _tickerMode;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final tickerMode = TickerMode.getNotifier(context);
+    if (!identical(tickerMode, _tickerMode)) {
+      _tickerMode?.removeListener(_onTickerModeChanged);
+      _tickerMode = tickerMode..addListener(_onTickerModeChanged);
+    }
+  }
+
+  void _onTickerModeChanged() {
+    if (!_tickerMode!.value) {
+      _controller?.clear();
+      latestAddedPosition = -1;
+    }
+  }
 
   @override
   void initState() {
@@ -92,7 +114,9 @@ class _PlDanmakuState extends State<PlDanmaku> {
 
   @pragma('vm:notify-debugger-on-exception')
   void videoPositionListen(Duration position) {
-    if (_controller == null || !playerController.enableShowDanmaku.value) {
+    if (_controller == null ||
+        !playerController.enableShowDanmaku.value ||
+        !(_tickerMode?.value ?? true)) {
       return;
     }
 
@@ -160,6 +184,7 @@ class _PlDanmakuState extends State<PlDanmaku> {
 
   @override
   void dispose() {
+    _tickerMode?.removeListener(_onTickerModeChanged);
     playerController
       ..removePositionListener(videoPositionListen)
       ..removeStatusLister(playerListener);
