@@ -19,7 +19,7 @@ class LinkedPlaybackPage extends StatelessWidget {
   }
 }
 
-/// 联动播放的开关、角色、同步、连接状态与延迟偏移；主控另有跟随端的状态与音量
+/// 联动播放的开关、角色、同步、连接状态、跟随端音量与延迟偏移
 class LinkedPlaybackPanel extends StatelessWidget {
   const LinkedPlaybackPanel({super.key, this.padding});
 
@@ -94,7 +94,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
             ),
             ...switch (role) {
               LinkedRole.leader => _leaderStatus(theme),
-              LinkedRole.follower => _followerStatus(),
+              LinkedRole.follower => _followerStatus(theme),
             },
             ..._offset(theme),
           ],
@@ -116,6 +116,67 @@ class LinkedPlaybackPanel extends StatelessWidget {
             : null,
       ),
       for (final peer in peers) ..._peer(theme, peer),
+    ];
+  }
+
+  static String _percent(double? value) =>
+      value == null ? '—' : '${(value * 100).round()}%';
+
+  /// 跟随端的音量模式、偏移或音量，及当前实际音量
+  List<Widget> _volume(
+    ThemeData theme,
+    LinkedVolume volume,
+    ValueChanged<LinkedVolume> onChanged,
+  ) {
+    final leaderVolume = linkedPlayback.leaderVolume.value;
+    final follow = volume.mode == LinkedVolumeMode.follow;
+    final offset = volume.offset;
+    return [
+      ListTile(
+        dense: true,
+        leading: const Icon(Icons.volume_up_outlined, size: 20),
+        title: Text(
+          follow
+              ? '主控 ${_percent(leaderVolume)}　偏移 ${offset > 0 ? '+' : ''}$offset'
+              : '设定 ${_percent(volume.level)}',
+        ),
+        subtitle: Text('跟随端当前音量 ${_percent(volume.actual)}'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          spacing: 10,
+          children: [
+            for (final item in LinkedVolumeMode.values)
+              ActionRowLineItem(
+                selectStatus: item == volume.mode,
+                text: item.label,
+                onTap: () {
+                  if (item != volume.mode) {
+                    onChanged(volume.switchTo(item, leaderVolume));
+                  }
+                },
+              ),
+          ],
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: follow
+            ? Slider(
+                min: -100,
+                max: 100,
+                divisions: 200,
+                value: offset.clamp(-100, 100).toDouble(),
+                label: '${offset > 0 ? '+' : ''}$offset',
+                onChanged: (value) =>
+                    onChanged(volume.copyWith(offset: value.round())),
+              )
+            : Slider(
+                divisions: 100,
+                value: volume.level.clamp(0.0, 1.0).toDouble(),
+                label: _percent(volume.level),
+                onChanged: (value) => onChanged(volume.copyWith(level: value)),
+              ),
+      ),
     ];
   }
 
@@ -191,30 +252,15 @@ class LinkedPlaybackPanel extends StatelessWidget {
         ),
       ),
       if (!offline && volume != null)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 4),
-                child: Icon(Icons.volume_up_outlined, size: 20),
-              ),
-              Expanded(
-                child: Slider(
-                  value: volume.clamp(0.0, 1.0).toDouble(),
-                  divisions: 100,
-                  label: '${(volume * 100).round()}%',
-                  onChanged: (value) =>
-                      linkedPlayback.setPeerVolume(peer.id, value),
-                ),
-              ),
-            ],
-          ),
+        ..._volume(
+          theme,
+          volume,
+          (value) => linkedPlayback.setVolume(peer.id, value),
         ),
     ];
   }
 
-  List<Widget> _followerStatus() {
+  List<Widget> _followerStatus(ThemeData theme) {
     final leader = linkedPlayback.leader.value;
     return [
       ListTile(
@@ -226,6 +272,11 @@ class LinkedPlaybackPanel extends StatelessWidget {
               : '偏差 ${_signedMs(linkedPlayback.driftMs.value)}'
                     '　往返 ${_ms(linkedPlayback.rttMs.value)}',
         ),
+      ),
+      ..._volume(
+        theme,
+        linkedPlayback.volume.value,
+        (value) => linkedPlayback.setVolume(null, value),
       ),
     ];
   }

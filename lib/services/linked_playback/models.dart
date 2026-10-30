@@ -75,6 +75,101 @@ class LinkedContent {
   }
 }
 
+/// 跟随端系统媒体音量的控制方式
+enum LinkedVolumeMode {
+  follow('跟随主控'),
+  independent('独立');
+
+  const LinkedVolumeMode(this.label);
+
+  final String label;
+}
+
+/// 跟随端的音量设置与当前实际音量，由跟随端保存
+class LinkedVolume {
+  const LinkedVolume({
+    required this.mode,
+    required this.offset,
+    required this.level,
+    this.actual,
+  });
+
+  final LinkedVolumeMode mode;
+
+  /// 跟随主控时相对主控音量的偏移（百分点）
+  final int offset;
+
+  /// 独立时设定的音量（0~1）
+  final double level;
+
+  /// 跟随端当前的系统媒体音量（0~1）
+  final double? actual;
+
+  /// 跟随主控时应设定的音量
+  double? targetFor(double? leaderVolume) => switch (mode) {
+    LinkedVolumeMode.follow =>
+      leaderVolume == null
+          ? null
+          : (leaderVolume + offset / 100).clamp(0.0, 1.0).toDouble(),
+    LinkedVolumeMode.independent => level,
+  };
+
+  /// 切换模式，保持跟随端当前的音量不变
+  LinkedVolume switchTo(LinkedVolumeMode value, double? leaderVolume) {
+    final current = actual;
+    return switch (value) {
+      LinkedVolumeMode.follow => LinkedVolume(
+        mode: value,
+        offset: current == null || leaderVolume == null
+            ? offset
+            : ((current - leaderVolume) * 100).round(),
+        level: level,
+        actual: actual,
+      ),
+      LinkedVolumeMode.independent => LinkedVolume(
+        mode: value,
+        offset: offset,
+        level: current ?? level,
+        actual: actual,
+      ),
+    };
+  }
+
+  LinkedVolume copyWith({
+    LinkedVolumeMode? mode,
+    int? offset,
+    double? level,
+    double? actual,
+  }) => LinkedVolume(
+    mode: mode ?? this.mode,
+    offset: offset ?? this.offset,
+    level: level ?? this.level,
+    actual: actual ?? this.actual,
+  );
+
+  Map<String, Object?> toJson() => {
+    'mode': mode.name,
+    'offset': offset,
+    'level': level,
+    'actual': ?actual,
+  };
+
+  static LinkedVolume? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final mode = LinkedVolumeMode.values.asNameMap()[json['mode']];
+    final offset = json['offset'];
+    final level = json['level'];
+    final actual = json['actual'];
+    if (mode == null || offset is! int || level is! num) return null;
+    return LinkedVolume(
+      mode: mode,
+      offset: offset,
+      level: level.toDouble(),
+      actual: actual is num ? actual.toDouble() : null,
+    );
+  }
+}
+
 /// 页面的一次加载由联动播放接管：不自动播放，加载完成后通知联动播放
 class LinkedLoad {
   const LinkedLoad({this.position, required VoidCallback onLoaded})
@@ -129,6 +224,6 @@ class LinkedPeerInfo {
 
   final double? rttMs;
 
-  /// 跟随端的媒体音量（0~1）
-  final double? volume;
+  /// 跟随端的音量设置与当前音量
+  final LinkedVolume? volume;
 }

@@ -90,6 +90,9 @@ abstract final class LinkMessageType {
   /// 跟随端 → 主控：状态、实测偏差、往返时间与音量
   static const report = 'report';
 
-  /// 主控 → 跟随端：设置音量
+  /// 主控 → 跟随端：主控的系统媒体音量
   static const volume = 'volume';
+
+  /// 主控 → 跟随端：设置跟随端的音量模式、偏移或音量
+  static const volumeSet = 'volumeSet';
 }

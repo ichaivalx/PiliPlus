@@ -9,9 +9,9 @@ import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
 import 'package:PiliPlus/services/linked_playback/target.dart';
 import 'package:PiliPlus/services/linked_playback/transport.dart';
+import 'package:PiliPlus/services/linked_playback/volume.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
-import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:get/get.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -32,7 +32,18 @@ class FollowerSession {
     required this.leader,
     required this.driftMs,
     required this.rttMs,
+    required Rx<LinkedVolume> volume,
+    required RxnDouble leaderVolume,
+    required Future<double?> Function(double) setSystemVolume,
+    required void Function(LinkedVolume) onVolumeSaved,
   }) {
+    _volume = FollowerVolume(
+      state: volume,
+      leaderVolume: leaderVolume,
+      setSystem: setSystemVolume,
+      onSaved: onVolumeSaved,
+      onChanged: _reportNow,
+    );
     _transport = FollowerTransport(
       onConnected: _onConnected,
       onMessage: _onMessage,
@@ -107,6 +118,7 @@ class FollowerSession {
   final RxnDouble rttMs;
 
   late final FollowerTransport _transport;
+  late final FollowerVolume _volume;
   ClockSync get _clock => _transport.clock;
   Timer? _ticker;
 
@@ -233,6 +245,13 @@ class FollowerSession {
     }
   }
 
+  /// 用户在本机调整音量设置
+  void updateVolume(LinkedVolume value) => _volume.update(value);
+
+  /// 本机系统媒体音量变化，[self] 为本机设置所致
+  void onSystemVolume(double volume, {required bool self}) =>
+      _volume.onSystemVolume(volume, self: self);
+
   /// 本机定时关闭到期，请主控一起停止
   void stopAll() {
     _halt();
@@ -315,11 +334,13 @@ class FollowerSession {
     _pendingSync = null;
     _pendingStopAll = false;
     _lastProgress = LinkClock.nowUs;
+    _volume.connect();
     leader.value = _transport.connection?.address;
     SmartDialog.showToast('联动播放：已连接主控 ${leader.value}');
   }
 
   void _onDisconnected() {
+    _volume.disconnect();
     _clearContent();
     _release();
     leader.value = null;
@@ -365,8 +386,11 @@ class FollowerSession {
         }
       case LinkMessageType.volume:
         if (message['v'] case final num volume) {
-          FlutterVolumeController.updateShowSystemUI(false);
-          FlutterVolumeController.setVolume(volume.toDouble());
+          _volume.onLeaderVolume(volume.toDouble());
+        }
+      case LinkMessageType.volumeSet:
+        if (LinkedVolume.fromJson(message) case final volume?) {
+          _volume.update(volume);
         }
       case LinkMessageType.open:
         final round = message['round'];
@@ -911,14 +935,18 @@ class FollowerSession {
     }
   }
 
-  Future<void> _report(LinkedPeerState state, double? drift) async {
+  void _reportNow() {
+    if (!isConnected) return;
+    final state = _state(_loadedPlayer);
+    _lastReport = LinkClock.nowUs;
+    _reportedState = state;
+    _report(state, driftMs.value);
+  }
+
+  void _report(LinkedPeerState state, double? drift) {
     final rtt = _clock.rttUs;
     rttMs.value = rtt == null ? null : rtt / 1000;
     driftMs.value = drift;
-    double? volume;
-    try {
-      volume = await FlutterVolumeController.getVolume();
-    } catch (_) {}
     final content = _content;
     _transport.send({
       't': LinkMessageType.report,
@@ -929,7 +957,7 @@ class FollowerSession {
           : null,
       'drift': drift,
       'rtt': rttMs.value,
-      'volume': volume,
+      'volume': _volume.state.value.toJson(),
     });
   }
 }

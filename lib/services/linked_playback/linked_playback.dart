@@ -34,6 +34,9 @@ class LinkedPlayback {
   static const _startBiasKey = 'linkedPlaybackStartBias';
   static const _seekCostKey = 'linkedPlaybackSeekCost';
   static const _lastLeaderKey = 'linkedPlaybackLastLeader';
+  static const _volumeModeKey = 'linkedPlaybackVolumeMode';
+  static const _volumeOffsetKey = 'linkedPlaybackVolumeOffset';
+  static const _volumeLevelKey = 'linkedPlaybackVolumeLevel';
 
   /// 保持熄屏、后台下连接与播放的前台服务
   static const _channel = MethodChannel('com.example.piliplus/linked_playback');
@@ -58,6 +61,24 @@ class LinkedPlayback {
     GStorage.setting.get(_offsetKey, defaultValue: 0) as int,
   );
 
+  /// 跟随端：本机的音量设置与当前音量
+  final Rx<LinkedVolume> volume = Rx<LinkedVolume>(
+    LinkedVolume(
+      mode:
+          LinkedVolumeMode.values[GStorage.setting.get(
+                _volumeModeKey,
+                defaultValue: 0,
+              )
+              as int],
+      offset: GStorage.setting.get(_volumeOffsetKey, defaultValue: 0) as int,
+      level:
+          GStorage.setting.get(_volumeLevelKey, defaultValue: 0.5) as double,
+    ),
+  );
+
+  /// 主控的系统媒体音量；跟随端为已连接主控的
+  final RxnDouble leaderVolume = RxnDouble();
+
   /// 启动失败的原因
   final RxnString error = RxnString();
 
@@ -80,7 +101,17 @@ class LinkedPlayback {
   /// 应用启动后调用，已开启时开始运行
   void init() {
     _channel.setMethodCallHandler((call) async {
-      if (call.method == 'screenOn') wake();
+      switch (call.method) {
+        case 'screenOn':
+          wake();
+        case 'volume':
+          if (call.arguments case {
+            'v': final num value,
+            'self': final bool self,
+          }) {
+            _onSystemVolume(value.toDouble(), self: self);
+          }
+      }
     });
     AppLifecycleListener(onResume: wake, onShow: wake);
     Connectivity().onConnectivityChanged.skip(1).listen((_) => _refresh());
@@ -174,8 +205,48 @@ class LinkedPlayback {
     return true;
   }
 
-  void setPeerVolume(String id, double volume) {
-    _leader?.setVolume(id, volume);
+  /// 设置跟随端的音量；主控设置 [id] 对应的跟随端，跟随端设置本机
+  void setVolume(String? id, LinkedVolume value) {
+    if (_leader case final leader?) {
+      if (id != null) leader.setVolume(id, value);
+    } else {
+      _follower?.updateVolume(value);
+    }
+  }
+
+  void _onSystemVolume(double value, {required bool self}) {
+    if (_leader case final leader?) {
+      leaderVolume.value = value;
+      leader.onLocalVolume(value);
+    } else {
+      _follower?.onSystemVolume(value, self: self);
+    }
+  }
+
+  Future<double?> _getSystemVolume() async {
+    if (!Platform.isAndroid) return null;
+    try {
+      return await _channel.invokeMethod<double>('getVolume');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 设置系统媒体音量，不显示系统音量界面；返回设置后的实际音量
+  Future<double?> _setSystemVolume(double value) async {
+    if (!Platform.isAndroid) return null;
+    try {
+      return await _channel.invokeMethod<double>('setVolume', {'v': value});
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _saveVolume(LinkedVolume value) {
+    GStorage.setting
+      ..put(_volumeModeKey, value.mode.index)
+      ..put(_volumeOffsetKey, value.offset)
+      ..put(_volumeLevelKey, value.level);
   }
 
   /// 切换是否一起播放，两端共享；未连接时立即重连
@@ -264,6 +335,10 @@ class LinkedPlayback {
           onPeersChanged: (list) => peers.value = list,
         );
         await session.start();
+        if (await _getSystemVolume() case final value?) {
+          leaderVolume.value = value;
+          session.onLocalVolume(value);
+        }
       } else {
         final session = _follower = FollowerSession(
           deviceId: _deviceId,
@@ -285,7 +360,14 @@ class LinkedPlayback {
           leader: leader,
           driftMs: driftMs,
           rttMs: rttMs,
+          volume: volume,
+          leaderVolume: leaderVolume,
+          setSystemVolume: _setSystemVolume,
+          onVolumeSaved: _saveVolume,
         );
+        if (await _getSystemVolume() case final value?) {
+          volume.value = volume.value.copyWith(actual: value);
+        }
         await session.start();
       }
     } catch (e) {
@@ -302,6 +384,7 @@ class LinkedPlayback {
     _follower?.dispose();
     _follower = null;
     peers.clear();
+    leaderVolume.value = null;
   }
 
   /// 联动开启期间保持前台服务，通知显示当前状态

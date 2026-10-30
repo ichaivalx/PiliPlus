@@ -66,7 +66,7 @@ class _PeerState {
   String? reason;
   double? driftMs;
   double? rttMs;
-  double? volume;
+  LinkedVolume? volume;
 
   LinkedPeerInfo info({LinkedPeerState? state}) => LinkedPeerInfo(
     id: id ?? address,
@@ -122,6 +122,9 @@ class LeaderSession {
     onDisconnected: _onDisconnected,
   );
   final Map<LinkConnection, _PeerState> _peers = {};
+
+  /// 本机的系统媒体音量
+  double? _volume;
 
   /// 曾连接过、当前离线的跟随端
   final Map<String, LinkedPeerInfo> _offline = {};
@@ -264,11 +267,22 @@ class LeaderSession {
     }
   }
 
-  void setVolume(String id, double volume) {
+  /// 本机系统媒体音量变化，跟随主控的跟随端随之调整
+  void onLocalVolume(double volume) {
+    _volume = volume;
+    _transport.broadcast(_volumeMessage);
+  }
+
+  Map<String, Object?> get _volumeMessage => {
+    't': LinkMessageType.volume,
+    'v': ?_volume,
+  };
+
+  void setVolume(String id, LinkedVolume volume) {
     for (final MapEntry(key: peer, value: state) in _peers.entries) {
       if (state.id == id) {
         state.volume = volume;
-        peer.send({'t': LinkMessageType.volume, 'v': volume});
+        peer.send({'t': LinkMessageType.volumeSet, ...volume.toJson()});
       }
     }
     _notifyPeers();
@@ -661,7 +675,8 @@ class LeaderSession {
     }
     peer
       ..send(_config)
-      ..send(_syncMessage);
+      ..send(_syncMessage)
+      ..send(_volumeMessage);
     if (message['sync'] case final bool on when on != syncOn()) {
       onSyncRequest(on);
     }
@@ -729,7 +744,7 @@ class LeaderSession {
           ..reason = reason is String ? reason : null
           ..driftMs = drift is num ? drift.toDouble() : null
           ..rttMs = rtt is num ? rtt.toDouble() : null
-          ..volume = volume is num ? volume.toDouble() : state.volume;
+          ..volume = LinkedVolume.fromJson(volume) ?? state.volume;
         _notifyPeers();
     }
   }
