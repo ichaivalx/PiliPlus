@@ -39,6 +39,8 @@ import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback_panel.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show shutdownTimerService, ShutdownPanel;
 import 'package:PiliPlus/utils/accounts.dart';
@@ -364,6 +366,23 @@ class HeaderControlState extends State<HeaderControl>
     }
   }
 
+  /// 联动播放的状态与延迟偏移，播放中可边听边调
+  void showLinkedPlaybackSheet() {
+    showBottomSheet(
+      (context, setState) => Padding(
+        padding: const EdgeInsets.all(12),
+        child: Material(
+          clipBehavior: Clip.hardEdge,
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: const BorderRadius.all(Radius.circular(12)),
+          child: const LinkedPlaybackPanel(
+            padding: EdgeInsets.symmetric(vertical: 14),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 设置面板
   void showSettingSheet() {
     showBottomSheet(
@@ -447,6 +466,16 @@ class HeaderControlState extends State<HeaderControl>
                         )
                       : null,
                 ),
+                if (linkedPlayback.enabled.value)
+                  ListTile(
+                    dense: true,
+                    onTap: () {
+                      Get.back();
+                      showLinkedPlaybackSheet();
+                    },
+                    leading: const Icon(Icons.speaker_outlined, size: 20),
+                    title: const Text('联动播放', style: titleStyle),
+                  ),
                 if (!isFileSource) ...[
                   ListTile(
                     dense: true,

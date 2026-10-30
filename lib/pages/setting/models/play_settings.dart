@@ -13,6 +13,8 @@ import 'package:PiliPlus/pages/setting/widgets/slider_dialog.dart';
 import 'package:PiliPlus/plugin/pl_player/models/bottom_progress_behavior.dart';
 import 'package:PiliPlus/plugin/pl_player/models/fullscreen_mode.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback_panel.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/desktop/window_controller.dart';
@@ -34,6 +36,17 @@ List<SettingsModel> get playSettings => [
     leading: const Icon(Icons.speed_outlined),
     title: '倍速设置',
     subtitle: '设置视频播放速度',
+  ),
+  NormalModel(
+    onTap: (context, setState) async {
+      await Get.to(const LinkedPlaybackPage());
+      setState();
+    },
+    leading: const Icon(Icons.speaker_outlined),
+    title: '联动播放',
+    getSubtitle: () => linkedPlayback.enabled.value
+        ? '已开启，本机为${linkedPlayback.role.value.label}'
+        : '同一 WiFi 下多台设备同步播放同一视频',
   ),
   if (kDebugMode || Platform.isAndroid)
     NormalModel(

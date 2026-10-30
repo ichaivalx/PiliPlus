@@ -51,6 +51,7 @@ import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show ShutdownLoad, shutdownTimerService;
 import 'package:PiliPlus/utils/accounts.dart';
@@ -399,6 +400,10 @@ class VideoDetailController extends GetxController
     heroTag = args['heroTag'];
     cover = RxString(args['cover'] ?? '');
     isVertical = RxBool(args['isVertical'] ?? false);
+
+    if (args[LinkedArgs.open] == true) {
+      _autoPlay.value = true;
+    }
 
     sourceType = args['sourceType'] ?? SourceType.normal;
     isFileSource = sourceType == SourceType.file;
@@ -769,7 +774,11 @@ class VideoDetailController extends GetxController
   }) async {
     // 页面已关闭或播放器已交给其他页面、小窗时不再加载
     if (isClosed || PlPlayerController.playOwner?.tag != heroTag) return;
-    Duration? seek = defaultST ?? playedTime;
+    final linkedLoad = linkedPlayback.gateLoad(
+      _linkedContent,
+      autoplay: autoplay ?? _autoPlay.value,
+    );
+    Duration? seek = linkedLoad?.position ?? defaultST ?? playedTime;
     if (seek == .zero) seek = null;
     seek ??= getFirstSegment();
     await plPlayerController.setDataSource(
@@ -792,7 +801,7 @@ class VideoDetailController extends GetxController
       aid: aid,
       bvid: bvid,
       cid: cid.value,
-      autoplay: autoplay ?? _autoPlay.value,
+      autoplay: linkedLoad == null ? autoplay ?? _autoPlay.value : false,
       epid: isUgc ? null : epId,
       seasonId: isUgc ? null : seasonId,
       pgcType: isUgc ? null : pgcType,
@@ -808,6 +817,8 @@ class VideoDetailController extends GetxController
       rotate: _rotate,
       load: load,
     );
+
+    linkedLoad?.loaded();
 
     if (isClosed) return;
 
@@ -826,6 +837,20 @@ class VideoDetailController extends GetxController
     }
 
     defaultST = null;
+  }
+
+  /// 可联动播放的内容：普通视频，不含互动视频
+  LinkedContent? get _linkedContent {
+    if (!isUgc || isFileSource || _actualVideoType != null) return null;
+    final detail = ugcIntroCtr.videoDetail.value;
+    if (graphVersion != null || detail.rights?.isSteinGate == 1) return null;
+    return LinkedContent(
+      bvid: bvid,
+      aid: aid,
+      cid: cid.value,
+      title: detail.title,
+      cover: cover.value,
+    );
   }
 
   bool isQuerying = false;

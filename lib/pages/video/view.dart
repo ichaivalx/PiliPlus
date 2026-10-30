@@ -56,6 +56,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/plugin/pl_player/view/view.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show shutdownTimerService;
@@ -277,6 +278,9 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       /// 顺序播放 列表循环
       if (shutdownTimerService.isWaiting) {
         shutdownTimerService.handleWaiting();
+      } else if (linkedPlayback.isFollowing) {
+        // 联动跟随时由主控决定下一项
+        exitFlag = false;
       } else {
         switch (plPlayerController!.effectivePlayRepeat) {
           case PlayRepeat.singleCycle:
