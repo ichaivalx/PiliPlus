@@ -464,6 +464,8 @@ class AudioController extends GetxController
     if (route?.isCurrent ?? true) {
       linkedPlayback.claim(_linkedTarget);
     }
+    // 重新加载：此前的失败不再有效
+    _failedCid = null;
     final load = _openingLoad = shutdownTimerService.beginLoad();
     return _AudioRequest(
       load: load,
@@ -510,14 +512,20 @@ class AudioController extends GetxController
       Media(url, start: linkedLoad?.position ?? start, extras: extras),
       play: false,
     );
+    // 打开命令返回时文件尚未打开，以实际打开的结果为准
+    final failure = await _waitOpened(player);
     // 已被新请求取代或页面已关闭时不播放
     if (isClosed ||
         !identical(_openingLoad, load) ||
         !identical(this.player, player)) {
       return;
     }
-    _loadedCid = request.cid;
-    _failedCid = null;
+    if (failure == null) {
+      _loadedCid = request.cid;
+    } else {
+      // 联动的加载完成回调按未加载处理；之后同一内容可重新取地址并打开
+      _linkedFailed(request.cid, '音频打开失败');
+    }
     if (linkedLoad != null) {
       if (_yielded) {
         // 加载期间让出给视频
@@ -528,17 +536,54 @@ class AudioController extends GetxController
       return;
     }
     // 定时关闭在加载期间到期或已让出给视频时不再播放
-    if (!_yielded && !superseded && shutdownTimerService.canAutoplay(load)) {
+    if (failure == null &&
+        !_yielded &&
+        !superseded &&
+        shutdownTimerService.canAutoplay(load)) {
       player.play();
     }
+  }
+
+  /// 等待播放源实际打开：时长可用即打开成功，返回 null；打开失败时返回错误。
+  /// 播放器释放时返回 null，由调用方按已被取代处理
+  Future<String?> _waitOpened(Player player) {
+    if (player.state.duration > Duration.zero) return Future.value();
+    final completer = Completer<String?>();
+    StreamSubscription<Duration>? durationSubscription;
+    StreamSubscription<String>? errorSubscription;
+    void finish(String? failure) {
+      if (completer.isCompleted) return;
+      durationSubscription?.cancel();
+      errorSubscription?.cancel();
+      completer.complete(failure);
+    }
+
+    durationSubscription = player.stream.duration.listen(
+      (duration) {
+        if (duration > Duration.zero) finish(null);
+      },
+      onDone: () => finish(null),
+    );
+    errorSubscription = player.stream.error.listen(
+      (error) {
+        if (error.startsWith('Failed to open') ||
+            error.startsWith('Failed to recognize file format')) {
+          finish(error);
+        }
+      },
+      onDone: () => finish(null),
+    );
+    return completer.future;
   }
 
   // 联动播放
 
   late final _linkedTarget = _AudioLinkedTarget(this);
 
-  /// 已打开的分P，打开新的播放源期间为空
+  /// 已实际打开的分P，打开新的播放源期间及打开失败时为空
   int? _loadedCid;
+
+  /// 最近一次加载失败的分P，重新加载时清除
   int? _failedCid;
   String? _failure;
 
@@ -1086,7 +1131,8 @@ final class _AudioLinkedTarget implements LinkedTarget {
   bool get isActive => !_controller.isClosed;
 
   @override
-  bool get isLoading => _controller._loadedCid == null;
+  bool get isLoading =>
+      _controller._loadedCid == null && _controller._failedCid == null;
 
   @override
   Player? playerFor(int cid) {

@@ -154,6 +154,10 @@ class FollowerSession {
   int _loadToken = 0;
   String? _failure;
 
+  /// 本机开始加载当前内容或最近确认文件已打开的时刻，此后超过打开时限仍未打开
+  /// （页面重新打开播放源时同样从零开始）视为加载失败
+  int _openCheckedAt = 0;
+
   /// 待定位的轮次与主控位置
   int? _pendingRound;
   int? _pendingPos;
@@ -189,7 +193,8 @@ class FollowerSession {
   /// 当前定位所用的延迟偏移；起播时与当前偏移不同则定位已过期
   int? _positionedOffsetUs;
 
-  /// 应跟随播放而被本机暂停（音频焦点、媒体控制等），本机恢复播放后重新对齐
+  /// 应跟随播放而被本机暂停（音频焦点、媒体控制等），本机恢复播放后重新对齐；
+  /// 属于本机的会话状态，主控切换内容时保留，期间不参与共同起播
   bool _localPaused = false;
 
   /// 监听播放状态的播放器，暂停时及时识别是否为本机暂停
@@ -291,11 +296,12 @@ class FollowerSession {
   void onSystemVolume(double volume, {required bool self}) =>
       _volume.onSystemVolume(volume, self: self);
 
-  /// 本机定时关闭到期，请主控一起停止
+  /// 本机定时关闭到期，请主控一起停止；同步已关闭时各端互不影响
   void stopAll() {
     _halt();
     // 已就绪的轮次不再接受起播
     _readyRound = null;
+    if (!syncOn()) return;
     if (isConnected) {
       _transport.send(const {'t': LinkMessageType.stopAll});
     } else {
@@ -307,6 +313,9 @@ class FollowerSession {
   void applySync() {
     if (!syncOn()) {
       _clearContent();
+      _localPaused = false;
+      // 关闭同步前排队的一起停止不再发出
+      _pendingStopAll = false;
     }
   }
 
@@ -328,6 +337,7 @@ class FollowerSession {
       }
       // 断开期间本机打开了其他内容：用户接管，不再跟随
       _clearContent();
+      _localPaused = false;
       return null;
     }
     if (!isConnected) {
@@ -338,6 +348,7 @@ class FollowerSession {
     _halt();
     _loaded = false;
     _failure = null;
+    _openCheckedAt = LinkClock.nowUs;
     final pendingPos = _pendingPos;
     return LinkedLoad(
       position: Duration(
@@ -368,6 +379,33 @@ class FollowerSession {
     if (content != null && content.kind == kind && content.cid == cid) {
       _failure = reason;
     }
+  }
+
+  /// 本机对当前内容的加载仍然有效：播放器已实际打开文件，或仍在打开且未超时；
+  /// 加载失败、超时或页面已关闭时需重新取地址并打开
+  bool get _keepsLoad {
+    final content = _content;
+    final player = _loadedPlayer;
+    if (content == null || _loadFailure(content, player) != null) {
+      return false;
+    }
+    if (player != null && LinkedPlayer.isOpened(player)) return true;
+    if (_loaded && player == null) return false;
+    return LinkClock.nowUs - _openCheckedAt < _openFrames.inMicroseconds;
+  }
+
+  /// 本机加载当前内容失败的原因：页面回报的失败，或页面已加载而文件超时仍未打开
+  String? _loadFailure(LinkedContent content, Player? player) {
+    if (_failure ?? _target?.failureFor(content.cid) case final failure?) {
+      return failure;
+    }
+    if (_loaded &&
+        player != null &&
+        !LinkedPlayer.isOpened(player) &&
+        LinkClock.nowUs - _openCheckedAt >= _openFrames.inMicroseconds) {
+      return '打开超时';
+    }
+    return null;
   }
 
   void _onLoaded() {
@@ -424,7 +462,7 @@ class FollowerSession {
     SmartDialog.showToast('联动播放：与主控的连接已断开，正在重新连接');
   }
 
-  /// 停止跟随并忘记主控的内容
+  /// 停止跟随并忘记主控的内容；被本机暂停的状态不随内容清除
   void _clearContent() {
     _generation++;
     _loadToken++;
@@ -438,7 +476,6 @@ class FollowerSession {
     _readyRound = null;
     _pausePos = null;
     _jumps = 0;
-    _localPaused = false;
   }
 
   void _onMessage(LinkMessage message) {
@@ -474,16 +511,22 @@ class FollowerSession {
         if (round is! int || content == null || !syncOn()) return;
         _restored = true;
         _lastProgress = LinkClock.nowUs;
-        if (content.isSame(_content) && _loaded && _loadedPlayer != null) {
-          // 内容未变（如重新连接）：保留本机的播放，之后按主控的状态对齐
+        if (content.isSame(_content) && _keepsLoad) {
+          // 内容未变（如重新连接）：保留本机的播放，之后按主控的状态对齐；
+          // 仍在加载时加载完成后回报
           _round = round;
-          _transport.send({'t': LinkMessageType.loaded, 'round': round});
+          if (_loaded) {
+            _transport.send({'t': LinkMessageType.loaded, 'round': round});
+          }
           return;
         }
         _clearContent();
         _round = round;
         _content = content;
-        if (_loadedPlayer != null && !(_target?.isLoading ?? false)) {
+        _openCheckedAt = LinkClock.nowUs;
+        if (_loadedPlayer case final player?
+            when LinkedPlayer.isOpened(player) &&
+                !(_target?.isLoading ?? false)) {
           _onLoaded();
         } else {
           _openContent(content);
@@ -698,6 +741,7 @@ class FollowerSession {
   /// 主控在播放而本机未参与起播（重新连接、加载较慢、错过本轮）
   bool _canJoin(int now) =>
       _loaded &&
+      !_localPaused &&
       _pendingRound == null &&
       _startTimer == null &&
       _intercepts.isNotEmpty &&
@@ -949,8 +993,8 @@ class FollowerSession {
     }
   }
 
-  /// 被本机暂停的状态不在此清除：同一内容的暂停、重新起播期间保留，
-  /// 本机恢复播放或内容变化时才结束
+  /// 被本机暂停的状态不在此清除：暂停、重新起播及切换内容期间保留，
+  /// 本机恢复播放时才结束
   void _resetCorrection() {
     _jumpToken++;
     _jumping = false;
@@ -1091,7 +1135,7 @@ class FollowerSession {
   LinkedPeerState _state(Player? player) {
     final content = _content;
     if (!syncOn() || content == null) return LinkedPeerState.idle;
-    if (_failure != null || _target?.failureFor(content.cid) != null) {
+    if (_loadFailure(content, player) != null) {
       return LinkedPeerState.failed;
     }
     if (_localPaused) return LinkedPeerState.localPaused;
@@ -1119,6 +1163,9 @@ class FollowerSession {
     final player = _loadedPlayer;
     if (player != null) {
       _observe(player);
+      if (LinkedPlayer.isOpened(player)) {
+        _openCheckedAt = now;
+      }
     }
     if (syncOn() && _restored && target != null && player != null) {
       if (!_loaded && !target.isLoading) {
@@ -1135,10 +1182,10 @@ class FollowerSession {
         }
       } else if (_localPaused && !player.state.completed) {
         if (player.state.playing) {
-          // 本机恢复播放（打断结束、用户播放）：主控在播时跳转重新对齐，
-          // 主控已暂停时随主控暂停
+          // 本机恢复播放（打断结束、用户播放）：主控在播时跳转重新对齐（含暂停期间
+          // 主控切换到的新内容），主控已暂停时随主控暂停
           _localPaused = false;
-          if (_shouldPlay) {
+          if (_shouldPlay || _canJoin(now)) {
             _jumps = 0;
             _realign(target, player, now);
           } else if (_startTimer == null) {
@@ -1183,7 +1230,8 @@ class FollowerSession {
       _lastProgress = now;
       return;
     }
-    if (_shouldPlay && _content?.cid == _leaderCid) {
+    // 被本机暂停时不跟随播放，内容一致即可
+    if ((_shouldPlay || _localPaused) && _content?.cid == _leaderCid) {
       _lastProgress = now;
       return;
     }
@@ -1209,9 +1257,8 @@ class FollowerSession {
     _transport.send({
       't': LinkMessageType.report,
       'state': state.name,
-      'reason': state == LinkedPeerState.failed
-          ? _failure ??
-                (content == null ? null : _target?.failureFor(content.cid))
+      'reason': state == LinkedPeerState.failed && content != null
+          ? _loadFailure(content, _loadedPlayer)
           : null,
       'drift': drift,
       'rtt': rttMs.value,

@@ -6,6 +6,7 @@ import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
 import 'package:PiliPlus/services/linked_playback/target.dart';
 import 'package:PiliPlus/services/linked_playback/transport.dart';
+import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -35,9 +36,12 @@ class _Round {
   /// 就绪后是否开始播放；期间用户的播放、暂停更新此值
   bool intendsPlay;
 
-  /// 页面加载时的自动播放许可（如定时关闭在加载期间到期后不再许可），
-  /// 起播前复核；用户手动播放后不再受限
+  /// 起播的许可，起播前复核：页面加载时的自动播放许可（如定时关闭在加载期间到期后
+  /// 不再许可），及轮次期间的停止播放（拔出耳机）、音频打断；用户手动播放后为空，不再受限
   bool Function()? permits;
+
+  /// 轮次期间登记的待自动播放，使停止播放、音频打断能撤销本轮起播；轮次结束时注销
+  ShutdownLoad? load;
 
   bool selfLoaded;
   bool selfReady = false;
@@ -171,11 +175,10 @@ class LeaderSession {
   Future<void> dispose() {
     _ticker?.cancel();
     _cancelRound();
-    _standaloneRound = null;
+    _clearStandalone();
     _transport.broadcast(const {'t': LinkMessageType.stop});
     final closing = _transport.dispose();
     _peers.clear();
-    _restorePlayer();
     _detach();
     return closing;
   }
@@ -203,8 +206,7 @@ class LeaderSession {
 
   /// 会话启动时接管页面已加载的内容与播放状态
   void adopt(LinkedContent? content, LinkedTarget target) {
-    _content = content;
-    _target = target;
+    _setTarget(content, target);
     if (_loadedPlayer case final player?) {
       _attach(player);
       _expectPlaying = player.state.playing;
@@ -216,9 +218,8 @@ class LeaderSession {
     LinkedTarget target, {
     required bool Function() autoplay,
   }) {
-    _content = content;
-    _target = target;
-    _standaloneRound = null;
+    _setTarget(content, target);
+    _clearStandalone();
     if (!_active) return null;
     _cancelRound();
     _expectPlaying = false;
@@ -230,8 +231,11 @@ class LeaderSession {
       _transport.broadcast(const {'t': LinkMessageType.stop});
       return null;
     }
-    final round = _beginRound(intendsPlay: autoplay(), selfLoaded: false)
-      ..permits = autoplay;
+    final round = _beginRound(
+      intendsPlay: autoplay(),
+      selfLoaded: false,
+      autoplay: autoplay,
+    );
     _transport.broadcast(_open(round.id));
     return LinkedLoad(onLoaded: () => _onSelfLoaded(round));
   }
@@ -241,7 +245,7 @@ class LeaderSession {
     if (!identical(_target, target)) return;
     final round = _round;
     _cancelRound();
-    _standaloneRound = null;
+    _clearStandalone();
     // 跟随端可能已在定位或已约定起播时刻：广播暂停作废其起播
     if (round != null && round.phase != _Phase.loading && _active) {
       if (_loadedPlayer case final player?) {
@@ -254,9 +258,8 @@ class LeaderSession {
   /// 改由该页面联动，跟随端按其进度加入
   void takeOver(LinkedContent? content, LinkedTarget target) {
     _cancelRound();
-    _standaloneRound = null;
-    _content = content;
-    _target = target;
+    _clearStandalone();
+    _setTarget(content, target);
     if (!_active) return;
     if (content == null) {
       _restorePlayer();
@@ -269,12 +272,19 @@ class LeaderSession {
     _sendContent();
   }
 
+  /// 换到另一页面时不再联动原页面的播放器
+  void _setTarget(LinkedContent? content, LinkedTarget target) {
+    if (!identical(target, _target)) _detach();
+    _content = content;
+    _target = target;
+  }
+
   /// 页面关闭，不再持有播放器
   void releaseTarget(LinkedTarget target) {
     if (!identical(_target, target)) return;
     _target = null;
     _content = null;
-    _standaloneRound = null;
+    _clearStandalone();
     _cancelRound();
     _expectPlaying = false;
     _detach();
@@ -290,9 +300,13 @@ class LeaderSession {
   void _onSelfLoaded(_Round round) {
     if (identical(round, _standaloneRound)) {
       // 等待期间已不再与跟随端一起起播：按播放意图自行播放
-      _standaloneRound = null;
       round.selfLoaded = true;
       _playIfIntended(round);
+      _clearStandalone();
+      if (_loadedPlayer == null && _active) {
+        // 加载失败
+        _transport.broadcast(const {'t': LinkMessageType.stop});
+      }
       return;
     }
     if (!identical(_round, round)) return;
@@ -329,21 +343,34 @@ class LeaderSession {
   /// 不再与跟随端一起起播：本机已加载时按播放意图直接播放，未加载完时由加载完成后
   /// 自行播放（加载由联动接管，页面已关闭自动播放）
   void _standalone(_Round? round) {
-    _cancelRound();
-    if (round == null) return;
-    if (round.selfLoaded) {
-      _playIfIntended(round);
-    } else {
+    if (round != null && !round.selfLoaded) {
+      // 先登记，作废轮次时保留其自动播放许可
+      _clearStandalone();
       _standaloneRound = round;
+    }
+    _cancelRound();
+    if (round != null && round.selfLoaded) {
+      _playIfIntended(round);
     }
   }
 
+  void _clearStandalone() {
+    final round = _standaloneRound;
+    _standaloneRound = null;
+    if (round != null) _endLoad(round);
+  }
+
+  /// 仍与跟随端联动时本机播放后按播放进度同步，跟随端跳转加入
   void _playIfIntended(_Round round) {
     final player = _loadedPlayer;
-    if (player != null &&
-        round.intendsPlay &&
+    if (player == null) return;
+    _attach(player);
+    if (round.intendsPlay &&
         (round.permits?.call() ?? true) &&
         !player.state.playing) {
+      _expectPlaying = true;
+      _lastPosition = null;
+      _stall = 0;
       _target!.play();
     }
   }
@@ -399,6 +426,7 @@ class LeaderSession {
     required bool intendsPlay,
     required bool selfLoaded,
     Iterable<LinkConnection>? loading,
+    bool Function()? autoplay,
   }) {
     _cancelRound();
     final now = LinkClock.nowUs;
@@ -416,13 +444,20 @@ class LeaderSession {
       participants: participants,
       loading: (loading ?? participants).toSet(),
     );
+    final load = round.load = shutdownTimerService.beginLoad();
+    round.permits = () =>
+        shutdownTimerService.canAutoplay(load) && (autoplay?.call() ?? true);
     round.timer = Timer(_loadTimeout, () => _onLoadTimeout(round));
     return round;
   }
 
+  /// 作废当前轮次；转为等待自行起播的轮次保留其自动播放许可
   void _cancelRound() {
-    _round?.timer?.cancel();
+    final round = _round;
+    if (round == null) return;
+    round.timer?.cancel();
     _round = null;
+    if (!identical(round, _standaloneRound)) _endLoad(round);
   }
 
   void _finishRound(_Round round) {
@@ -430,6 +465,19 @@ class LeaderSession {
     if (identical(_round, round)) {
       _round = null;
     }
+    _endLoad(round);
+  }
+
+  void _endLoad(_Round round) {
+    final load = round.load;
+    round.load = null;
+    if (load != null) shutdownTimerService.endLoad(load);
+  }
+
+  /// 用户手动播放：本轮起播不再受自动播放许可限制
+  void _allowPlay(_Round round) {
+    round.permits = null;
+    _endLoad(round);
   }
 
   void _advance(_Round round) {
@@ -457,7 +505,9 @@ class LeaderSession {
   void _onLoadTimeout(_Round round) {
     if (!identical(_round, round)) return;
     if (!round.selfLoaded) {
-      _cancelRound();
+      // 本机加载过慢：不再等待共同起播，加载完成后按播放意图自行播放，
+      // 跟随端按播放进度跳转加入
+      _standalone(round);
       return;
     }
     _skipPeers(round, round.loading);
@@ -536,15 +586,51 @@ class LeaderSession {
     }
     round.timer = LinkedPlayer.scheduleAt(at, () {
       if (!identical(_round, round)) return;
+      final permitted = round.permits?.call() ?? true;
       _finishRound(round);
       if (!round.intendsPlay) return;
       final target = _target;
-      if (target == null || _loadedPlayer == null) return;
+      final player = _loadedPlayer;
+      if (target == null || player == null) return;
+      if (!permitted) {
+        // 约定时刻前停止播放（拔出耳机）或被打断：跟随端收到暂停后作废其定时起播
+        if (_active) _broadcastPause(player);
+        return;
+      }
       _expectPlaying = true;
       _lastPosition = null;
       _stall = 0;
+      final moved = _movedFrom(round, player);
       target.play();
+      if (moved && _active) {
+        // 约定起播期间拖动了进度：跟随端已按旧位置起播，各自跳转对齐
+        _seekAt = LinkClock.nowUs;
+        _transport.broadcast(const {'t': LinkMessageType.seek});
+      }
     });
+  }
+
+  /// 本机已离开本轮的就绪位置（定位就绪、约定起播期间拖动了进度）
+  bool _movedFrom(_Round round, Player player) {
+    final position = round.position;
+    if (position == null || player.getProperty('seeking') == 'yes') {
+      return false;
+    }
+    final pos = LinkedPlayer.timePos(player);
+    return pos != null && (pos - position).abs() > _seekJumpUs;
+  }
+
+  /// 定位就绪期间本机拖动了进度：作废旧的定位，按最新位置重新就绪
+  void _reprepare(_Round old) {
+    final permits = old.permits;
+    final round = _beginRound(
+      intendsPlay: old.intendsPlay,
+      selfLoaded: true,
+      loading: const [],
+      autoplay: permits,
+    );
+    if (permits == null) _allowPlay(round);
+    _prepare(round);
   }
 
   /// 同一内容共同暂停后重新共同起播；没有在线的跟随端时本机照常播放，
@@ -631,13 +717,14 @@ class LeaderSession {
     }
   }
 
+  /// 不再联动当前播放器（换播放器、页面关闭等）：先恢复其同步方式
   void _detach() {
+    _restorePlayer();
     for (final subscription in _subscriptions) {
       subscription.cancel();
     }
     _subscriptions.clear();
     _player = null;
-    _synced = false;
     _lastPosition = null;
   }
 
@@ -663,9 +750,8 @@ class LeaderSession {
         _resync(intendsPlay: true);
         return;
       }
-      round
-        ..intendsPlay = true
-        ..permits = null;
+      round.intendsPlay = true;
+      _allowPlay(round);
       if (round.phase == _Phase.loading && round.selfLoaded) {
         // 等待跟随端加载期间本机照常播放
         _expectPlaying = true;
@@ -715,7 +801,15 @@ class LeaderSession {
     }
     _sendContent();
     final player = _loadedPlayer;
-    if (player == null || _round != null) return;
+    if (player == null) return;
+    if (_round case final round?) {
+      if (round.phase == _Phase.preparing &&
+          identical(player, _player) &&
+          _movedFrom(round, player)) {
+        _reprepare(round);
+      }
+      return;
+    }
     _attach(player);
     final state = player.state;
     if (_expectPlaying && state.playing) {
@@ -785,7 +879,8 @@ class LeaderSession {
     if (message['sync'] case final bool on when on != syncOn()) {
       onSyncRequest(on);
     }
-    if (message['stopAll'] == true) {
+    // 同步已关闭时各端互不影响
+    if (message['stopAll'] == true && syncOn()) {
       pauseAll();
     }
     if (_content == null) {
@@ -817,7 +912,7 @@ class LeaderSession {
           onOffsetRequest(us);
         }
       case LinkMessageType.stopAll:
-        pauseAll();
+        if (syncOn()) pauseAll();
       case LinkMessageType.want:
         if (round == null || !round.participants.contains(peer)) {
           state.needsContent = true;

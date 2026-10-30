@@ -24,6 +24,10 @@ abstract final class LinkedPlayer {
     return double.tryParse(player.getProperty(property));
   }
 
+  /// 已实际打开文件：页面发出打开命令后即视为已加载，打开失败时时长一直为零
+  static bool isOpened(Player player) =>
+      !player.disposed && player.state.duration > Duration.zero;
+
   /// 当前画面位置（time-pos，微秒）
   static int? timePos(Player player) {
     final seconds = _seconds(player, 'time-pos');
