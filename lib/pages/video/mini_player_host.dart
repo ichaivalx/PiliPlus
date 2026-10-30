@@ -55,6 +55,9 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       return;
     }
     miniPlayerSession.attach(host, this);
+    if (host.deferPlayer) {
+      _takeoverLoad = shutdownTimerService.beginLoad();
+    }
     if (host.hidden) {
       // 在小窗中开始播放，回到上一个视频时同样从离开时的进度继续
       videoDetailController.autoPlay = true;
@@ -73,7 +76,15 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     miniPlayerSession.detach(this);
     _cancelContinuation();
     _takeReturnResume();
+    if (_takeoverLoad case final load?) {
+      _takeoverLoad = null;
+      shutdownTimerService.endLoad(load);
+    }
   }
+
+  /// 延后接管播放器期间的加载：期间定时关闭到期、关闭小窗等停止意图与用户
+  /// 暂停使接管后的加载不再自动播放
+  ShutdownLoad? _takeoverLoad;
 
   /// 返回时按离开时的播放状态恢复，期间定时关闭到期等停止意图使其取消
   ShutdownLoad? _returnResume;
@@ -148,6 +159,44 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
 
   @override
   bool get isMiniPlayerLoading => !videoDetailController.videoState.value;
+
+  @override
+  ({int? progress, bool playing}) get miniPlayback {
+    final ctr = videoDetailController;
+    if (miniDefersPlayer ||
+        (_ownsPlayer && !ctr.videoState.value && ctr.playedTime == null)) {
+      // 尚未开始播放：沿用打开时的进度与播放状态
+      return (
+        progress: ctr.defaultST?.inMilliseconds ?? ctr.args['progress'],
+        playing: !(_host?.startPaused ?? false),
+      );
+    }
+    if (_ownsPlayer) {
+      final player = ctr.plPlayerController;
+      final status = player.playerStatus;
+      return (
+        progress: status.isCompleted ? null : player.positionInMilliseconds,
+        playing: status.isPlaying,
+      );
+    }
+    // 已离开的页面：离开时保存的进度与播放状态，对应 didPushNext 与
+    // didPopNext 的恢复
+    final status = ctr.playerStatus;
+    final resume = _returnResume;
+    return (
+      progress: (status?.isCompleted ?? false)
+          ? null
+          : ctr.playedTime?.inMilliseconds,
+      playing:
+          (status?.isPlaying ?? false) &&
+          (resume == null || shutdownTimerService.canAutoplay(resume)),
+    );
+  }
+
+  bool get _ownsPlayer => PlPlayerController.playOwner?.tag == miniHeroTag;
+
+  @override
+  bool get isClosingAll => videoDetailController.plPlayerController.isCloseAll;
 
   /// 页面内容的根节点，位于转场动画的变换之内
   RenderRepaintBoundary? get _pageBoundary =>
@@ -275,10 +324,20 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     }
   }
 
-  /// 对应页面初始化时获取播放器：初始化期间请求的播放地址此时才加载
+  /// 对应页面初始化时获取播放器：初始化期间请求的播放地址此时才加载；
+  /// 回到离开时已暂停的旧视频时加载后保持暂停
   @override
   void takeOverPlayer() {
+    final load = _takeoverLoad;
+    _takeoverLoad = null;
+    void endLoad() {
+      if (load != null) {
+        shutdownTimerService.endLoad(load);
+      }
+    }
+
     if (!mounted) {
+      endLoad();
       return;
     }
     final ctr = videoDetailController;
@@ -286,11 +345,24 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       playCallBack,
       playOwner: (tag: ctr.heroTag, type: introController.runtimeType),
     );
+    if (!ctr.autoPlay) {
+      // 与不自动播放时打开页面相同，由用户开始播放
+      endLoad();
+      return;
+    }
     plPlayerController = ctr.plPlayerController
       ..addStatusLister(playerListener)
       ..addPositionListener(positionListener);
+    final paused = _host?.startPaused ?? false;
+    if (paused) {
+      // 进行中的加载（包括页面自身的播放地址请求）完成后同样保持暂停
+      shutdownTimerService.holdPendingAutoplay();
+    }
     if (!ctr.isQuerying && ctr.videoUrl != null) {
-      ctr.playerInit();
+      ctr.playerInit(autoplay: !paused, load: load).whenComplete(endLoad);
+    } else {
+      // 播放地址的请求自身的加载同样受停止意图影响
+      endLoad();
     }
   }
 
@@ -317,8 +389,9 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   }
 
   /// 简介、相关视频、评论各区域：不显示地构建的页面首次显示时，[content]
-  /// 尚未到达的区域留空，到达（或等待超时）后构建并淡入。各布局在构建
-  /// 这些区域时调用，只有当前尺寸下实际显示的区域参与等待
+  /// 尚未到达的区域照常构建（发起各自的请求）但不显示，到达（或等待超时）
+  /// 后淡入。各布局在构建这些区域时调用，只有当前尺寸下实际显示的区域参与
+  /// 等待
   Widget afterMiniRestore({
     required Set<MiniRestoreContent> content,
     required Widget child,
@@ -328,9 +401,6 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       return child;
     }
     _shownContents.addAll(content);
-    if (content.every(_isRestoreReady)) {
-      return child;
-    }
     return _MiniRestoreReveal(
       host: this,
       entry: host,
@@ -409,9 +479,10 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       };
 }
 
-/// 不显示地构建的页面中尚未到达的区域：不显示期间到达时直接构建；首次显示时
-/// 仍未到达则留空，显示动画结束且内容到达（或等待超时）后构建并以短促的
-/// 淡入、上移出现
+/// 不显示地构建的页面中的区域：照常构建与布局（各自的请求随之发起），尚未
+/// 到达时不显示、不响应操作。不显示期间到达时直接显示；首次显示时仍未到达，
+/// 则在显示动画结束且内容到达（或等待超时）后以短促的淡入、上移出现。页面
+/// 显示后才构建的区域（如之后切换到的标签页）按页面原样显示
 class _MiniRestoreReveal extends StatefulWidget {
   const _MiniRestoreReveal({
     required this.host,
@@ -431,21 +502,39 @@ class _MiniRestoreReveal extends StatefulWidget {
 
 class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
     with SingleTickerProviderStateMixin {
+  bool _hidden = true;
   List<StreamSubscription>? _waiting;
   Timer? _timeout;
-  AnimationController? _controller;
-  Animation<double>? _progress;
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: MiniPlayerMotion.revealDuration,
+  );
+  late final Animation<double> _progress = CurvedAnimation(
+    parent: _controller,
+    curve: MiniPlayerMotion.curve,
+  );
 
   @override
   void initState() {
     super.initState();
-    _waiting = [
-      for (final e in widget.waiting)
-        for (final source in widget.host._restoreSources(e))
-          source.listen((_) => _check()),
-      miniPlayerSession.restoring.listen((_) => _check()),
-    ];
-    widget.entry.addListener(_check);
+    if (widget.entry.painted && !miniPlayerSession.restoring.value) {
+      _show();
+      return;
+    }
+    // 各区域的控制器随其首次构建创建，构建完成后再判断
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _waiting = [
+        for (final e in widget.waiting)
+          for (final source in widget.host._restoreSources(e))
+            source.listen((_) => _check()),
+        miniPlayerSession.restoring.listen((_) => _check()),
+      ];
+      widget.entry.addListener(_check);
+      _check();
+    });
   }
 
   bool get _ready => widget.waiting.every(widget.host._isRestoreReady);
@@ -455,10 +544,10 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
       return;
     }
     if (!widget.entry.painted) {
-      // 不显示期间到达的内容直接构建
+      // 不显示期间到达的内容直接显示
       if (_ready) {
         _stopWaiting();
-        setState(() {});
+        setState(_show);
       }
       return;
     }
@@ -468,7 +557,13 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
       return;
     }
     _stopWaiting();
-    _reveal();
+    setState(() => _hidden = false);
+    _controller.forward();
+  }
+
+  void _show() {
+    _hidden = false;
+    _controller.value = 1;
   }
 
   void _stopWaiting() {
@@ -476,53 +571,35 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
     for (final e in _waiting ?? const <StreamSubscription>[]) {
       e.cancel();
     }
-    _waiting = null;
-    widget.entry.removeListener(_check);
-  }
-
-  void _reveal() {
-    final controller = _controller = AnimationController(
-      vsync: this,
-      duration: MiniPlayerMotion.revealDuration,
-    );
-    setState(() {
-      _progress = CurvedAnimation(
-        parent: controller,
-        curve: MiniPlayerMotion.curve,
-      );
-    });
-    controller.forward();
+    if (_waiting != null) {
+      _waiting = null;
+      widget.entry.removeListener(_check);
+    }
   }
 
   @override
   void dispose() {
     _stopWaiting();
-    _controller?.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    if (_waiting != null) {
-      return const SizedBox.shrink();
-    }
-    final progress = _progress;
-    if (progress == null) {
-      return widget.child;
-    }
-    return FadeTransition(
-      opacity: progress,
+  Widget build(BuildContext context) => FadeTransition(
+    opacity: _progress,
+    child: IgnorePointer(
+      ignoring: _hidden,
       child: AnimatedBuilder(
-        animation: progress,
+        animation: _progress,
         builder: (context, child) => Transform.translate(
           offset: Offset(
             0,
-            MiniPlayerMotion.revealOffset * (1 - progress.value),
+            MiniPlayerMotion.revealOffset * (1 - _progress.value),
           ),
           child: child,
         ),
         child: widget.child,
       ),
-    );
-  }
+    ),
+  );
 }

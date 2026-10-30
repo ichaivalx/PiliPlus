@@ -9,6 +9,8 @@ import 'package:get/get.dart';
 /// 自身的面板与 PopScope，再由会话决定收起、关闭或回到上一个视频
 ///
 /// 宿主释放后保留为旧视频的记录（[isDormant]），重新露出时由会话重新打开
+///
+/// 路由参数即为所呈现详情页的参数，重新打开旧视频时原地更新
 class MiniPlayerWindowRoute extends GetPageRoute<void> {
   MiniPlayerWindowRoute(
     Map<String, dynamic> arguments, {
@@ -37,8 +39,11 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
     }
   }
 
-  /// 宿主释放后保留的视频参数，重新露出时据此重新打开
-  Map<String, dynamic>? dormant;
+  Map<String, dynamic> get arguments =>
+      settings.arguments! as Map<String, dynamic>;
+
+  /// 宿主释放后保留的旧视频，重新露出时据此重新打开
+  MiniPlayerDormant? dormant;
 
   bool get isDormant => _host == null && dormant != null;
 
@@ -198,4 +203,12 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
     miniPlayerSession.windowDisposed(this);
     super.dispose();
   }
+}
+
+/// 宿主释放后保留的旧视频：重新打开所用的参数，及离开时是否在播放
+class MiniPlayerDormant {
+  const MiniPlayerDormant(this.args, {required this.playing});
+
+  final Map<String, dynamic> args;
+  final bool playing;
 }

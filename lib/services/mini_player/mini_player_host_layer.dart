@@ -34,6 +34,7 @@ class MiniPlayerHostEntry extends ChangeNotifier {
     this.args, {
     this.hidden = false,
     this.deferPlayer = false,
+    this.startPaused = false,
   }) : heroTag = args['heroTag'];
 
   final Map<String, dynamic> args;
@@ -42,8 +43,11 @@ class MiniPlayerHostEntry extends ChangeNotifier {
   /// 构建时不显示（在小窗中切换、回到上一个视频），首次显示前等待内容到达
   final bool hidden;
 
-  /// 显示中的其他详情页离开前不接管播放器
+  /// 播放器空出（显示中的其他详情页离开）前不接管播放器，由会话通知接管
   bool deferPlayer;
+
+  /// 回到离开时已暂停的旧视频：接管播放器后保持暂停
+  final bool startPaused;
 
   MiniHostState state = MiniHostState.shown;
 
@@ -214,7 +218,7 @@ class _HostContent extends StatelessWidget {
     child: MiniPlayerHostScope(
       host: host,
       child: HeroControllerScope.none(
-        child: _ArgumentsScope(
+        child: _HostScope(
           host: host,
           child: _HostNavigator(host: host),
         ),
@@ -223,34 +227,57 @@ class _HostContent extends StatelessWidget {
   );
 }
 
-/// 详情页及其控制器初始化时读取的路由参数为本宿主的参数，初始化后恢复；
-/// 页面的控制器随宿主路由释放
-class _ArgumentsScope extends StatelessWidget {
-  const _ArgumentsScope({required this.host, required this.child});
+/// 详情页在布局时构建（与 [LayoutBuilder] 相同），构建与布局期间创建的
+/// 依赖归属本宿主的详情页路由，读取的路由参数为本宿主的参数；宿主不显示
+/// 时浏览栈中的当前路由属于其他页面，懒加载的区域（如标签页中的相关视频）
+/// 同样随详情页释放
+class _HostScope extends ConstrainedLayoutBuilder<BoxConstraints> {
+  _HostScope({required this.host, required Widget child})
+    : super(builder: (_, _) => child);
 
   final MiniPlayerHostEntry host;
-  final Widget child;
 
   @override
-  StatelessElement createElement() => _ArgumentsScopeElement(this);
+  RenderAbstractLayoutBuilderMixin<BoxConstraints, RenderBox>
+  createRenderObject(BuildContext context) => _RenderHostScope(host);
 
   @override
-  Widget build(BuildContext context) => child;
+  void updateRenderObject(BuildContext context, _RenderHostScope renderObject) {
+    renderObject.host = host;
+  }
 }
 
-class _ArgumentsScopeElement extends StatelessElement {
-  _ArgumentsScopeElement(_ArgumentsScope super.widget);
+class _RenderHostScope extends RenderBox
+    with
+        RenderObjectWithChildMixin<RenderBox>,
+        RenderObjectWithLayoutCallbackMixin,
+        RenderAbstractLayoutBuilderMixin<BoxConstraints, RenderBox> {
+  _RenderHostScope(this.host);
+
+  MiniPlayerHostEntry host;
 
   @override
-  void mount(Element? parent, Object? newSlot) {
-    final routing = Get.routing;
-    final args = routing.args;
-    routing.args = (widget as _ArgumentsScope).host.args;
-    try {
-      super.mount(parent, newSlot);
-    } finally {
-      routing.args = args;
-      miniPlayerSession.syncCurrentRoute();
+  bool get sizedByParent => true;
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) => constraints.biggest;
+
+  @override
+  void performLayout() {
+    miniPlayerSession.runInHost(host, () {
+      runLayoutCallback();
+      child?.layout(BoxConstraints.tight(size));
+    });
+  }
+
+  @override
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) =>
+      child?.hitTest(result, position: position) ?? false;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (child case final child?) {
+      context.paintChild(child, offset);
     }
   }
 }

@@ -35,6 +35,13 @@ abstract interface class MiniPlayerHost {
   /// 播放器尚未开始播放当前内容
   bool get isMiniPlayerLoading;
 
+  /// 离开时的播放进度（毫秒，未知或已播完时为 null）及是否在播放，保留为
+  /// 旧视频记录后据此恢复
+  ({int? progress, bool playing}) get miniPlayback;
+
+  /// 正在返回主页（关闭所有页面），播放器已整体销毁
+  bool get isClosingAll;
+
   /// 各区域所需的内容到达（或等待超时）后完成
   Future<void> whenMiniContentReady();
 
@@ -100,7 +107,7 @@ class MiniPlayerSession {
   _DormantGate? _gate;
 
   /// 浏览页下方紧邻旧视频记录时拦截其返回，见 [_syncDormantEntry]
-  _DormantPopEntry? _dormantEntry;
+  _DormantHistory? _dormantEntry;
 
   /// 主动恢复与返回键回到详情页的位置时，详情页从小窗展开；手势返回时
   /// 详情页已随拖动露出，小窗飞回播放器的位置
@@ -163,8 +170,7 @@ class MiniPlayerSession {
       host.detach(page);
     }
     _revision.value++;
-    if ((PlPlayerController.instance?.isCloseAll ?? false) &&
-        _host != null) {
+    if (page.isClosingAll && hosts.isNotEmpty) {
       // 返回主页时播放器已被整体销毁，页面移除期间不修改宿主层
       Future.microtask(() {
         for (final host in hosts.toList()) {
@@ -174,7 +180,8 @@ class MiniPlayerSession {
     }
   }
 
-  /// 宿主中的页面在其之外创建的控制器属于该页面，随宿主释放
+  /// 宿主中的页面在构建、布局之外（如异步回调中）创建的控制器属于该页面，
+  /// 随宿主释放
   T bindToDetail<T>(String heroTag, T Function() create) {
     final host = hosts.firstWhereOrNull((e) => e.heroTag == heroTag);
     if (host == null) {
@@ -184,6 +191,21 @@ class MiniPlayerSession {
     try {
       return create();
     } finally {
+      syncCurrentRoute();
+    }
+  }
+
+  /// 宿主中的页面构建与布局：创建的依赖归属该详情页，读取的路由参数为其
+  /// 参数
+  void runInHost(MiniPlayerHostEntry host, VoidCallback body) {
+    final routing = Get.routing;
+    final args = routing.args;
+    routing.args = host.args;
+    RouterReportManager.reportCurrentRoute(host.route);
+    try {
+      body();
+    } finally {
+      routing.args = args;
       syncCurrentRoute();
     }
   }
@@ -214,13 +236,17 @@ class MiniPlayerSession {
     if (host != null && isActive) {
       final content = host.page?.miniArgs ?? host.args;
       if (content['bvid'] == args['bvid'] && content['cid'] == args['cid']) {
-        if (_isSameList(args, content)) {
+        if (!_hasIntent(args) &&
+            args['progress'] == null &&
+            _isSameList(args, content)) {
           unawaited(restore());
           return true;
         }
-        // 换列表按普通方式打开，从小窗的当前进度继续；已播完时按入口参数
+        // 换列表、定位评论或指定进度时按普通方式打开；未指定进度时从小窗的
+        // 当前进度继续，已播完时按入口参数
         if (PlPlayerController.instance case final player?
-            when !player.playerStatus.isCompleted) {
+            when args['progress'] == null &&
+                !player.playerStatus.isCompleted) {
           args['progress'] = player.positionInMilliseconds;
         }
       } else if (!off &&
@@ -285,7 +311,7 @@ class MiniPlayerSession {
   /// 入场期间仍在其下方显示，入场结束后释放；[replaced] 时其窗口被替换，
   /// 随之释放
   void _leave(MiniPlayerHostEntry host, {required bool replaced}) {
-    final dormant = _dormantArgs(host);
+    final dormant = _dormantOf(host);
     switch (host.state) {
       case .shown:
         host
@@ -304,23 +330,27 @@ class MiniPlayerSession {
     }
   }
 
-  /// 重新打开旧视频所用的参数：从离开时的进度继续，不再定位评论
-  Map<String, dynamic> _dormantArgs(MiniPlayerHostEntry host) {
-    final args = <String, dynamic>{...(host.page?.miniArgs ?? host.args)}
+  /// 重新打开旧视频所用的参数与播放状态：从离开时的进度与状态继续，不再
+  /// 定位评论；页面尚未接入时沿用打开时的参数
+  MiniPlayerDormant _dormantOf(MiniPlayerHostEntry host) {
+    final page = host.page;
+    final args = <String, dynamic>{...(page?.miniArgs ?? host.args)}
       ..remove(rootRpIdKey)
       ..remove(secondRpIdKey);
-    if (PlPlayerController.instance case final player?
-        when PlPlayerController.playOwner?.tag == host.heroTag &&
-            !player.playerStatus.isCompleted) {
-      args['progress'] = player.positionInMilliseconds;
+    if (page == null) {
+      return MiniPlayerDormant(args, playing: !host.startPaused);
+    }
+    final playback = page.miniPlayback;
+    if (playback.progress case final progress?) {
+      args['progress'] = progress;
     } else {
       args.remove('progress');
     }
-    return args;
+    return MiniPlayerDormant(args, playing: playback.playing);
   }
 
   /// 释放宿主，其所在的位置保留为旧视频记录
-  void _keepDormant(MiniPlayerHostEntry host, Map<String, dynamic> dormant) {
+  void _keepDormant(MiniPlayerHostEntry host, MiniPlayerDormant dormant) {
     final window = host.window;
     if (window != null && window.isActive) {
       window
@@ -343,7 +373,7 @@ class MiniPlayerSession {
   /// 保留为旧视频记录
   void _switchInMini(Map<String, dynamic> args) {
     final previous = _host!;
-    final dormant = _dormantArgs(previous);
+    final dormant = _dormantOf(previous);
     previous.page?.onMiniDetached();
     final host = MiniPlayerHostEntry(args, hidden: true)..state = .mini;
     _host = host;
@@ -353,6 +383,9 @@ class MiniPlayerSession {
   }
 
   void _release(MiniPlayerHostEntry host) {
+    if (identical(_gate?.host, host)) {
+      _endGate();
+    }
     hosts.remove(host);
     host.anchor?.host = null;
     host.presented?.host = null;
@@ -410,6 +443,17 @@ class MiniPlayerSession {
     if (route is MiniPlayerWindowRoute) {
       _leaving.add(route);
     }
+    if (_gate case final gate? when identical(gate.above, route)) {
+      // 上层页面未经等待离开（如连续出栈），上一个视频直接露出
+      _endGate();
+      if (gate.host case final host?) {
+        host.attached.then((_) {
+          if (identical(_host, host) && host.state == .shown) {
+            host.page?.onMiniExpanded();
+          }
+        });
+      }
+    }
   }
 
   void _onRouteStatus(AnimationStatus status) {
@@ -425,7 +469,7 @@ class MiniPlayerSession {
           window != null &&
           _routes.contains(window) &&
           !_isExposed(_routes.indexOf(window))) {
-        _keepDormant(host, window.dormant ?? _dormantArgs(host));
+        _keepDormant(host, window.dormant ?? _dormantOf(host));
       }
     }
   }
@@ -433,6 +477,7 @@ class MiniPlayerSession {
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
     _track(route);
     _onPush(route);
+    _finishTransitions();
     _afterRouteChange();
   }
 
@@ -464,6 +509,7 @@ class MiniPlayerSession {
         }
       }
       _onPush(newRoute);
+      _finishTransitions();
     }
     _afterRouteChange();
   }
@@ -504,6 +550,36 @@ class MiniPlayerSession {
         }
       case _:
     }
+  }
+
+  /// 窗口转场期间其上方推入其他路由（如菜单、弹窗、页面）：宿主无法同时
+  /// 位于下方页面之上、新路由之下，窗口的转场直接结束，入场的直接显示，
+  /// 离开的直接移除
+  void _finishTransitions() {
+    final top = _routes.lastOrNull;
+    final windows = [
+      for (final host in hosts)
+        if (host.window case final window?
+            when !identical(window, top) &&
+                (window.animation?.isAnimating ?? false))
+          window,
+    ];
+    if (windows.isEmpty) {
+      return;
+    }
+    // 路由变化通知期间不修改路由
+    Future.microtask(() {
+      for (final window in windows) {
+        // ignore: invalid_use_of_protected_member
+        final controller = window.controller;
+        if (controller == null || !controller.isAnimating) {
+          continue;
+        }
+        controller.value = controller.status == .forward
+            ? controller.upperBound
+            : controller.lowerBound;
+      }
+    });
   }
 
   /// 从详情页打开其他页面：详情页的位置随之移到该页面下方，原位置不再保留
@@ -598,11 +674,19 @@ class MiniPlayerSession {
     }
   }
 
-  /// 旧视频记录未经等待直接露出（如直接出栈上层页面），立即重新打开
+  /// 旧视频记录未经等待直接露出（如直接移除上层页面），立即重新打开；
+  /// 同一次路由变化中继续出栈（如逐层返回首页）时不再打开
   void _openExposedDormant() {
     if (_topPage() case final MiniPlayerWindowRoute window
         when window.isDormant && _gate == null) {
-      _openDormant(window, above: null);
+      Future.microtask(() {
+        if (_gate == null &&
+            !_closingAll &&
+            window.isDormant &&
+            identical(_topPage(), window)) {
+          _openDormant(window, gate: null);
+        }
+      });
     }
   }
 
@@ -725,13 +809,28 @@ class MiniPlayerSession {
         !(host.page?.canEnterMiniPlayer ?? false);
   }
 
+  /// 返回主页时各页面逐层出栈，不再收起、等待或重新打开旧视频
+  bool get _closingAll => hosts.any((e) => e.page?.isClosingAll ?? false);
+
   /// 显示中的详情页出栈（返回键、Get.back 等），面板已先行关闭：
   /// 下方为旧视频时等其内容到达后回到该视频；可进入小窗时收起；否则关闭
+  ///
+  /// 只在开始等待时拒绝一次出栈，同一窗口再次出栈（如 popUntil 逐层出栈）
+  /// 时不再等待，任何出栈序列都能结束
   bool allowWindowPop(MiniPlayerWindowRoute window) {
     final host = window.host;
-    if (host == null ||
-        !identical(host, _host) ||
-        (PlPlayerController.instance?.isCloseAll ?? false)) {
+    if (host == null) {
+      return true;
+    }
+    if (_closingAll) {
+      _endGate();
+      if (host.state == .shown) {
+        host.state = .closing;
+        window.forwardPop = true;
+      }
+      return true;
+    }
+    if (!identical(host, _host)) {
       return true;
     }
     if (host.state == .mini) {
@@ -746,27 +845,20 @@ class MiniPlayerSession {
     if (host.state != .shown) {
       return true;
     }
-    if (_gate case final gate?) {
-      // 等待期间再次出栈（如逐层出栈到首页）不再等待，上一个视频直接露出
-      if (identical(gate.above, window)) {
-        _gate = null;
-        _gating.value = false;
-        return true;
-      }
-      return false;
-    }
     if (restoring.value) {
       // 展开动画中直接出栈，按展开已完成处理
       restoring.value = false;
       restoreRect.value = null;
       host.presented?.reveal();
     }
-    final below = _routeBelow(window);
-    if (below is MiniPlayerWindowRoute && below.isDormant) {
-      _openDormant(below, above: window);
+    if (_gate case final gate? when identical(gate.above, window)) {
+      // 等待期间再次出栈不再等待，上一个视频直接露出
+      _endGate();
+    } else if (_routeBelow(window) case final MiniPlayerWindowRoute below
+        when _gate == null && below.isDormant) {
+      _beginGate(below, above: window);
       return false;
-    }
-    if (host.page?.canEnterMiniPlayer ?? false) {
+    } else if (host.page?.canEnterMiniPlayer ?? false) {
       if (identical(host.anchor, window)) {
         host.anchor = null;
       } else {
@@ -797,71 +889,110 @@ class MiniPlayerSession {
     if (host.state != .mini) {
       final next = _host;
       _release(host);
-      if (next != null && !identical(next, host) && next.deferPlayer) {
-        next.deferPlayer = false;
-        next.page?.takeOverPlayer();
+      if (next != null && !identical(next, host)) {
+        _takeOverWhenAttached(next);
       }
     }
     _updateLayer();
   }
 
+  /// 播放器空出后由延后接管的详情页接管，页面尚未初始化时在其后接管
+  void _takeOverWhenAttached(MiniPlayerHostEntry host) {
+    host.attached.then((_) {
+      if (host.deferPlayer && hosts.contains(host)) {
+        host.deferPlayer = false;
+        host.page?.takeOverPlayer();
+      }
+    });
+  }
+
   // 旧视频记录
 
-  /// 重新打开旧视频：新的详情页在上层页面下方构建，内容到达后上层页面再
-  /// 出栈；[above] 为 null 时已经露出，直接打开
-  void _openDormant(
+  /// 回到下方的旧视频：上层页面暂不出栈，旧视频的内容到达后再出栈；同一次
+  /// 出栈中继续出栈（如逐层返回首页）时不再打开
+  void _beginGate(
     MiniPlayerWindowRoute dormant, {
-    required Route<dynamic>? above,
+    required Route<dynamic> above,
   }) {
-    final args = dormant.dormant!;
+    final gate = _gate = _DormantGate(above);
+    _gating.value = true;
+    Future.microtask(() {
+      if (!identical(_gate, gate)) {
+        return;
+      }
+      if (_closingAll || !above.isActive || !dormant.isDormant) {
+        _endGate();
+        return;
+      }
+      _openDormant(dormant, gate: gate);
+    });
+  }
+
+  void _endGate() {
+    _gate = null;
+    _gating.value = false;
+  }
+
+  /// 重新打开旧视频：新的详情页在其记录的位置构建；[gate] 不为 null 时在
+  /// 上层页面下方不显示地构建，内容到达后上层页面再出栈。新的详情页在原
+  /// 详情页交出播放器后接管，按离开时的播放状态恢复
+  void _openDormant(MiniPlayerWindowRoute dormant, {_DormantGate? gate}) {
+    final record = dormant.dormant!;
+    final above = gate?.above;
     final previous = _host;
     // 接管播放器之前记下离开时的进度
-    final previousDormant = previous == null ? null : _dormantArgs(previous);
+    final previousDormant = previous == null ? null : _dormantOf(previous);
     final shownAbove =
         previous != null &&
         previous.state == .shown &&
         identical(previous.window, above);
+    // 记录的位置即为详情页的位置，其路由参数原地更新为新详情页的参数
+    final args = dormant.arguments
+      ..clear()
+      ..addAll(record.args)
+      ..['heroTag'] = Utils.makeHeroTag(record.args['cid']);
     final host = MiniPlayerHostEntry(
-      {...args, 'heroTag': Utils.makeHeroTag(args['cid'])},
+      args,
       hidden: above != null,
-      deferPlayer: shownAbove,
+      deferPlayer: true,
+      startPaused: !record.playing,
     );
     dormant
       ..dormant = null
       ..host = host;
     host.anchor = dormant;
     if (previous != null) {
+      previous.page?.onMiniDetached();
       if (shownAbove) {
         // 显示中的详情页随出栈转场离开后释放，期间保持暂停时的画面
-        previous
-          ..state = .closing
-          ..page?.onMiniDetached();
-        PlPlayerController.instance?.pause();
+        previous.state = .closing;
       } else {
         if (previous.state == .mini) {
-          _start();
+          restoring.value = false;
+          restoreRect.value = null;
           mode.value = .none;
         }
-        previous.page?.onMiniDetached();
         _keepDormant(previous, previousDormant!);
       }
+      PlPlayerController.instance?.pause();
     }
     _host = host;
     hosts.add(host);
     layer.notify();
-    if (above == null) {
+    if (!shownAbove) {
+      _takeOverWhenAttached(host);
+    }
+    if (gate == null) {
       _updateLayer();
       return;
     }
-    final gate = _gate = _DormantGate(host, above);
-    _gating.value = true;
+    gate.host = host;
     _whenReady(host).then((_) {
       if (!identical(_gate, gate)) {
         return;
       }
-      _gate = null;
-      _gating.value = false;
-      _popAbove(above);
+      _endGate();
+      _popAbove(gate.above);
       host.page?.onMiniExpanded();
     });
   }
@@ -885,7 +1016,8 @@ class MiniPlayerSession {
     }
   }
 
-  /// 浏览页下方紧邻旧视频记录时，返回键先等该视频的内容到达
+  /// 浏览页下方紧邻旧视频记录时，出栈（返回键、Get.back 等）先等该视频的
+  /// 内容到达
   void _syncDormantEntry() {
     final top = _routes.lastOrNull;
     final below = top == null ? null : _routeBelow(top);
@@ -903,15 +1035,19 @@ class MiniPlayerSession {
     _dormantEntry = null;
     entry?.unregister();
     if (target != null) {
-      _dormantEntry = _DormantPopEntry(
+      late final _DormantHistory history;
+      history = _dormantEntry = _DormantHistory(
         target,
-        onBack: () {
+        onPop: () {
+          if (identical(_dormantEntry, history)) {
+            _dormantEntry = null;
+          }
           final dormant = _routeBelow(target);
           if (_gate == null &&
-              target.isCurrent &&
+              !_closingAll &&
               dormant is MiniPlayerWindowRoute &&
               dormant.isDormant) {
-            _openDormant(dormant, above: target);
+            _beginGate(dormant, above: target);
           }
         },
       )..register();
@@ -926,8 +1062,7 @@ class MiniPlayerSession {
   // 状态切换
 
   void _start() {
-    _gate = null;
-    _gating.value = false;
+    _endGate();
     restoring.value = false;
     restoreRect.value = null;
   }
@@ -1106,21 +1241,26 @@ class _LayerNotifier extends ChangeNotifier {
 }
 
 class _DormantGate {
-  _DormantGate(this.host, this.above);
+  _DormantGate(this.above);
 
-  final MiniPlayerHostEntry host;
   final Route<dynamic> above;
+
+  /// 重新打开的详情页，开始等待后的微任务中创建
+  MiniPlayerHostEntry? host;
 }
 
-/// 拦截浏览页的返回，回到下方的旧视频前先等其内容到达
-class _DormantPopEntry extends PopEntry<Object?> {
-  _DormantPopEntry(this.route, {required this.onBack});
+/// 浏览页的本地历史记录：出栈时先移除此记录（不出栈），由会话回到下方的
+/// 旧视频；再次出栈时照常出栈
+class _DormantHistory {
+  _DormantHistory(this.route, {required this.onPop});
 
   final ModalRoute<dynamic> route;
-  final VoidCallback onBack;
+  final VoidCallback onPop;
 
-  @override
-  final ValueNotifier<bool> canPopNotifier = ValueNotifier(false);
+  late final _entry = LocalHistoryEntry(
+    impliesAppBarDismissal: false,
+    onRemove: _onRemove,
+  );
 
   bool _registered = false;
   bool _removed = false;
@@ -1130,26 +1270,28 @@ class _DormantPopEntry extends PopEntry<Object?> {
     Future.microtask(() {
       if (!_removed && route.isActive) {
         _registered = true;
-        route.registerPopEntry(this);
+        route.addLocalHistoryEntry(_entry);
       }
     });
   }
 
   void unregister() {
-    _removed = true;
-    if (_registered) {
-      _registered = false;
-      if (route.isActive) {
-        route.unregisterPopEntry(this);
-      }
+    if (_removed) {
+      return;
     }
-    Future.microtask(canPopNotifier.dispose);
+    _removed = true;
+    if (_registered && route.isActive) {
+      route.removeLocalHistoryEntry(_entry);
+    }
+    _registered = false;
   }
 
-  @override
-  void onPopInvokedWithResult(bool didPop, Object? result) {
-    if (!didPop) {
-      onBack();
+  void _onRemove() {
+    if (_removed) {
+      return;
     }
+    _removed = true;
+    _registered = false;
+    onPop();
   }
 }
