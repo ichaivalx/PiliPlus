@@ -1359,6 +1359,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       await seekTo(Duration.zero, isSeek: false);
     }
 
+    // 联动主控需要与跟随端共同起播时由联动接管，到约定时刻才出声
+    if (linkedPlayback.takePlay(const VideoLinkedTarget())) return;
+
     await _videoPlayerController?.play();
 
     audioSessionHandler?.setActive(true);
@@ -1511,7 +1514,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       await videoPlayerController!.seek(Duration.zero);
       videoPlayerController!.play();
     } else {
-      videoPlayerController!.playOrPause();
+      final player = videoPlayerController!;
+      if (!player.state.playing &&
+          linkedPlayback.takePlay(const VideoLinkedTarget())) {
+        return;
+      }
+      player.playOrPause();
     }
   }
 

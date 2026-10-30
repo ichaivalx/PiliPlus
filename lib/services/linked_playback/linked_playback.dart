@@ -215,6 +215,10 @@ class LinkedPlayback {
       syncOn.value &&
       ((_leader?.hasPeers ?? false) || (_follower?.isFollowing ?? false));
 
+  /// 本机开始播放的操作在播放器出声前调用：主控需要与跟随端共同起播时由联动接管，
+  /// 调用方不再播放；返回是否已接管
+  bool takePlay(LinkedTarget target) => _leader?.takePlay(target) ?? false;
+
   /// 页面加载内容前调用，[content] 为空表示该内容不支持联动；[autoplay]
   /// 为页面当前是否许可自动播放，共同起播前复核。返回非空时本次加载由联动播放接管
   LinkedLoad? gateLoad(

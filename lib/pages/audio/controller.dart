@@ -272,6 +272,8 @@ class AudioController extends GetxController
   }
 
   Future<void>? onPlay() {
+    // 联动主控需要与跟随端共同起播时由联动接管，到约定时刻才出声
+    if (linkedPlayback.takePlay(_linkedTarget)) return Future.value();
     return player?.play();
   }
 
@@ -943,6 +945,12 @@ class AudioController extends GetxController
   }
 
   Future<void>? playOrPause() {
+    final player = this.player;
+    if (player != null &&
+        !player.state.playing &&
+        linkedPlayback.takePlay(_linkedTarget)) {
+      return Future.value();
+    }
     return player?.playOrPause();
   }
 

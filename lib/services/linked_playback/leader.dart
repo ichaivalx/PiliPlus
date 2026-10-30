@@ -688,9 +688,10 @@ class LeaderSession {
 
   /// 同一内容共同暂停后重新共同起播；没有在线的跟随端时本机照常播放，
   /// 跟随端恢复后自行跳转加入
-  void _resync({required bool intendsPlay}) {
+  /// 返回是否开始了共同起播
+  bool _resync({required bool intendsPlay}) {
     final player = _loadedPlayer;
-    if (!_active || player == null) return;
+    if (!_active || player == null) return false;
     final round = _beginRound(
       intendsPlay: intendsPlay,
       selfLoaded: true,
@@ -700,9 +701,34 @@ class LeaderSession {
       _cancelRound();
       _expectPlaying = player.state.playing;
       _lastPosition = null;
-      return;
+      return false;
     }
     _prepare(round);
+    return true;
+  }
+
+  /// 本机开始播放的操作（播放按钮、手势、媒体控制、快捷键等），在播放器出声之前
+  /// 调用：需要与跟随端共同起播时不直接播放，改为共同起播，到约定时刻才出声；
+  /// 返回是否已接管。联动自身的起播（已预期播放）、没有需要等待的跟随端、播完后
+  /// 重播时不接管，照常立即播放
+  bool takePlay(LinkedTarget target) {
+    if (!_active || _expectPlaying || !identical(target, _target)) {
+      return false;
+    }
+    final player = _loadedPlayer;
+    if (player == null || player.state.playing || player.state.completed) {
+      return false;
+    }
+    final round = _round;
+    if (round != null) {
+      // 本机已加载、等待跟随端加载期间照常播放
+      if (round.phase == _Phase.loading && round.selfLoaded) return false;
+      round.intendsPlay = true;
+      _allowPlay(round);
+      return true;
+    }
+    if (_standaloneRound != null) return false;
+    return _resync(intendsPlay: true);
   }
 
   /// 把本机当前的内容发给尚未收到的跟随端：新内容尚在加载时加入本轮共同起播；
