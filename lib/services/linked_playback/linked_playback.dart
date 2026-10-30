@@ -33,6 +33,8 @@ class LinkedPlayback {
   static const _deviceIdKey = 'linkedPlaybackDeviceId';
   static const _startBiasKey = 'linkedPlaybackStartBias';
   static const _seekCostKey = 'linkedPlaybackSeekCost';
+  static const _coldSeekCostKey = 'linkedPlaybackColdSeekCost';
+  static const _seekModeKey = 'linkedPlaybackSeekMode';
   static const _lastLeaderKey = 'linkedPlaybackLastLeader';
   static const _volumeModeKey = 'linkedPlaybackVolumeMode';
   static const _volumeOffsetKey = 'linkedPlaybackVolumeOffset';
@@ -52,6 +54,17 @@ class LinkedPlayback {
   final RxBool syncOn = RxBool(
     GStorage.setting.get(_syncKey, defaultValue: true) as bool,
   );
+
+  /// 主控播放中拖动进度时的同步方式，以主控的设置为准
+  final Rx<LinkedSeekMode> seekMode = Rx<LinkedSeekMode>(
+    LinkedSeekMode.values[GStorage.setting.get(_seekModeKey, defaultValue: 0)
+        as int],
+  );
+
+  void setSeekMode(LinkedSeekMode value) {
+    seekMode.value = value;
+    GStorage.setting.put(_seekModeKey, value.index);
+  }
 
   /// 延迟偏移的最小调节单位（微秒）
   static const offsetStepUs = 500;
@@ -427,6 +440,7 @@ class LinkedPlayback {
             _leader?.applySync();
           },
           onPeersChanged: (list) => peers.value = list,
+          seekTogether: () => seekMode.value == LinkedSeekMode.together,
         );
         if (_currentTarget case final target?) {
           session.adopt(current.value, target);
@@ -452,6 +466,11 @@ class LinkedPlayback {
           seekCostUs:
               GStorage.setting.get(_seekCostKey, defaultValue: 500000) as int,
           onSeekCost: (value) => GStorage.setting.put(_seekCostKey, value),
+          coldSeekCostUs:
+              GStorage.setting.get(_coldSeekCostKey, defaultValue: 2000000)
+                  as int,
+          onColdSeekCost: (value) =>
+              GStorage.setting.put(_coldSeekCostKey, value),
           lastLeader: GStorage.setting.get(_lastLeaderKey) as String?,
           onLeader: (value) => GStorage.setting.put(_lastLeaderKey, value),
           leader: leader,

@@ -49,8 +49,6 @@ import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/forward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/mpv_convert_webp.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/play_pause_btn.dart';
-import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
-import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -1782,44 +1780,6 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
             maxWidth,
             maxHeight,
             () => mounted,
-          ),
-
-        // 联动播放的延迟偏移拨轮，自行处理拖动，不触发左侧的亮度手势
-        if (!isLive)
-          ViewSafeArea(
-            right: false,
-            left: !plPlayerController.removeSafeArea,
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Padding(
-                // 避开全屏时的锁定按钮
-                padding: EdgeInsets.only(
-                  left:
-                      (isFullScreen || plPlayerController.isDesktopPip) &&
-                          plPlayerController.showFsLockBtn
-                      ? 84
-                      : 12,
-                ),
-                child: Obx(
-                  () => Offstage(
-                    offstage:
-                        !plPlayerController.showControls.value ||
-                        plPlayerController.controlsLock.value ||
-                        !linkedPlayback.enabled.value ||
-                        !linkedPlayback.syncOn.value ||
-                        // 只在本播放器的内容支持联动时显示（番剧等不显示）
-                        linkedPlayback.current.value?.kind !=
-                            LinkedKind.video ||
-                        linkedPlayback.current.value?.cid !=
-                            plPlayerController.cid,
-                    child: LinkedOffsetOverlay(
-                      length: (maxHeight - 160).clamp(56.0, 140.0),
-                      onInteraction: () => plPlayerController.controls = true,
-                    ),
-                  ),
-                ),
-              ),
-            ),
           ),
 
         if (isFullScreen || plPlayerController.isDesktopPip) ...[

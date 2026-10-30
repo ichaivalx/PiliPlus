@@ -98,6 +98,7 @@ class LeaderSession {
     required this.syncOn,
     required this.onSyncRequest,
     required this.onPeersChanged,
+    required this.seekTogether,
   });
 
   static const _tickInterval = Duration(milliseconds: 250);
@@ -128,6 +129,9 @@ class LeaderSession {
   final bool Function() syncOn;
   final void Function(bool) onSyncRequest;
   final void Function(List<LinkedPeerInfo>) onPeersChanged;
+
+  /// 播放中拖动进度时两端共同暂停、定位后共同起播；否则本机照常播放，跟随端追上
+  final bool Function() seekTogether;
 
   late final _transport = LeaderTransport(
     onConnected: _onConnected,
@@ -653,7 +657,10 @@ class LeaderSession {
       if (moved && _active) {
         // 约定起播期间拖动了进度：跟随端已按旧位置起播，各自跳转对齐
         _seekAt = LinkClock.nowUs;
-        _transport.broadcast(const {'t': LinkMessageType.seek});
+        _transport.broadcast({
+          't': LinkMessageType.seek,
+          'pos': ?LinkedPlayer.timePos(player),
+        });
       }
     });
   }
@@ -825,10 +832,15 @@ class LeaderSession {
     if (last == null) return;
     final expected = last.pos + (now - last.at) * player.state.rate;
     if ((pos - expected).abs() > _seekJumpUs) {
-      // 本机在新位置继续播放，跟随端各自跳转对齐
       _seekAt = now;
       _stall = 0;
-      _transport.broadcast(const {'t': LinkMessageType.seek});
+      if (seekTogether()) {
+        // 两端共同暂停、定位到新位置后共同起播
+        _resync(intendsPlay: true);
+        return;
+      }
+      // 本机在新位置继续播放，跟随端立即预先定位，收到新进度后跳转对齐
+      _transport.broadcast({'t': LinkMessageType.seek, 'pos': pos});
     }
   }
 

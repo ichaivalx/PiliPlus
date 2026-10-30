@@ -29,6 +29,8 @@ class FollowerSession {
     required this.onStartBias,
     required this.seekCostUs,
     required this.onSeekCost,
+    required this.coldSeekCostUs,
+    required this.onColdSeekCost,
     required String? lastLeader,
     required void Function(String) onLeader,
     required this.leader,
@@ -99,10 +101,13 @@ class FollowerSession {
   /// 不稳定的进度定位
   static const _seekSamples = 3;
 
-  /// 跳转耗时（定位到缓冲就绪）按实测学习，起播时刻按此预留提前量
+  /// 跳转耗时（定位到缓冲就绪）按实测学习，起播时刻按此预留提前量；目标已在
+  /// 缓冲范围内的定位只需解码，未缓冲的需重新取流（冷定位），两者分别学习
   static const _seekCostRate = 0.5;
   static const _minSeekCostUs = 100000;
   static const _maxSeekCostUs = 3000000;
+  static const _minColdSeekCostUs = 500000;
+  static const _maxColdSeekCostUs = 6000000;
   static const _seekLeadFactor = 1.5;
   static const _seekMarginUs = 150000;
 
@@ -130,6 +135,8 @@ class FollowerSession {
   final void Function(int) onStartBias;
   int seekCostUs;
   final void Function(int) onSeekCost;
+  int coldSeekCostUs;
+  final void Function(int) onColdSeekCost;
   final RxnString leader;
   final RxnDouble driftMs;
   final RxnDouble rttMs;
@@ -717,7 +724,7 @@ class FollowerSession {
       case LinkMessageType.position:
         _onLeaderPosition(message);
       case LinkMessageType.seek:
-        _onLeaderSeek();
+        _onLeaderSeek(message['pos'] is int ? message['pos'] as int : null);
       case LinkMessageType.stop:
         _restored = true;
         _leaderCid = null;
@@ -896,17 +903,17 @@ class FollowerSession {
       _leaderCid == _content?.cid &&
       now - _leaderPosAt < _reportUs;
 
-  /// 跳转时预留的定位时间；起播补偿为负时播放命令提前发出，预留时间相应加长，
-  /// 保证播放命令的计划时刻晚于预计就绪时刻
-  int get _jumpLeadUs =>
-      (seekCostUs * _seekLeadFactor).round() +
+  /// 跳转时预留的定位时间，[cold] 为目标不在缓冲范围内；起播补偿为负时播放命令
+  /// 提前发出，预留时间相应加长，保证播放命令的计划时刻晚于预计就绪时刻
+  int _jumpLeadUs({required bool cold}) =>
+      ((cold ? coldSeekCostUs : seekCostUs) * _seekLeadFactor).round() +
       _seekMarginUs +
       max(0, -startBiasUs);
 
   /// 跳转的目标位置距结尾还有余量，跳转加入后来得及播放
   bool _leaderAhead(Player? player, int now) {
     if (player == null) return false;
-    final leaderPos = _leaderPosition(now + _jumpLeadUs);
+    final leaderPos = _leaderPosition(now + _jumpLeadUs(cold: true));
     final durationUs = player.state.duration.inMicroseconds;
     return leaderPos != null &&
         durationUs > 0 &&
@@ -956,14 +963,19 @@ class FollowerSession {
     while (lateCount < 2) {
       if (!isCurrent()) return;
       final begin = LinkClock.nowUs;
-      final at = begin + _jumpLeadUs;
+      final offset = _offsetUs;
+      // 目标已在缓冲范围内（如主控拖动后已预先定位）时按普通跳转预留，否则按
+      // 冷定位预留，宁可多等也要一次对齐
+      final near = _leaderPosition(begin + _jumpLeadUs(cold: false));
+      if (near == null) break;
+      final cold = !LinkedPlayer.isBuffered(player, max(0, near - offset));
+      final at = begin + _jumpLeadUs(cold: cold);
       final leaderPos = _leaderPosition(at);
       if (leaderPos == null) break;
-      final offset = _offsetUs;
       final destination = max(0, leaderPos - offset);
       await target.seek(Duration(microseconds: destination));
       if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) return;
-      _learnSeekCost(LinkClock.nowUs - begin);
+      _learnSeekCost(LinkClock.nowUs - begin, cold: cold);
       // 定位期间延迟偏移变化时重新定位
       if (offset != _offsetUs) continue;
       _positionedOffsetUs = offset;
@@ -993,7 +1005,19 @@ class FollowerSession {
     }
   }
 
-  void _learnSeekCost(int cost) {
+  void _learnSeekCost(int cost, {required bool cold}) {
+    if (cold) {
+      final value =
+          (coldSeekCostUs + (cost - coldSeekCostUs) * _seekCostRate)
+              .round()
+              .clamp(_minColdSeekCostUs, _maxColdSeekCostUs)
+              .toInt();
+      if (value != coldSeekCostUs) {
+        coldSeekCostUs = value;
+        onColdSeekCost(value);
+      }
+      return;
+    }
     final value = (seekCostUs + (cost - seekCostUs) * _seekCostRate)
         .round()
         .clamp(_minSeekCostUs, _maxSeekCostUs)
@@ -1150,8 +1174,10 @@ class FollowerSession {
     _applySpeed(player);
   }
 
-  /// 主控播放中拖动进度：旧进度模型作废，本机立即停止旧位置的声音
-  void _onLeaderSeek() {
+  /// 主控播放中拖动进度：旧进度模型作废，本机立即停止旧位置的声音，并立即定位到
+  /// 主控拖动到的位置 [pos]，与主控自身的缓冲并行取流；收到主控的新进度后在已缓冲
+  /// 范围内短距离跳转对齐
+  void _onLeaderSeek(int? pos) {
     _intercepts.clear();
     _drifts.clear();
     // 已约定共同起播时刻、尚未起播（起播补偿为正时晚于主控）：作废旧位置的
@@ -1176,9 +1202,13 @@ class FollowerSession {
     _factor = 1.0;
     _awaitingSeek = true;
     if (_loadedPlayer case final player?) {
+      final target = _target!;
       _applySpeed(player);
       if (player.state.playing) {
-        _pause(_target!);
+        _pause(target);
+      }
+      if (pos != null) {
+        target.seek(Duration(microseconds: max(0, pos - _offsetUs)));
       }
     }
   }

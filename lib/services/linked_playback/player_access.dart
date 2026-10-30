@@ -108,6 +108,16 @@ abstract final class LinkedPlayer {
         min(_readyAheadUs, durationUs - posUs - 100000);
   }
 
+  /// [targetUs] 位于当前位置之后的已缓冲范围内（且其后仍有就绪所需的缓冲），
+  /// 定位无需重新取流
+  static bool isBuffered(Player player, int targetUs) {
+    final posUs = timePos(player);
+    final cached = _seconds(player, 'demuxer-cache-time');
+    if (posUs == null || cached == null) return false;
+    return targetUs >= posUs - _seekToleranceUs &&
+        targetUs <= (cached * 1e6).round() - _readyAheadUs;
+  }
+
   /// 直接设置播放器的实际速度，不改动页面记录的倍速
   static void setSpeed(Player player, double speed) {
     if (player.disposed) return;

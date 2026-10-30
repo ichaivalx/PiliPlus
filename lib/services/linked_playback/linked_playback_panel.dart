@@ -93,7 +93,10 @@ class LinkedPlaybackPanel extends StatelessWidget {
               ),
             ),
             ...switch (role) {
-              LinkedRole.leader => _leaderStatus(theme),
+              LinkedRole.leader => [
+                ..._seekMode(),
+                ..._leaderStatus(theme),
+              ],
               LinkedRole.follower => _followerStatus(theme),
             },
             ..._offset(theme),
@@ -116,6 +119,32 @@ class LinkedPlaybackPanel extends StatelessWidget {
             : null,
       ),
       for (final peer in peers) ..._peer(theme, peer),
+    ];
+  }
+
+  /// 拖动进度时的同步方式，由主控决定
+  List<Widget> _seekMode() {
+    final mode = linkedPlayback.seekMode.value;
+    return [
+      ListTile(
+        title: const Text('拖动进度时的同步方式'),
+        subtitle: Text(mode.description),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
+        child: Wrap(
+          spacing: 10,
+          runSpacing: 8,
+          children: [
+            for (final item in LinkedSeekMode.values)
+              ActionRowLineItem(
+                selectStatus: item == mode,
+                text: item.label,
+                onTap: () => linkedPlayback.setSeekMode(item),
+              ),
+          ],
+        ),
+      ),
     ];
   }
 

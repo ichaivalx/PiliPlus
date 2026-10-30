@@ -3,11 +3,12 @@ import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
-/// 拨轮式的延迟偏移调节：沿拨轮拖动逐格滚动，每格
-/// [LinkedPlayback.offsetStepUs]，逐格震动
-class LinkedOffsetDial extends StatefulWidget {
-  const LinkedOffsetDial({
+/// 拨轮式的逐格调节：沿拨轮拖动逐格滚动，逐格震动
+class LinkedDial extends StatefulWidget {
+  const LinkedDial({
     super.key,
+    required this.index,
+    required this.onSteps,
     required this.axis,
     required this.length,
     this.thickness = 36,
@@ -15,6 +16,12 @@ class LinkedOffsetDial extends StatefulWidget {
     this.indicatorColor,
     this.onInteraction,
   });
+
+  /// 当前值所在的格
+  final int index;
+
+  /// 拖过的格数，正值为增大方向
+  final ValueChanged<int> onSteps;
 
   /// 拖动方向：竖直时向上增大，水平时向右增大
   final Axis axis;
@@ -27,10 +34,10 @@ class LinkedOffsetDial extends StatefulWidget {
   final VoidCallback? onInteraction;
 
   @override
-  State<LinkedOffsetDial> createState() => _LinkedOffsetDialState();
+  State<LinkedDial> createState() => _LinkedDialState();
 }
 
-class _LinkedOffsetDialState extends State<LinkedOffsetDial> {
+class _LinkedDialState extends State<LinkedDial> {
   /// 每格的像素
   static const _extent = 10.0;
 
@@ -46,9 +53,7 @@ class _LinkedOffsetDialState extends State<LinkedOffsetDial> {
     if (steps != 0) {
       _drag -= steps * _extent;
       HapticFeedback.selectionClick();
-      linkedPlayback.setOffset(
-        linkedPlayback.offsetUs.value + steps * LinkedPlayback.offsetStepUs,
-      );
+      widget.onSteps(steps);
     }
     setState(() {});
   }
@@ -71,17 +76,15 @@ class _LinkedOffsetDialState extends State<LinkedOffsetDial> {
       child: SizedBox(
         width: vertical ? widget.thickness : widget.length,
         height: vertical ? widget.length : widget.thickness,
-        child: Obx(
-          () => CustomPaint(
-            painter: _DialPainter(
-              value: linkedPlayback.offsetUs.value,
-              drag: _drag,
-              axis: widget.axis,
-              extent: _extent,
-              color: widget.color,
-              indicatorColor:
-                  widget.indicatorColor ?? ColorScheme.of(context).primary,
-            ),
+        child: CustomPaint(
+          painter: _DialPainter(
+            index: widget.index,
+            drag: _drag,
+            axis: widget.axis,
+            extent: _extent,
+            color: widget.color,
+            indicatorColor:
+                widget.indicatorColor ?? ColorScheme.of(context).primary,
           ),
         ),
       ),
@@ -89,9 +92,47 @@ class _LinkedOffsetDialState extends State<LinkedOffsetDial> {
   }
 }
 
+/// 延迟偏移的拨轮，每格 [LinkedPlayback.offsetStepUs]
+class LinkedOffsetDial extends StatelessWidget {
+  const LinkedOffsetDial({
+    super.key,
+    required this.axis,
+    required this.length,
+    this.thickness = 36,
+    this.color = Colors.white,
+    this.indicatorColor,
+    this.onInteraction,
+  });
+
+  final Axis axis;
+  final double length;
+  final double thickness;
+  final Color color;
+  final Color? indicatorColor;
+  final VoidCallback? onInteraction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(
+      () => LinkedDial(
+        index: linkedPlayback.offsetUs.value ~/ LinkedPlayback.offsetStepUs,
+        onSteps: (steps) => linkedPlayback.setOffset(
+          linkedPlayback.offsetUs.value + steps * LinkedPlayback.offsetStepUs,
+        ),
+        axis: axis,
+        length: length,
+        thickness: thickness,
+        color: color,
+        indicatorColor: indicatorColor,
+        onInteraction: onInteraction,
+      ),
+    );
+  }
+}
+
 class _DialPainter extends CustomPainter {
   _DialPainter({
-    required this.value,
+    required this.index,
     required this.drag,
     required this.axis,
     required this.extent,
@@ -99,7 +140,7 @@ class _DialPainter extends CustomPainter {
     required this.indicatorColor,
   });
 
-  final int value;
+  final int index;
   final double drag;
   final Axis axis;
   final double extent;
@@ -112,19 +153,18 @@ class _DialPainter extends CustomPainter {
     final length = vertical ? size.height : size.width;
     final thickness = vertical ? size.width : size.height;
     final mid = length / 2;
-    final current = value ~/ LinkedPlayback.offsetStepUs;
     final visible = (mid / extent).ceil() + 1;
     final paint = Paint()..strokeCap = StrokeCap.round;
     for (var i = -visible; i <= visible; i++) {
-      final index = current + i;
+      final tickIndex = index + i;
       // 刻度随手指移动，较大值竖直时在下方、水平时在左侧，向中心滚入
       final along = vertical
           ? mid + i * extent - drag
           : mid - i * extent + drag;
       final distance = (along - mid).abs() / mid;
       if (distance > 1) continue;
-      final major = index % 10 == 0;
-      final medium = index.isEven;
+      final major = tickIndex % 10 == 0;
+      final medium = tickIndex.isEven;
       final tick = thickness * (major ? 0.6 : (medium ? 0.4 : 0.25));
       paint
         ..strokeWidth = major ? 2 : 1.2
@@ -157,7 +197,7 @@ class _DialPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_DialPainter oldDelegate) =>
-      value != oldDelegate.value ||
+      index != oldDelegate.index ||
       drag != oldDelegate.drag ||
       color != oldDelegate.color ||
       indicatorColor != oldDelegate.indicatorColor;
@@ -167,59 +207,4 @@ class _DialPainter extends CustomPainter {
 String formatLinkedOffset(int us) {
   final text = (us / 1000).toStringAsFixed(1);
   return '${us > 0 ? '+' : ''}$text ms';
-}
-
-/// 覆盖在播放器左侧的紧凑拨轮：联动开启且同步播放时随播放器控件显示
-class LinkedOffsetOverlay extends StatelessWidget {
-  const LinkedOffsetOverlay({
-    super.key,
-    required this.length,
-    required this.onInteraction,
-  });
-
-  /// 拨轮长度
-  final double length;
-  final VoidCallback onInteraction;
-
-  @override
-  Widget build(BuildContext context) {
-    const textStyle = TextStyle(color: Colors.white, fontSize: 11);
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: Color(0x45000000),
-        borderRadius: BorderRadius.all(Radius.circular(8)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Obx(
-              () => Text(
-                formatLinkedOffset(linkedPlayback.offsetUs.value),
-                style: textStyle,
-              ),
-            ),
-            LinkedOffsetDial(
-              axis: Axis.vertical,
-              length: length,
-              thickness: 44,
-              onInteraction: onInteraction,
-            ),
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                onInteraction();
-                linkedPlayback.setOffset(0);
-              },
-              child: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: Text('归零', style: textStyle),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }

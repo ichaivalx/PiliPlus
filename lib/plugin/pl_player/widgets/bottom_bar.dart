@@ -3,13 +3,15 @@ import 'dart:math' show max;
 import 'package:PiliPlus/common/widgets/disabled_icon.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
+import 'package:PiliPlus/services/linked_playback/linked_bar.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
 /// 视频播放器底栏：左侧控件 | 定时关闭（占满剩余宽度） | 临时单个循环；开启联动
-/// 播放时定时关闭改为固定宽度，其左侧为同步播放
+/// 播放时定时关闭改为固定宽度，左侧控件与定时关闭之间为联动控件（同步开关、
+/// 延迟偏移、跟随端音量，宽度不足时收起）
 class PlayerBottomBar extends StatelessWidget {
   const PlayerBottomBar({
     super.key,
@@ -19,7 +21,6 @@ class PlayerBottomBar extends StatelessWidget {
   });
 
   static const double _loopWidth = 64;
-  static const double _syncWidth = 44;
   static const double _timerMinWidth = 76;
   static const double _height = 34;
 
@@ -68,45 +69,6 @@ class PlayerBottomBar extends StatelessWidget {
   }
 
 
-  /// 联动播放的同步开关，未连接时点击立即重连
-  Widget get _syncButton => Obx(() {
-    final on = linkedPlayback.syncOn.value;
-    final connected = linkedPlayback.isConnected;
-    return ComBtn(
-      width: _syncWidth,
-      height: _height,
-      tooltip: on
-          ? connected
-                ? '关闭同步播放'
-                : '同步播放（未连接，点击重连）'
-          : '开启同步播放',
-      icon: Center(
-        child: DisabledIcon(
-          disable: !on,
-          iconSize: 22,
-          color: Colors.white,
-          child: Icon(
-            Icons.sync_rounded,
-            size: 22,
-            color: on && !connected
-                ? Colors.white.withValues(alpha: 0.5)
-                : Colors.white,
-          ),
-        ),
-      ),
-      onTap: () {
-        // 同步已开启但未连接：只重连，不改动同步开关
-        if (on && !connected) {
-          linkedPlayback.wake();
-        } else {
-          linkedPlayback
-            ..toggleSync()
-            ..wake();
-        }
-      },
-    );
-  });
-
   Widget get _loopButton => Obx(() {
     final enabled = controller.isSingleCycle;
     return ComBtn(
@@ -133,7 +95,7 @@ class PlayerBottomBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) => Obx(() {
-        final showSync = linkedPlayback.enabled.value && !controller.isLive;
+        final showLinked = linkedPlayback.enabled.value && !controller.isLive;
         return Row(
           children: [
             ConstrainedBox(
@@ -143,7 +105,7 @@ class PlayerBottomBar extends StatelessWidget {
                   constraints.maxWidth -
                       _loopWidth -
                       _timerMinWidth -
-                      (showSync ? _syncWidth : 0),
+                      (showLinked ? LinkedBarControls.minWidth : 0),
                 ),
               ),
               child: FittedBox(
@@ -152,9 +114,14 @@ class PlayerBottomBar extends StatelessWidget {
                 child: Row(mainAxisSize: MainAxisSize.min, children: children),
               ),
             ),
-            if (showSync) ...[
-              const Spacer(),
-              _syncButton,
+            if (showLinked) ...[
+              // 左侧控件之外的剩余宽度
+              Expanded(
+                child: LinkedBarControls(
+                  controller: controller,
+                  onInteraction: () => controller.controls = true,
+                ),
+              ),
               _timerButton(context, width: _timerMinWidth),
             ] else
               Expanded(

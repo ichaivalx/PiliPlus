@@ -9,6 +9,17 @@ enum LinkedRole {
   final String label;
 }
 
+/// 主控播放中拖动进度时的同步方式
+enum LinkedSeekMode {
+  together('两端一起对齐', '主控拖动后两端一起暂停、定位，再同时开始播放；主控会短暂停顿'),
+  catchUp('主控不停，跟随端追上', '主控照常播放，跟随端立即定位并在缓冲后跳转追上；跟随端会短暂静音');
+
+  const LinkedSeekMode(this.label, this.description);
+
+  final String label;
+  final String description;
+}
+
 /// 播放内容所在的页面
 enum LinkedKind {
   /// 视频详情页
