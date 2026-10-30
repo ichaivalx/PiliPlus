@@ -756,7 +756,8 @@ class MiniPlayerSession {
   // 显示
 
   /// 各宿主是否绘制及绘制顺序：位于窗口下方且窗口露出时绘制；窗口自身转场
-  /// 期间位于浏览 Navigator 上方
+  /// 期间位于浏览 Navigator 上方。操作按绘制转交，见
+  /// [MiniPlayerHostEntry.hitTestThroughWindow]
   void _updateLayer() {
     final top = _routes.lastOrNull;
     final gate = _gate;
@@ -791,6 +792,8 @@ class MiniPlayerSession {
       host.updateLayer(
         painted: painted,
         z: lifted ? 1 : index - _routes.length - 1,
+        // 入场中位于浏览 Navigator 上方，直接响应操作；离开中的不响应
+        direct: lifted && host.state == .shown,
       );
     }
   }

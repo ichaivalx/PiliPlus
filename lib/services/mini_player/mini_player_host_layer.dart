@@ -91,12 +91,47 @@ class MiniPlayerHostEntry extends ChangeNotifier {
   int _z = -1;
   int get z => _z;
 
-  void updateLayer({required bool painted, required int z}) {
-    if (_painted != painted || _z != z) {
+  /// 位于浏览 Navigator 上方时直接响应操作；位于下方时由窗口转交，见
+  /// [hitTestThroughWindow]
+  bool _direct = false;
+  bool get direct => _direct;
+
+  void updateLayer({
+    required bool painted,
+    required int z,
+    bool direct = false,
+  }) {
+    if (_painted != painted || _z != z || _direct != direct) {
       _painted = painted;
       _z = z;
+      _direct = direct;
       notifyListeners();
     }
+  }
+
+  /// 详情页内容的根节点，窗口据此转交操作
+  RenderBox? _content;
+
+  /// 在浏览栈中窗口的位置命中测试详情页：窗口上方的弹窗、页面先于此
+  /// 命中，与绘制一致。[from] 为窗口中的命中位置所在的节点
+  bool hitTestThroughWindow(
+    BoxHitTestResult result,
+    RenderBox from,
+    Offset position,
+  ) {
+    final content = _content;
+    if (content == null ||
+        !content.attached ||
+        !_painted ||
+        !(state == .shown || state == .parked)) {
+      return false;
+    }
+    return result.addWithPaintTransform(
+      transform: content.getTransformTo(from),
+      position: position,
+      hitTest: (result, position) =>
+          content.hitTest(result, position: position),
+    );
   }
 
   /// 呈现所用的窗口或其转场变化
@@ -192,6 +227,7 @@ class MiniPlayerHostLayer extends StatelessWidget {
             listenable: host,
             builder: (context, child) => _PresentationChild(
               z: host.z,
+              hitTestable: host.direct,
               child: Offstage(
                 offstage: !host.painted,
                 child: TickerMode(
@@ -202,7 +238,12 @@ class MiniPlayerHostLayer extends StatelessWidget {
             ),
             child: _HostContent(host: host),
           ),
-        _PresentationChild(key: _browsingKey, z: 0, child: child!),
+        _PresentationChild(
+          key: _browsingKey,
+          z: 0,
+          hitTestable: true,
+          child: child!,
+        ),
       ],
     ),
     child: child,
@@ -244,7 +285,12 @@ class _HostScope extends ConstrainedLayoutBuilder<BoxConstraints> {
 
   @override
   void updateRenderObject(BuildContext context, _RenderHostScope renderObject) {
-    renderObject.host = host;
+    if (!identical(renderObject.host, host)) {
+      if (identical(renderObject.host._content, renderObject)) {
+        renderObject.host._content = null;
+      }
+      renderObject.host = host.._content = renderObject;
+    }
   }
 }
 
@@ -262,6 +308,20 @@ class _RenderHostScope extends RenderBox
 
   @override
   Size computeDryLayout(BoxConstraints constraints) => constraints.biggest;
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    host._content = this;
+  }
+
+  @override
+  void detach() {
+    if (identical(host._content, this)) {
+      host._content = null;
+    }
+    super.detach();
+  }
 
   @override
   void performLayout() {
@@ -355,16 +415,26 @@ class _HostNavigatorState extends NavigatorState {
 
 class _PresentationParentData extends ContainerBoxParentData<RenderBox> {
   int z = 0;
+  bool hitTestable = false;
 }
 
 class _PresentationChild extends ParentDataWidget<_PresentationParentData> {
-  const _PresentationChild({super.key, required this.z, required super.child});
+  const _PresentationChild({
+    super.key,
+    required this.z,
+    required this.hitTestable,
+    required super.child,
+  });
 
   final int z;
+
+  /// 直接参与命中测试；位于浏览 Navigator 下方的宿主由窗口转交
+  final bool hitTestable;
 
   @override
   void applyParentData(RenderObject renderObject) {
     final parentData = renderObject.parentData! as _PresentationParentData;
+    parentData.hitTestable = hitTestable;
     if (parentData.z != z) {
       parentData.z = z;
       renderObject.parent?.markNeedsPaint();
@@ -375,7 +445,11 @@ class _PresentationChild extends ParentDataWidget<_PresentationParentData> {
   Type get debugTypicalAncestorWidgetClass => _PresentationStack;
 }
 
-/// 子节点铺满，按 z 绘制与命中；改变顺序只重排图层，不重新构建
+/// 子节点铺满，按 z 绘制；改变顺序只重排图层，不重新构建
+///
+/// 命中测试只包括浏览 Navigator 与其上方的宿主：浏览层的祖先（如
+/// SmartDialog 的 Material）会吸收所有未被命中的位置，下方的宿主由其在
+/// 浏览栈中的窗口转交，窗口上方的弹窗、页面先命中
 class _PresentationStack extends MultiChildRenderObjectWidget {
   const _PresentationStack({required super.children});
 
@@ -432,7 +506,8 @@ class _RenderPresentationStack extends RenderBox
   @override
   bool hitTestChildren(BoxHitTestResult result, {required Offset position}) {
     for (final child in _ordered.reversed) {
-      if (child.hitTest(result, position: position)) {
+      if ((child.parentData! as _PresentationParentData).hitTestable &&
+          child.hitTest(result, position: position)) {
         return true;
       }
     }

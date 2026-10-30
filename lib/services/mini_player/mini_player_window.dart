@@ -1,10 +1,12 @@
 import 'package:PiliPlus/services/mini_player/mini_player_host_layer.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_policy.dart';
 import 'package:PiliPlus/services/mini_player/mini_player_session.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
-/// 详情页在浏览历史中的位置：本身不绘制，透过它看到下方宿主层中的详情页。
+/// 详情页在浏览历史中的位置：本身不绘制，透过它看到下方宿主层中的详情页，
+/// 落在窗口上的操作转交给详情页。
 /// 详情页的弹窗、面板照常推入浏览栈，位于其上方；返回、出栈先交给详情页
 /// 自身的面板与 PopScope，再由会话决定收起、关闭或回到上一个视频
 ///
@@ -20,7 +22,6 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
        _presentation = presentation,
        _overBackdrop = presentation,
        super(
-         page: () => const SizedBox.expand(),
          routeName: MiniPlayerPolicy.videoRoute,
          settings: RouteSettings(
            name: MiniPlayerPolicy.videoRoute,
@@ -94,6 +95,9 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
 
   @override
   Widget buildModalBarrier() => const SizedBox.shrink();
+
+  @override
+  Widget buildContent(BuildContext context) => _WindowContent(this);
 
   /// 转场由宿主中的详情页以 [buildPresentation] 绘制
   @override
@@ -211,4 +215,40 @@ class MiniPlayerDormant {
 
   final Map<String, dynamic> args;
   final MiniPlayerResume resume;
+}
+
+/// 窗口的内容：不绘制，命中测试转交给所呈现的详情页
+class _WindowContent extends LeafRenderObjectWidget {
+  const _WindowContent(this.route);
+
+  final MiniPlayerWindowRoute route;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderWindowContent(route);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderWindowContent renderObject,
+  ) {
+    renderObject.route = route;
+  }
+}
+
+class _RenderWindowContent extends RenderBox {
+  _RenderWindowContent(this.route);
+
+  MiniPlayerWindowRoute route;
+
+  @override
+  bool get sizedByParent => true;
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) => constraints.biggest;
+
+  @override
+  bool hitTest(BoxHitTestResult result, {required Offset position}) =>
+      size.contains(position) &&
+      (route.host?.hitTestThroughWindow(result, this, position) ?? false);
 }
