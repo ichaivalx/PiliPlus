@@ -88,6 +88,10 @@ class FollowerSession {
   /// 连续跳转仍未对齐的次数达到此值时，请主控共同暂停后重新共同起播
   static const _maxJumps = 2;
 
+  /// 主控拖动进度后，收到新进度的样本数达到此值再跳转，避免按刚恢复播放时
+  /// 不稳定的进度定位
+  static const _seekSamples = 3;
+
   /// 跳转耗时（定位到缓冲就绪）按实测学习，起播时刻按此预留提前量
   static const _seekCostRate = 0.5;
   static const _minSeekCostUs = 100000;
@@ -178,6 +182,9 @@ class FollowerSession {
 
   /// 应跟随播放而被本机暂停（音频焦点、媒体控制等），本机恢复播放后重新对齐
   bool _localPaused = false;
+
+  /// 主控拖动了进度：本机已暂停，等待主控新进度后跳转
+  bool _awaitingSeek = false;
 
   /// 跳转中：本机已暂停并定位，等待到时起播
   bool _jumping = false;
@@ -473,6 +480,8 @@ class FollowerSession {
         }
       case LinkMessageType.position:
         _onLeaderPosition(message);
+      case LinkMessageType.seek:
+        _onLeaderSeek();
       case LinkMessageType.stop:
         _leaderCid = null;
         _leaderPosAt = -_lostUs;
@@ -776,9 +785,32 @@ class FollowerSession {
     }
   }
 
+  /// 主控播放中拖动进度：旧进度模型作废，本机立即停止旧位置的声音
+  void _onLeaderSeek() {
+    _intercepts.clear();
+    _drifts.clear();
+    if (!_shouldPlay) return;
+    _jumpToken++;
+    _jumping = false;
+    _startTimer?.cancel();
+    _startTimer = null;
+    _localPaused = false;
+    _correcting = false;
+    _tracking = false;
+    _factor = 1.0;
+    _awaitingSeek = true;
+    if (_loadedPlayer case final player?) {
+      _applySpeed(player);
+      if (player.state.playing) {
+        _target!.pause();
+      }
+    }
+  }
+
   void _resetCorrection() {
     _jumpToken++;
     _jumping = false;
+    _awaitingSeek = false;
     _localPaused = false;
     _intercepts.clear();
     _drifts.clear();
@@ -919,7 +951,8 @@ class FollowerSession {
         !_loaded ||
         _pendingRound != null ||
         _startTimer != null ||
-        _jumping) {
+        _jumping ||
+        _awaitingSeek) {
       return LinkedPeerState.preparing;
     }
     if (_shouldPlay) {
@@ -944,6 +977,12 @@ class FollowerSession {
       }
       if (_jumping) {
         // 等待跳转后起播
+      } else if (_awaitingSeek) {
+        if (_intercepts.length >= _seekSamples && _clock.isReady) {
+          _awaitingSeek = false;
+          _jumps = 0;
+          _realign(target, player, now);
+        }
       } else if (_shouldPlay) {
         if (!player.state.playing) {
           // 起播后稳定期过后仍未播放：被本机暂停，不强行恢复

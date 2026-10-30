@@ -104,6 +104,9 @@ class LeaderSession {
   /// 播放中位置的跳变超过此值视为拖动进度
   static const _seekJumpUs = 1000000;
 
+  /// 拖动进度后此时间内的缓冲不视为卡顿：跟随端已暂停，等本机恢复播放后跳转加入
+  static const _seekGraceUs = 10000000;
+
   /// 暂停时位置变化超过此值时同步给跟随端
   static const _pausedMoveUs = 150000;
 
@@ -149,6 +152,7 @@ class LeaderSession {
   ({int pos, int at})? _lastPosition;
   int? _pausedPos;
   int _stall = 0;
+  int _seekAt = -_seekGraceUs;
 
   bool get hasPeers => _transport.connections.isNotEmpty;
 
@@ -619,7 +623,10 @@ class LeaderSession {
     if (last == null) return;
     final expected = last.pos + (now - last.at) * player.state.rate;
     if ((pos - expected).abs() > _seekJumpUs) {
-      _resync(intendsPlay: true);
+      // 本机在新位置继续播放，跟随端各自跳转对齐
+      _seekAt = now;
+      _stall = 0;
+      _transport.broadcast(const {'t': LinkMessageType.seek});
     }
   }
 
@@ -645,7 +652,8 @@ class LeaderSession {
     if (_expectPlaying && state.playing) {
       _pausedPos = null;
       if (state.buffering) {
-        if (++_stall >= _stallTicks) {
+        if (LinkClock.nowUs - _seekAt > _seekGraceUs &&
+            ++_stall >= _stallTicks) {
           _stall = 0;
           _resync(intendsPlay: true);
         }

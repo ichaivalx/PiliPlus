@@ -84,6 +84,9 @@ abstract final class LinkMessageType {
   /// 跟随端 → 主控：没有跟上主控的内容，请求重新发送
   static const want = 'want';
 
+  /// 主控 → 跟随端：播放中拖动了进度，跟随端各自跳转到新进度
+  static const seek = 'seek';
+
   /// 跟随端 → 主控：定时关闭到期，请求一起停止
   static const stopAll = 'stopAll';
 
