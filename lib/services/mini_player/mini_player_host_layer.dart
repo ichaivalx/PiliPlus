@@ -34,7 +34,7 @@ class MiniPlayerHostEntry extends ChangeNotifier {
     this.args, {
     this.hidden = false,
     this.deferPlayer = false,
-    this.startPaused = false,
+    this.resume = MiniPlayerResume.playing,
   }) : heroTag = args['heroTag'];
 
   final Map<String, dynamic> args;
@@ -46,8 +46,9 @@ class MiniPlayerHostEntry extends ChangeNotifier {
   /// 播放器空出（显示中的其他详情页离开）前不接管播放器，由会话通知接管
   bool deferPlayer;
 
-  /// 回到离开时已暂停的旧视频：接管播放器后保持暂停
-  final bool startPaused;
+  /// 回到旧视频时按其离开时的播放状态恢复：已暂停的接管播放器后保持
+  /// 暂停，尚未开始播放的等待用户开始
+  final MiniPlayerResume resume;
 
   MiniHostState state = MiniHostState.shown;
 

@@ -44,8 +44,12 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   /// 显示中的其他详情页离开前不接管播放器
   bool get miniDefersPlayer => _host?.deferPlayer ?? false;
 
-  /// 不显示地构建时，各区域实际显示的内容，首次显示前等待其到达
-  final Set<MiniRestoreContent> _shownContents = {};
+  /// 不显示地构建时已挂载的各区域，首次显示前等待其内容到达
+  final Set<_MiniRestoreRevealState> _reveals = {};
+
+  Set<MiniRestoreContent> get _shownContents => {
+    for (final e in _reveals) ...e.widget.waiting,
+  };
 
   StreamSubscription? _detailSubscription;
 
@@ -58,9 +62,10 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     if (host.deferPlayer) {
       _takeoverLoad = shutdownTimerService.beginLoad();
     }
-    if (host.hidden) {
-      // 在小窗中开始播放，回到上一个视频时同样从离开时的进度继续
-      videoDetailController.autoPlay = true;
+    if (host.hidden || host.deferPlayer) {
+      // 在小窗中开始播放；回到旧视频时按离开时的状态，尚未开始播放的仍
+      // 等待用户开始
+      videoDetailController.autoPlay = host.resume != MiniPlayerResume.idle;
     }
     // 只能在详情页中播放的内容不留在小窗中
     _detailSubscription = introController.videoDetail.listen((detail) {
@@ -161,22 +166,34 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   bool get isMiniPlayerLoading => !videoDetailController.videoState.value;
 
   @override
-  ({int? progress, bool playing}) get miniPlayback {
+  ({int? progress, MiniPlayerResume resume}) get miniPlayback {
     final ctr = videoDetailController;
-    if (miniDefersPlayer ||
-        (_ownsPlayer && !ctr.videoState.value && ctr.playedTime == null)) {
-      // 尚未开始播放：沿用打开时的进度与播放状态
-      return (
-        progress: ctr.defaultST?.inMilliseconds ?? ctr.args['progress'],
-        playing: !(_host?.startPaused ?? false),
-      );
+    // 尚未开始播放时沿用打开时的进度
+    final pending = ctr.defaultST?.inMilliseconds ?? ctr.args['progress'];
+    if (!ctr.autoPlay) {
+      // 不自动播放且用户尚未开始播放
+      return (progress: pending, resume: MiniPlayerResume.idle);
+    }
+    if (miniDefersPlayer) {
+      return (progress: pending, resume: _host!.resume);
     }
     if (_ownsPlayer) {
+      if (!ctr.videoState.value && ctr.playedTime == null) {
+        // 加载中，完成后自动播放（回到已暂停的旧视频时保持暂停）
+        return (
+          progress: pending,
+          resume: _host?.resume == MiniPlayerResume.paused
+              ? MiniPlayerResume.paused
+              : MiniPlayerResume.playing,
+        );
+      }
       final player = ctr.plPlayerController;
       final status = player.playerStatus;
       return (
         progress: status.isCompleted ? null : player.positionInMilliseconds,
-        playing: status.isPlaying,
+        resume: status.isPlaying
+            ? MiniPlayerResume.playing
+            : MiniPlayerResume.paused,
       );
     }
     // 已离开的页面：离开时保存的进度与播放状态，对应 didPushNext 与
@@ -186,10 +203,12 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     return (
       progress: (status?.isCompleted ?? false)
           ? null
-          : ctr.playedTime?.inMilliseconds,
-      playing:
+          : ctr.playedTime?.inMilliseconds ?? pending,
+      resume:
           (status?.isPlaying ?? false) &&
-          (resume == null || shutdownTimerService.canAutoplay(resume)),
+              (resume == null || shutdownTimerService.canAutoplay(resume))
+          ? MiniPlayerResume.playing
+          : MiniPlayerResume.paused,
     );
   }
 
@@ -353,7 +372,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     plPlayerController = ctr.plPlayerController
       ..addStatusLister(playerListener)
       ..addPositionListener(positionListener);
-    final paused = _host?.startPaused ?? false;
+    final paused = _host?.resume == MiniPlayerResume.paused;
     if (paused) {
       // 进行中的加载（包括页面自身的播放地址请求）完成后同样保持暂停
       shutdownTimerService.holdPendingAutoplay();
@@ -400,7 +419,6 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
     if (host == null || !host.hidden) {
       return child;
     }
-    _shownContents.addAll(content);
     return _MiniRestoreReveal(
       host: this,
       entry: host,
@@ -517,6 +535,7 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
   @override
   void initState() {
     super.initState();
+    widget.host._reveals.add(this);
     if (widget.entry.painted && !miniPlayerSession.restoring.value) {
       _show();
       return;
@@ -579,6 +598,7 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
 
   @override
   void dispose() {
+    widget.host._reveals.remove(this);
     _stopWaiting();
     _controller.dispose();
     super.dispose();

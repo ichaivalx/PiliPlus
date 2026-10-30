@@ -205,10 +205,10 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
   }
 }
 
-/// 宿主释放后保留的旧视频：重新打开所用的参数，及离开时是否在播放
+/// 宿主释放后保留的旧视频：重新打开所用的参数，及离开时的播放状态
 class MiniPlayerDormant {
-  const MiniPlayerDormant(this.args, {required this.playing});
+  const MiniPlayerDormant(this.args, {required this.resume});
 
   final Map<String, dynamic> args;
-  final bool playing;
+  final MiniPlayerResume resume;
 }
