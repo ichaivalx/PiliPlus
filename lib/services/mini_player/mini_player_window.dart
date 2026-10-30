@@ -18,9 +18,10 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
     Map<String, dynamic> arguments, {
     MiniPlayerHostEntry? host,
     bool presentation = false,
+    bool overBackdrop = false,
   }) : _host = host,
        _presentation = presentation,
-       _overBackdrop = presentation,
+       _overBackdrop = overBackdrop,
        super(
          routeName: MiniPlayerPolicy.videoRoute,
          settings: RouteSettings(
@@ -48,9 +49,10 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
 
   bool get isDormant => _host == null && dormant != null;
 
-  /// 从小窗展开时临时推入的窗口：不播放转场，下方页面保持不动，展开期间
-  /// 下方页面作为实时背景保持显示，展开结束后由 [reveal] 遮住
+  /// 从小窗展开时临时推入的窗口：不播放转场，下方页面保持不动
   bool _presentation;
+
+  /// 展开期间下方页面作为实时背景保持显示，展开结束后由 [reveal] 遮住
   bool _overBackdrop;
 
   /// 会话主动出栈，不再交给详情页与会话判断
@@ -203,7 +205,21 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
   }
 
   @override
+  void install() {
+    super.install();
+    focusScopeNode.addListener(_onFocusChanged);
+  }
+
+  /// 窗口本身没有可获得焦点的内容，焦点落在窗口上时交给详情页
+  void _onFocusChanged() {
+    if (focusScopeNode.hasPrimaryFocus) {
+      miniPlayerSession.focusWindow(this);
+    }
+  }
+
+  @override
   void dispose() {
+    focusScopeNode.removeListener(_onFocusChanged);
     miniPlayerSession.windowDisposed(this);
     super.dispose();
   }

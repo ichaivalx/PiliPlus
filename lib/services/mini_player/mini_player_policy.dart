@@ -23,6 +23,9 @@ abstract final class MiniPlayerMotion {
   static const duration = Duration(milliseconds: 300);
   static const curve = Curves.fastOutSlowIn;
 
+  /// 展开的时间进度达到此值时（外框已接近铺满）详情页在截图下方提前显示
+  static const warmAt = 0.85;
+
   /// 恢复后详情页其余内容的出现
   static const revealDuration = Duration(milliseconds: 200);
   static const revealOffset = 10.0;

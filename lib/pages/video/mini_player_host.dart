@@ -78,6 +78,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   /// 被移除时先作废等待中的续播
   void disposeMiniPlayerHost() {
     _detailSubscription?.cancel();
+    _playerFocusNode?.dispose();
     miniPlayerSession.detach(this);
     _cancelContinuation();
     _takeReturnResume();
@@ -248,6 +249,46 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   }
 
   @override
+  Future<ui.Image?> renderMiniSnapshot() async {
+    final boundary = _pageBoundary;
+    if (!mounted || boundary == null) {
+      return null;
+    }
+    try {
+      return await boundary.toImage(
+        pixelRatio: MediaQuery.devicePixelRatioOf(context),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  FocusNode? _playerFocusNode;
+
+  /// 播放器快捷键所在的焦点，传给 PlayerFocus；不在宿主中时为 null
+  FocusNode? get miniPlayerFocusNode => _host == null
+      ? null
+      : _playerFocusNode ??= FocusNode(debugLabel: 'miniPlayerFocus');
+
+  @override
+  void focusMiniPlayer() {
+    if (!mounted) {
+      return;
+    }
+    final scope = _host?.route.focusScopeNode;
+    if (scope == null) {
+      return;
+    }
+    final node = _playerFocusNode;
+    if (scope.focusedChild == null && node != null && node.context != null) {
+      // 页面不显示地构建时播放器的自动获得焦点未生效
+      node.requestFocus();
+    } else {
+      scope.requestFocus();
+    }
+  }
+
+  @override
   String get miniTitle {
     final title = introController.videoDetail.value.title;
     if (title != null && title.isNotEmpty) {
@@ -283,7 +324,7 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
   }
 
   @override
-  void onMiniCollapsed() {
+  Future<void>? onMiniCollapsed() {
     final ctr = videoDetailController;
     final player = ctr.plPlayerController;
     if (player.isFullScreen.value) {
@@ -295,8 +336,9 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
       ScreenBrightnessPlatform.instance.resetApplicationScreenBrightness();
     }
     if (ctr.removeSafeArea) {
-      showSystemBar();
+      return showSystemBar();
     }
+    return null;
   }
 
   @override
@@ -544,7 +586,7 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
   void initState() {
     super.initState();
     widget.host._reveals.add(this);
-    if (widget.entry.painted && !miniPlayerSession.restoring.value) {
+    if (widget.entry.shown && !miniPlayerSession.restoring.value) {
       _show();
       return;
     }
@@ -570,7 +612,7 @@ class _MiniRestoreRevealState extends State<_MiniRestoreReveal>
     if (_waiting == null) {
       return;
     }
-    if (!widget.entry.painted) {
+    if (!widget.entry.shown) {
       // 不显示期间到达的内容直接显示
       if (_ready) {
         _stopWaiting();

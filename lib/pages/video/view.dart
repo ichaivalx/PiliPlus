@@ -1313,6 +1313,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
           return false;
         },
         onSkipSegment: videoDetailController.onSkipSegment,
+        focusNode: miniPlayerFocusNode,
         child: child,
       );
     }

@@ -27,6 +27,18 @@ enum MiniHostState {
   closing,
 }
 
+/// 详情页在宿主层中的显示方式，不显示时仍照常构建与布局
+enum MiniHostVisibility {
+  /// 不绘制
+  hidden,
+
+  /// 绘制但不上屏：供截图，绘制结果不参与合成
+  offscreen,
+
+  /// 显示
+  shown,
+}
+
 /// 一个视频详情页的宿主：详情页在宿主层中保持存在，展开、收起与被覆盖
 /// 只改变其显示方式，不重建页面
 class MiniPlayerHostEntry extends ChangeNotifier {
@@ -83,8 +95,15 @@ class MiniPlayerHostEntry extends ChangeNotifier {
     }
   }
 
-  bool _painted = false;
-  bool get painted => _painted;
+  MiniHostVisibility _visibility = MiniHostVisibility.hidden;
+  MiniHostVisibility get visibility => _visibility;
+
+  /// 详情页显示在屏幕上，响应操作与焦点
+  bool get shown => _visibility == .shown;
+
+  /// 详情页的动画运行；展开、收起期间停止，展开结束后恢复
+  bool _ticking = false;
+  bool get ticking => _ticking;
 
   /// 绘制顺序：负数位于浏览 Navigator 下方并按窗口在栈中的位置排列，
   /// 正数位于其上方
@@ -97,12 +116,17 @@ class MiniPlayerHostEntry extends ChangeNotifier {
   bool get direct => _direct;
 
   void updateLayer({
-    required bool painted,
+    required MiniHostVisibility visibility,
+    required bool ticking,
     required int z,
     bool direct = false,
   }) {
-    if (_painted != painted || _z != z || _direct != direct) {
-      _painted = painted;
+    if (_visibility != visibility ||
+        _ticking != ticking ||
+        _z != z ||
+        _direct != direct) {
+      _visibility = visibility;
+      _ticking = ticking;
       _z = z;
       _direct = direct;
       notifyListeners();
@@ -122,7 +146,7 @@ class MiniPlayerHostEntry extends ChangeNotifier {
     final content = _content;
     if (content == null ||
         !content.attached ||
-        !_painted ||
+        !shown ||
         !(state == .shown || state == .parked)) {
       return false;
     }
@@ -179,7 +203,15 @@ class MiniPlayerDetailRoute extends GetPageRoute<void> {
   ) => ListenableBuilder(
     listenable: host.presentation,
     builder: (context, child) =>
-        host.window?.buildPresentation(context, child!) ?? child!,
+        host.window?.buildPresentation(context, child!) ??
+        // 没有窗口时（如收起为小窗）按转场已结束构建，结构与有窗口时一致，
+        // 页面不被重新挂载
+        super.buildTransitions(
+          context,
+          kAlwaysCompleteAnimation,
+          kAlwaysDismissedAnimation,
+          child!,
+        ),
     child: child,
   );
 }
@@ -228,11 +260,11 @@ class MiniPlayerHostLayer extends StatelessWidget {
             builder: (context, child) => _PresentationChild(
               z: host.z,
               hitTestable: host.direct,
-              child: Offstage(
-                offstage: !host.painted,
+              child: _HostVisibility(
+                visibility: host.visibility,
                 child: TickerMode(
-                  enabled: host.painted,
-                  child: ExcludeFocus(excluding: !host.painted, child: child!),
+                  enabled: host.ticking,
+                  child: ExcludeFocus(excluding: !host.shown, child: child!),
                 ),
               ),
             ),
@@ -248,6 +280,81 @@ class MiniPlayerHostLayer extends StatelessWidget {
     ),
     child: child,
   );
+}
+
+/// 按 [MiniHostVisibility] 绘制详情页：不上屏时绘制在空的裁剪中，详情页
+/// 照常更新其图层（可截图），光栅化时被整体剔除；只有显示时参与命中测试
+/// 与语义
+class _HostVisibility extends SingleChildRenderObjectWidget {
+  const _HostVisibility({required this.visibility, super.child});
+
+  final MiniHostVisibility visibility;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderHostVisibility(visibility);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderHostVisibility renderObject,
+  ) {
+    renderObject.visibility = visibility;
+  }
+}
+
+class _RenderHostVisibility extends RenderProxyBox {
+  _RenderHostVisibility(this._visibility);
+
+  MiniHostVisibility _visibility;
+  set visibility(MiniHostVisibility value) {
+    if (_visibility != value) {
+      _visibility = value;
+      markNeedsPaint();
+      markNeedsSemanticsUpdate();
+    }
+  }
+
+  final _clip = LayerHandle<ClipRectLayer>();
+
+  @override
+  bool paintsChild(RenderBox child) => _visibility != .hidden;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    switch (_visibility) {
+      case .hidden:
+        _clip.layer = null;
+      case .offscreen:
+        _clip.layer = context.pushClipRect(
+          needsCompositing,
+          offset,
+          Rect.zero,
+          super.paint,
+          oldLayer: _clip.layer,
+        );
+      case .shown:
+        _clip.layer = null;
+        super.paint(context, offset);
+    }
+  }
+
+  @override
+  bool hitTest(BoxHitTestResult result, {required Offset position}) =>
+      _visibility == .shown && super.hitTest(result, position: position);
+
+  @override
+  void visitChildrenForSemantics(RenderObjectVisitor visitor) {
+    if (_visibility == .shown) {
+      super.visitChildrenForSemantics(visitor);
+    }
+  }
+
+  @override
+  void dispose() {
+    _clip.layer = null;
+    super.dispose();
+  }
 }
 
 class _HostContent extends StatelessWidget {
@@ -447,9 +554,9 @@ class _PresentationChild extends ParentDataWidget<_PresentationParentData> {
 
 /// 子节点铺满，按 z 绘制；改变顺序只重排图层，不重新构建
 ///
-/// 命中测试只包括浏览 Navigator 与其上方的宿主：浏览层的祖先（如
-/// SmartDialog 的 Material）会吸收所有未被命中的位置，下方的宿主由其在
-/// 浏览栈中的窗口转交，窗口上方的弹窗、页面先命中
+/// 命中测试只包括浏览 Navigator 与其上方的宿主：下方的宿主只由其在浏览栈
+/// 中的窗口转交，窗口上方的弹窗、页面先命中，未被浏览栈命中的位置也不会
+/// 落到下方的详情页
 class _PresentationStack extends MultiChildRenderObjectWidget {
   const _PresentationStack({required super.children});
 

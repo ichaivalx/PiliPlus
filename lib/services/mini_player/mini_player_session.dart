@@ -23,8 +23,11 @@ abstract interface class MiniPlayerHost {
   /// 播放器在页面中的位置，尚未完成布局时为 null
   Rect? get miniPlayerRect;
 
-  /// 收起、展开时代替页面绘制的截图
+  /// 收起时代替页面绘制的截图，立即返回，在下一帧绘制前完成光栅化
   ui.Image? captureMiniSnapshot();
+
+  /// 展开时代替页面绘制的截图，光栅化完成后返回；页面需已绘制
+  Future<ui.Image?> renderMiniSnapshot();
   String get miniTitle;
   String get miniCover;
 
@@ -45,11 +48,14 @@ abstract interface class MiniPlayerHost {
   /// 各区域所需的内容到达（或等待超时）后完成
   Future<void> whenMiniContentReady();
 
-  /// 收起为小窗，页面不再显示
-  void onMiniCollapsed();
+  /// 收起为小窗，页面不再显示；返回系统栏等的变化，收起的过渡在其后开始
+  Future<void>? onMiniCollapsed();
 
   /// 从小窗展开，页面重新显示
   void onMiniExpanded();
+
+  /// 页面获得焦点：恢复页面中上次的焦点，没有时交给播放器的快捷键
+  void focusMiniPlayer();
 
   /// 被页面覆盖且未转入小窗，按离开处理
   void onMiniHidden();
@@ -68,6 +74,18 @@ abstract interface class MiniPlayerHost {
 }
 
 enum MiniPlayerMode { none, mini }
+
+/// 从小窗展开时详情页所处的阶段，由小窗层随过渡推进
+enum MiniRestoreStage {
+  /// 不上屏地绘制，截取过渡所用的画面
+  capture,
+
+  /// 以截图过渡，详情页不绘制
+  motion,
+
+  /// 过渡接近终点，详情页在截图下方提前显示，交接时不再首次绘制
+  warm,
+}
 
 /// 详情页离开时的播放状态，回到该视频时按此恢复
 enum MiniPlayerResume {
@@ -96,6 +114,7 @@ class MiniPlayerSession {
   final Rxn<Rect> restoreRect = Rxn<Rect>();
   Rect? enterRect;
   ui.Image? _enterSnapshot;
+  Future<void>? _enterReady;
 
   /// 展开或回到上一个视频前等待页面内容
   final RxBool _gating = false.obs;
@@ -134,6 +153,15 @@ class MiniPlayerSession {
   bool _liveBackdrop = false;
   bool get liveBackdrop => _liveBackdrop;
 
+  /// 展开中详情页的阶段，展开开始截图前为 null
+  MiniRestoreStage? _restoreStage;
+  set restoreStage(MiniRestoreStage? value) {
+    if (_restoreStage != value) {
+      _restoreStage = value;
+      _updateLayer();
+    }
+  }
+
   bool get isActive => mode.value == .mini;
 
   bool get isLoading {
@@ -153,14 +181,22 @@ class MiniPlayerSession {
     return host?.page?.miniCover ?? host?.args['cover'] ?? '';
   }
 
-  /// 展开的终点页面当前的截图，由小窗层取走并负责释放
-  ui.Image? captureRestorePage() => _host?.page?.captureMiniSnapshot();
+  /// 展开的终点页面的截图，光栅化完成后返回，由小窗层取走并负责释放
+  Future<ui.Image?> captureRestorePage() async =>
+      await _host?.page?.renderMiniSnapshot();
 
   /// 收起时的页面截图，由小窗取走并负责释放
   ui.Image? takeEnterSnapshot() {
     final snapshot = _enterSnapshot;
     _enterSnapshot = null;
     return snapshot;
+  }
+
+  /// 收起时系统栏等的变化，由小窗取走，在其后开始过渡
+  Future<void>? takeEnterReady() {
+    final ready = _enterReady;
+    _enterReady = null;
+    return ready;
   }
 
   MiniPlayerHostEntry? _hostOf(MiniPlayerHost page) {
@@ -620,7 +656,7 @@ class MiniPlayerSession {
     _enterSnapshot?.dispose();
     _enterSnapshot = page.captureMiniSnapshot();
     host.state = .mini;
-    page.onMiniCollapsed();
+    _enterReady = page.onMiniCollapsed();
     mode.value = .mini;
     _updateLayer();
   }
@@ -652,6 +688,7 @@ class MiniPlayerSession {
     _expandRestore = true;
     _snapshotRestore = true;
     _liveBackdrop = false;
+    _restoreStage = null;
     restoring.value = true;
     // ignore: invalid_use_of_protected_member
     final controller = route.controller;
@@ -755,16 +792,19 @@ class MiniPlayerSession {
 
   // 显示
 
-  /// 各宿主是否绘制及绘制顺序：位于窗口下方且窗口露出时绘制；窗口自身转场
-  /// 期间位于浏览 Navigator 上方。操作按绘制转交，见
+  /// 各宿主的显示方式及绘制顺序：位于窗口下方且窗口露出时显示；窗口自身
+  /// 转场期间位于浏览 Navigator 上方。操作按显示转交，见
   /// [MiniPlayerHostEntry.hitTestThroughWindow]
+  ///
+  /// 从小窗展开时详情页按 [_restoreStage] 只在截图时绘制、接近终点时提前
+  /// 显示；展开、收起期间详情页的动画停止
   void _updateLayer() {
     final top = _routes.lastOrNull;
     final gate = _gate;
     for (final host in hosts) {
       if (gate != null && identical(gate.host, host) && !gate.above.isActive) {
         // 上层页面停在出栈转场开始处，等待期间不显示
-        host.updateLayer(painted: false, z: -1);
+        host.updateLayer(visibility: .hidden, ticking: false, z: -1);
         continue;
       }
       final window = host.window;
@@ -772,25 +812,39 @@ class MiniPlayerSession {
       final exposed = index == -1
           ? _leaving.contains(window)
           : _isExposed(index);
-      final bool painted;
+      final bool visible;
       var lifted = false;
       switch (host.state) {
         case .shown || .parked || .outgoing:
-          painted = exposed;
+          visible = exposed;
           lifted =
               host.state == .shown &&
               identical(window, top) &&
               !(window!.animation?.isCompleted ?? true);
         case .mini:
-          painted =
+          visible =
               exposed &&
               (restoring.value || (_userGesture?.value ?? false));
         case .closing:
           final animation = window?.animation;
-          painted = lifted = animation != null && !animation.isDismissed;
+          visible = lifted = animation != null && !animation.isDismissed;
+      }
+      final restoringHost = restoring.value && identical(host, _host);
+      final MiniHostVisibility visibility;
+      if (!visible) {
+        visibility = .hidden;
+      } else if (restoringHost && _expandRestore) {
+        visibility = switch (_restoreStage) {
+          null || MiniRestoreStage.motion => .hidden,
+          MiniRestoreStage.capture => .offscreen,
+          MiniRestoreStage.warm => .shown,
+        };
+      } else {
+        visibility = .shown;
       }
       host.updateLayer(
-        painted: painted,
+        visibility: visibility,
+        ticking: visibility == .shown && !restoringHost,
         z: lifted ? 1 : index - _routes.length - 1,
         // 入场中位于浏览 Navigator 上方，直接响应操作；离开中的不响应
         direct: lifted && host.state == .shown,
@@ -886,9 +940,13 @@ class MiniPlayerSession {
       } else {
         host.presented = null;
       }
-      window.host = null;
+      window
+        ..host = null
+        ..leave();
       _collapse(host);
-      return true;
+      // 窗口直接移除，下方页面不播放返回转场，详情页的截图在其上方收起
+      Future.microtask(() => _removeRoute(window));
+      return false;
     }
     host.state = .closing;
     window.forwardPop = true;
@@ -1112,12 +1170,14 @@ class MiniPlayerSession {
 
   void _start() {
     _endGate();
+    _restoreStage = null;
     restoring.value = false;
     restoreRect.value = null;
   }
 
   /// 撤销进行中的展开，小窗回到原位
   void _cancelRestore() {
+    _restoreStage = null;
     restoring.value = false;
     restoreRect.value = null;
     final host = _host;
@@ -1188,12 +1248,14 @@ class MiniPlayerSession {
       ..host = null
       ..leave();
     _collapse(host);
-    navigator
-      ..popUntil((e) => identical(e, window))
-      ..pop();
+    // 窗口直接移除，下方页面不播放返回转场，详情页的截图在其上方收起
+    navigator.popUntil((e) => identical(e, window));
+    _removeRoute(window);
   }
 
-  /// 从小窗展开：内容到达后在当前页面上方推入窗口，当前页面作为实时背景
+  /// 从小窗展开：内容到达后在当前页面上方推入窗口。背景为当前画面的截图，
+  /// 页面层在展开期间不上屏；当前页面含 platform view（截图不含其内容）
+  /// 时以实时页面为背景
   Future<void> restore() async {
     final host = _host;
     if (host == null || !isActive || restoring.value || _gating.value) {
@@ -1209,15 +1271,19 @@ class MiniPlayerSession {
         navigator == null) {
       return;
     }
+    final live = _showsPlatformView;
     final window = MiniPlayerWindowRoute(
       host.args,
       host: host,
       presentation: true,
+      overBackdrop: live,
     );
     host.presented = window;
     _expandRestore = true;
-    _snapshotRestore = false;
-    _liveBackdrop = true;
+    _snapshotRestore = !live;
+    _liveBackdrop = live;
+    _restoreStage = null;
+    // 小窗层在此截取背景，其后推入的窗口遮住下方页面
     restoring.value = true;
     navigator.push(window);
     // 详情页在窗口下方不可见地完成布局与绘制后给出终点
@@ -1230,16 +1296,48 @@ class MiniPlayerSession {
       ..scheduleFrame();
   }
 
-  /// 展开的页面已完全盖住背景，与小窗层停止绘制过渡在同一帧换为实际页面
+  /// 当前显示的页面（最上层的不透明页面及其上方的路由）含 platform view
+  bool get _showsPlatformView {
+    final page = _topPage();
+    final index = page == null ? 0 : _routes.indexOf(page);
+    return _routes.skip(index).any(MiniPlayerPolicy.hasPlatformView);
+  }
+
+  /// 展开的页面已完全盖住背景，与小窗层停止绘制过渡在同一帧换为实际页面；
+  /// 系统栏、亮度与焦点在交接后的下一帧恢复，不与交接落在同一帧
   void finishRestore() {
+    _restoreStage = null;
     restoring.value = false;
     restoreRect.value = null;
     final host = _host;
     if (host != null && host.state == .shown) {
       host.presented?.reveal();
-      host.page?.onMiniExpanded();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (identical(_host, host) && host.state == .shown && !isActive) {
+          host.page
+            ?..onMiniExpanded()
+            ..focusMiniPlayer();
+        }
+      });
     }
     _updateLayer();
+  }
+
+  /// 窗口自身获得焦点（如其上方的弹窗、菜单关闭后焦点回到窗口）：焦点
+  /// 交给所呈现的详情页；详情页随路由变化重新显示时在其构建后交给
+  void focusWindow(MiniPlayerWindowRoute window) {
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        final host = window.host;
+        if (window.focusScopeNode.hasPrimaryFocus &&
+            host != null &&
+            host.state == .shown &&
+            host.shown &&
+            !(restoring.value && identical(host, _host))) {
+          host.page?.focusMiniPlayer();
+        }
+      })
+      ..scheduleFrame();
   }
 
   /// 用户在小窗中暂停：进行中的加载完成后同样保持暂停
