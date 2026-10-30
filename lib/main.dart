@@ -311,12 +311,7 @@ class MyApp extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => ValueListenableBuilder(
-    valueListenable: showPerformanceOverlay,
-    builder: _buildApp,
-  );
-
-  Widget _buildApp(BuildContext context, bool performanceOverlay, Widget? _) {
+  Widget build(BuildContext context) {
     final (light, dark) = getAllTheme();
     return GetMaterialApp(
       title: Constants.appName,
@@ -330,7 +325,6 @@ class MyApp extends StatelessWidget {
       initialRoute: '/',
       getPages: Routes.getPages,
       defaultTransition: Pref.pageTransition,
-      showPerformanceOverlay: performanceOverlay,
       builder: _withMiniPlayer(
         FlutterSmartDialog.init(
           toastBuilder: CustomToast.new,
@@ -389,12 +383,33 @@ class MyApp extends StatelessWidget {
       );
     }
     if (PlatformUtils.isDesktop) {
-      return BackDetector(
+      child = BackDetector(
         onBack: _onBack,
         child: child,
       );
     }
-    return child;
+    // 性能浮层位于最上方且不响应操作；结构不随开关变化，页面与小窗层不被
+    // 重新挂载（GetMaterialApp 的 showPerformanceOverlay 会改变结构）
+    return Stack(
+      alignment: Alignment.topLeft,
+      fit: StackFit.expand,
+      children: [
+        child,
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: IgnorePointer(
+            child: ValueListenableBuilder(
+              valueListenable: showPerformanceOverlay,
+              builder: (context, show, _) => show
+                  ? PerformanceOverlay.allEnabled()
+                  : const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   /// from [DynamicColorBuilderState.initPlatformState]
