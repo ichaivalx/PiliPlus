@@ -22,6 +22,7 @@ class FollowerSession {
     required this.deviceName,
     required this.syncOn,
     required this.onSyncChanged,
+    required this.onOffsetChanged,
     required this.startBiasUs,
     required this.onStartBias,
     required String? lastLeader,
@@ -74,10 +75,14 @@ class FollowerSession {
   static const _lostUs = 6000000;
   static const _wantIntervalUs = 10000000;
 
+  /// 请求偏移后在此时间内忽略主控回传的其他值
+  static const _offsetEchoUs = 1000000;
+
   final String deviceId;
   final String deviceName;
   final bool Function() syncOn;
   final void Function(bool) onSyncChanged;
+  final void Function(int) onOffsetChanged;
   int startBiasUs;
   final void Function(int) onStartBias;
   final RxnString leader;
@@ -114,6 +119,10 @@ class FollowerSession {
   bool _shouldPlay = false;
   Timer? _startTimer;
   int _offsetUs = 0;
+
+  /// 本机最近请求的偏移；连续调节时主控依次回传的旧值不覆盖本机
+  int? _requestedOffsetUs;
+  int _requestedAt = 0;
   int? _pausePos;
 
   /// 主控的播放进度模型：位置 = 截距 + 倍速 × 主控时刻
@@ -186,6 +195,16 @@ class FollowerSession {
     } else {
       _pendingSync = on;
       _transport.wake();
+    }
+  }
+
+  /// 用户在本机调节延迟偏移，由主控同步给所有跟随端
+  void requestOffset(int offsetUs) {
+    _setOffset(offsetUs);
+    if (isConnected) {
+      _requestedOffsetUs = offsetUs;
+      _requestedAt = LinkClock.nowUs;
+      _transport.send({'t': LinkMessageType.offset, 'us': offsetUs});
     }
   }
 
@@ -302,8 +321,17 @@ class FollowerSession {
   void _onMessage(LinkMessage message) {
     switch (message['t']) {
       case LinkMessageType.config:
-        if (message['offset'] case final num offset) {
-          _setOffset((offset * 1000).round());
+        if (message['us'] case final int us) {
+          final requested = _requestedOffsetUs;
+          if (requested != null) {
+            if (us == requested) {
+              _requestedOffsetUs = null;
+            } else if (LinkClock.nowUs - _requestedAt < _offsetEchoUs) {
+              break;
+            }
+          }
+          _setOffset(us);
+          onOffsetChanged(us);
         }
       case LinkMessageType.sync:
         if (message['on'] case final bool on) {

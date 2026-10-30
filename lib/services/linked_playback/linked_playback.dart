@@ -28,7 +28,7 @@ class LinkedPlayback {
 
   static const _enabledKey = 'linkedPlaybackEnabled';
   static const _roleKey = 'linkedPlaybackRole';
-  static const _offsetKey = 'linkedPlaybackOffset';
+  static const _offsetKey = 'linkedPlaybackOffsetUs';
   static const _syncKey = 'linkedPlaybackSync';
   static const _deviceIdKey = 'linkedPlaybackDeviceId';
   static const _startBiasKey = 'linkedPlaybackStartBias';
@@ -49,8 +49,11 @@ class LinkedPlayback {
     GStorage.setting.get(_syncKey, defaultValue: true) as bool,
   );
 
-  /// 跟随端的延迟偏移（毫秒），正值使跟随端相对主控延后
-  final RxInt offsetMs = RxInt(
+  /// 延迟偏移的最小调节单位（微秒）
+  static const offsetStepUs = 500;
+
+  /// 跟随端的延迟偏移（微秒），正值使跟随端相对主控延后；两端共享，以主控为准
+  final RxInt offsetUs = RxInt(
     GStorage.setting.get(_offsetKey, defaultValue: 0) as int,
   );
 
@@ -154,10 +157,20 @@ class LinkedPlayback {
     await _restart();
   }
 
+  /// 设置延迟偏移，取整到 [offsetStepUs]
   void setOffset(int value) {
-    offsetMs.value = value;
-    GStorage.setting.put(_offsetKey, value);
-    _leader?.updateOffset();
+    final us = (value / offsetStepUs).round() * offsetStepUs;
+    if (_saveOffset(us)) {
+      _leader?.updateOffset();
+      _follower?.requestOffset(us);
+    }
+  }
+
+  bool _saveOffset(int us) {
+    if (us == offsetUs.value) return false;
+    offsetUs.value = us;
+    GStorage.setting.put(_offsetKey, us);
+    return true;
   }
 
   void setPeerVolume(String id, double volume) {
@@ -237,7 +250,11 @@ class LinkedPlayback {
       }
       if (role.value == LinkedRole.leader) {
         final session = _leader = LeaderSession(
-          offsetMs: () => offsetMs.value,
+          offsetUs: () => offsetUs.value,
+          onOffsetRequest: (us) {
+            _saveOffset(us);
+            _leader?.updateOffset();
+          },
           syncOn: () => syncOn.value,
           onSyncRequest: (on) {
             _setSync(on);
@@ -255,6 +272,7 @@ class LinkedPlayback {
             _setSync(on);
             _follower?.applySync();
           },
+          onOffsetChanged: _saveOffset,
           startBiasUs:
               GStorage.setting.get(_startBiasKey, defaultValue: 0) as int,
           onStartBias: (value) => GStorage.setting.put(_startBiasKey, value),

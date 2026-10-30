@@ -86,7 +86,8 @@ class _PeerState {
 /// 主控：本机播放的内容与播放操作同步给所有跟随端
 class LeaderSession {
   LeaderSession({
-    required this.offsetMs,
+    required this.offsetUs,
+    required this.onOffsetRequest,
     required this.syncOn,
     required this.onSyncRequest,
     required this.onPeersChanged,
@@ -108,7 +109,8 @@ class LeaderSession {
   /// 连续卡顿的检查次数，达到后共同暂停并重新共同起播
   static const _stallTicks = 3;
 
-  final int Function() offsetMs;
+  final int Function() offsetUs;
+  final void Function(int) onOffsetRequest;
   final bool Function() syncOn;
   final void Function(bool) onSyncRequest;
   final void Function(List<LinkedPeerInfo>) onPeersChanged;
@@ -167,7 +169,7 @@ class LeaderSession {
 
   Map<String, Object?> get _config => {
     't': LinkMessageType.config,
-    'offset': offsetMs(),
+    'us': offsetUs(),
   };
 
   Map<String, Object?> get _syncMessage => {
@@ -668,6 +670,10 @@ class LeaderSession {
       case LinkMessageType.sync:
         if (message['on'] case final bool on) {
           onSyncRequest(on);
+        }
+      case LinkMessageType.offset:
+        if (message['us'] case final int us) {
+          onOffsetRequest(us);
         }
       case LinkMessageType.stopAll:
         pauseAll();

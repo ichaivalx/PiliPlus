@@ -2,6 +2,7 @@ import 'package:PiliPlus/common/widgets/scaffold/simple_scaffold.dart';
 import 'package:PiliPlus/common/widgets/view_safe_area.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/menu_row.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
+import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -18,14 +19,14 @@ class LinkedPlaybackPage extends StatelessWidget {
   }
 }
 
-/// 联动播放的开关、角色、同步、连接状态；主控另有跟随端的状态、音量与延迟偏移
+/// 联动播放的开关、角色、同步、连接状态与延迟偏移；主控另有跟随端的状态与音量
 class LinkedPlaybackPanel extends StatelessWidget {
   const LinkedPlaybackPanel({super.key, this.padding});
 
   final EdgeInsetsGeometry? padding;
 
-  static const _offsetRange = 500;
-  static const _offsetSteps = [-10, -1, 1, 10];
+  /// 步进按钮（毫秒）
+  static const _offsetSteps = [-10, 10];
 
   static String _signedMs(double? value) => value == null
       ? '—'
@@ -95,6 +96,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
               LinkedRole.leader => _leaderStatus(theme),
               LinkedRole.follower => _followerStatus(),
             },
+            ..._offset(theme),
           ],
         ],
       );
@@ -103,7 +105,6 @@ class LinkedPlaybackPanel extends StatelessWidget {
 
   List<Widget> _leaderStatus(ThemeData theme) {
     final peers = linkedPlayback.peers;
-    final offset = linkedPlayback.offsetMs.value;
     final online = peers.where((e) => e.state != LinkedPeerState.offline);
     return [
       ListTile(
@@ -115,19 +116,33 @@ class LinkedPlaybackPanel extends StatelessWidget {
             : null,
       ),
       for (final peer in peers) ..._peer(theme, peer),
+    ];
+  }
+
+  List<Widget> _offset(ThemeData theme) {
+    final offset = linkedPlayback.offsetUs.value;
+    return [
       ListTile(
-        title: Text('跟随端延迟偏移 $offset ms'),
-        subtitle: const Text('跟随端声音偏早时调大，偏晚时调小；偏差为正表示跟随端超前'),
+        title: Text('跟随端延迟偏移 ${formatLinkedOffset(offset)}'),
+        subtitle: const Text(
+          '左右拖动拨轮，每格 0.5 ms；跟随端声音偏早时调大，偏晚时调小。两端共用，偏差为正表示跟随端超前',
+        ),
       ),
       Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: Slider(
-          min: -_offsetRange.toDouble(),
-          max: _offsetRange.toDouble(),
-          divisions: _offsetRange * 2,
-          value: offset.clamp(-_offsetRange, _offsetRange).toDouble(),
-          label: '$offset ms',
-          onChanged: (value) => linkedPlayback.setOffset(value.round()),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: LayoutBuilder(
+          builder: (context, constraints) => DecoratedBox(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: const BorderRadius.all(Radius.circular(8)),
+            ),
+            child: LinkedOffsetDial(
+              axis: Axis.horizontal,
+              length: constraints.maxWidth,
+              thickness: 48,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
         ),
       ),
       Wrap(
@@ -135,8 +150,8 @@ class LinkedPlaybackPanel extends StatelessWidget {
         children: [
           for (final step in _offsetSteps)
             TextButton(
-              onPressed: () => linkedPlayback.setOffset(offset + step),
-              child: Text(step > 0 ? '+$step' : '$step'),
+              onPressed: () => linkedPlayback.setOffset(offset + step * 1000),
+              child: Text(step > 0 ? '+$step ms' : '$step ms'),
             ),
           TextButton(
             onPressed: () => linkedPlayback.setOffset(0),
