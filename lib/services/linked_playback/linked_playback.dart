@@ -94,6 +94,11 @@ class LinkedPlayback {
   final Rxn<LinkedContent> current = Rxn<LinkedContent>();
   LinkedTarget? _currentTarget;
 
+  /// 页面登记、释放播放内容的代次：发出请求后有其他页面登记过（如打开了视频），
+  /// 请求返回时不应再登记
+  int get epoch => _epoch;
+  int _epoch = 0;
+
   LeaderSession? _leader;
   FollowerSession? _follower;
 
@@ -150,6 +155,7 @@ class LinkedPlayback {
   }) {
     current.value = content;
     _currentTarget = target;
+    _epoch++;
     if (_leader case final leader?) {
       return leader.gateLoad(content, target, autoplay: autoplay);
     }
@@ -161,6 +167,7 @@ class LinkedPlayback {
     if (identical(_currentTarget, target)) {
       current.value = null;
       _currentTarget = null;
+      _epoch++;
     }
     _leader?.releaseTarget(target);
     _follower?.releaseTarget(target);

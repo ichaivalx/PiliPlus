@@ -121,7 +121,10 @@ class LinkedPlaybackService : Service() {
                     val stream = intent?.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, -1)
                     if (stream != AudioManager.STREAM_MUSIC) return
                     val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                    val index = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    // 以广播自带的本次档位为准，读取当前值可能已是之后的变化
+                    val index = intent?.getIntExtra(EXTRA_VOLUME_STREAM_VALUE, -1)
+                        ?.takeIf { it >= 0 }
+                        ?: audio.getStreamVolume(AudioManager.STREAM_MUSIC)
                     notifyDart(
                         "volume",
                         mapOf(
@@ -206,6 +209,7 @@ class LinkedPlaybackService : Service() {
         private const val METHOD_CHANNEL = "com.example.piliplus/linked_playback"
         private const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
         private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
+        private const val EXTRA_VOLUME_STREAM_VALUE = "android.media.EXTRA_VOLUME_STREAM_VALUE"
 
         /** 本机设置音量后，等待系统回报的最长时间 */
         private const val OWN_CHANGE_MS = 1500L
@@ -217,6 +221,9 @@ class LinkedPlaybackService : Service() {
         /** 本机设置、尚待系统回报确认的音量档位及时间，按设置顺序 */
         private val ownChanges = ArrayDeque<Pair<Int, Long>>()
 
+        /** 最近一次确认为本机设置的档位及时间，用于识别同一变化的重复回报 */
+        private var lastOwn: Pair<Int, Long>? = null
+
         private fun notifyDart(method: String, arguments: Any? = null) {
             mainHandler.post { channel?.invokeMethod(method, arguments) }
         }
@@ -227,21 +234,31 @@ class LinkedPlaybackService : Service() {
         }
 
         /**
-         * 系统回报的音量是否为本机设置所致：与待确认的设置一致时消费该记录（及其之前的），
-         * 否则为用户调整，清除所有待确认记录
+         * 系统回报的音量是否为本机设置所致：与待确认的设置一致时，消费截至最近一条
+         * 匹配的记录（未投递的广播可能被合并，之前的设置已被覆盖）；与刚确认过的
+         * 档位相同视为重复回报；否则为用户调整，清除所有待确认记录
          */
         private fun isOwnChange(index: Int): Boolean = synchronized(ownChanges) {
             val now = SystemClock.elapsedRealtime()
             while (ownChanges.isNotEmpty() && now - ownChanges.first().second > OWN_CHANGE_MS) {
                 ownChanges.removeFirst()
             }
-            val match = ownChanges.indexOfFirst { it.first == index }
-            if (match < 0) {
-                ownChanges.clear()
-                false
-            } else {
-                repeat(match + 1) { ownChanges.removeFirst() }
-                true
+            val match = ownChanges.indexOfLast { it.first == index }
+            val last = lastOwn
+            when {
+                match >= 0 -> {
+                    repeat(match + 1) { ownChanges.removeFirst() }
+                    lastOwn = index to now
+                    true
+                }
+
+                last != null && last.first == index && now - last.second <= OWN_CHANGE_MS -> true
+
+                else -> {
+                    ownChanges.clear()
+                    lastOwn = null
+                    false
+                }
             }
         }
 

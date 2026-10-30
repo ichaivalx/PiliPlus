@@ -458,6 +458,7 @@ class AudioController extends GetxController
       load: load,
       cid: (subId.firstOrNull ?? oid).toInt(),
       content: _linkedContent,
+      epoch: linkedPlayback.epoch,
     );
   }
 
@@ -482,8 +483,10 @@ class AudioController extends GetxController
       headers: {'Referer': ?referer},
     );
     _loadedCid = null;
-    // 已让出给视频时不登记为联动内容
-    final linkedLoad = _yielded
+    // 已让出给视频，或请求期间其他页面（如视频）已登记播放内容：
+    // 不登记为联动内容，也不自动播放
+    final superseded = linkedPlayback.epoch != request.epoch;
+    final linkedLoad = _yielded || superseded
         ? null
         : linkedPlayback.gateLoad(
             request.content,
@@ -513,7 +516,7 @@ class AudioController extends GetxController
       return;
     }
     // 定时关闭在加载期间到期或已让出给视频时不再播放
-    if (!_yielded && shutdownTimerService.canAutoplay(load)) {
+    if (!_yielded && !superseded && shutdownTimerService.canAutoplay(load)) {
       player.play();
     }
   }
@@ -1028,17 +1031,19 @@ class AudioController extends GetxController
   }
 }
 
-/// 一次播放地址请求：发出时的加载许可、分P 与联动内容
+/// 一次播放地址请求：发出时的加载许可、分P、联动内容与登记代次
 class _AudioRequest {
   const _AudioRequest({
     required this.load,
     required this.cid,
     required this.content,
+    required this.epoch,
   });
 
   final ShutdownLoad load;
   final int cid;
   final LinkedContent? content;
+  final int epoch;
 }
 
 final class _AudioLinkedTarget implements LinkedTarget {

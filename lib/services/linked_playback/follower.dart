@@ -88,6 +88,9 @@ class FollowerSession {
   /// 连续跳转仍未对齐的次数达到此值时，请主控共同暂停后重新共同起播
   static const _maxJumps = 2;
 
+  /// 跳转目标距结尾不足此值时不再跳转加入，等主控进入下一项
+  static const _endMarginUs = 1000000;
+
   /// 主控拖动进度后，收到新进度的样本数达到此值再跳转，避免按刚恢复播放时
   /// 不稳定的进度定位
   static const _seekSamples = 3;
@@ -305,13 +308,18 @@ class FollowerSession {
     if (!isFollowing || current == null) {
       return null;
     }
-    if (!isConnected) {
-      // 断开期间本机的加载由用户发起，不再跟随原内容
+    // 加载的来源按内容判断：与主控的内容一致的是跟随打开的（可能在断开前发起）
+    if (!current.isSame(content)) {
+      if (isConnected) {
+        return LinkedLoad(position: Duration.zero, onLoaded: () {});
+      }
+      // 断开期间本机打开了其他内容：用户接管，不再跟随
       _clearContent();
       return null;
     }
-    if (!current.isSame(content)) {
-      return LinkedLoad(position: Duration.zero, onLoaded: () {});
+    if (!isConnected) {
+      // 断开期间照常加载并播放，重连后对齐
+      return null;
     }
     final token = ++_loadToken;
     _halt();
@@ -530,6 +538,8 @@ class FollowerSession {
     if (_shouldPlay) {
       _drifts.clear();
       _tracking = true;
+      // 调节偏移引起的跳转不计入对齐失败
+      _jumps = 0;
       return;
     }
     // 暂停时直接定位到新的目标位置
@@ -670,7 +680,22 @@ class FollowerSession {
       _intercepts.isNotEmpty &&
       _clock.isReady &&
       _leaderCid == _content?.cid &&
-      now - _leaderPosAt < _reportUs;
+      now - _leaderPosAt < _reportUs &&
+      _leaderAhead(_loadedPlayer, now);
+
+  /// 跳转时预留的定位时间
+  int get _jumpLeadUs =>
+      (seekCostUs * _seekLeadFactor).round() + _seekMarginUs;
+
+  /// 跳转的目标位置距结尾还有余量，跳转加入后来得及播放
+  bool _leaderAhead(Player? player, int now) {
+    if (player == null) return false;
+    final leaderPos = _leaderPosition(now + _jumpLeadUs);
+    final durationUs = player.state.duration.inMicroseconds;
+    return leaderPos != null &&
+        durationUs > 0 &&
+        leaderPos - _offsetUs + _endMarginUs < durationUs;
+  }
 
   /// 跳转对齐；多次跳转仍未对齐时请主控共同暂停后重新共同起播
   void _realign(LinkedTarget target, Player player, int now) {
@@ -704,11 +729,12 @@ class FollowerSession {
     if (player.state.playing) {
       await target.pause();
     }
-    // 定位慢于预留时间时按更新后的耗时再试一次
-    for (var attempt = 0; attempt < 2; attempt++) {
+    // 定位慢于预留时间时按更新后的耗时再试一次；延迟偏移变化后的重新定位不计次数
+    var lateCount = 0;
+    while (lateCount < 2) {
       if (!isCurrent()) return;
       final begin = LinkClock.nowUs;
-      final at = begin + (seekCostUs * _seekLeadFactor).round() + _seekMarginUs;
+      final at = begin + _jumpLeadUs;
       final leaderPos = _leaderPosition(at);
       if (leaderPos == null) break;
       final offset = _offsetUs;
@@ -730,6 +756,7 @@ class FollowerSession {
         });
         return;
       }
+      lateCount++;
     }
     if (isCurrent()) {
       // 未能对齐，稍后重新加入
@@ -824,7 +851,8 @@ class FollowerSession {
   void _onLeaderSeek() {
     _intercepts.clear();
     _drifts.clear();
-    if (!_shouldPlay) return;
+    // 被本机暂停时保持暂停，本机恢复播放后按新进度对齐
+    if (!_shouldPlay || _localPaused) return;
     _jumpToken++;
     _jumping = false;
     _startTimer?.cancel();
@@ -1019,7 +1047,12 @@ class FollowerSession {
           _realign(target, player, now);
         }
       } else if (_shouldPlay) {
-        if (!player.state.playing) {
+        if (player.state.completed) {
+          // 本机已播完而主控仍在本内容中播放：重新定位加入
+          if (_leaderAhead(player, now)) {
+            _realign(target, player, now);
+          }
+        } else if (!player.state.playing) {
           // 起播后稳定期过后仍未播放：被本机暂停，不强行恢复
           if (!_localPaused && _startTimer == null && now >= _settleUntil) {
             _localPaused = true;
