@@ -99,9 +99,33 @@ class LinkedPlayback {
   int get epoch => _epoch;
   int _epoch = 0;
 
-  /// 最近登记播放内容的是 [target]，或已无页面登记
-  bool isCurrentOwner(LinkedTarget target) =>
-      _currentTarget == null || identical(_currentTarget, target);
+  /// 最近登记播放内容的是 [target]，或已无有效的登记（登记的页面已不再持有播放器）
+  bool isCurrentOwner(LinkedTarget target) {
+    final current = _currentTarget;
+    return current == null || identical(current, target) || !current.isActive;
+  }
+
+  /// 最上层页面发起新的播放请求：取得播放归属，此后其他页面的续播不再登记
+  void claim(LinkedTarget target) {
+    if (identical(_currentTarget, target)) return;
+    current.value = null;
+    _currentTarget = target;
+    _epoch++;
+  }
+
+  /// 页面继续播放已加载的内容（未经加载流程，如返回听视频页继续播放）：
+  /// 成为联动的内容
+  void resume(LinkedContent? content, LinkedTarget target) {
+    if (identical(_currentTarget, target) &&
+        (current.value?.isSame(content) ?? content == null)) {
+      return;
+    }
+    current.value = content;
+    _currentTarget = target;
+    _epoch++;
+    _leader?.takeOver(content, target);
+    _follower?.adopt(target);
+  }
 
   LeaderSession? _leader;
   FollowerSession? _follower;
@@ -109,7 +133,9 @@ class LinkedPlayback {
   /// 开关与角色的切换依次执行
   Future<void> _switching = Future.value();
 
+  /// 前台服务已按此文本运行；为空表示未运行，需要启动
   String? _serviceText;
+  bool _serviceFailed = false;
 
   /// 应用启动后调用，已开启时开始运行
   void init() {
@@ -185,6 +211,8 @@ class LinkedPlayback {
   /// 亮屏、回到前台、用户操作时确认连接，断开时立即重连
   void wake() {
     _follower?.wake();
+    // 前台服务此前启动失败时重试
+    _updateService();
   }
 
   void _refresh() {
@@ -289,9 +317,19 @@ class LinkedPlayback {
     GStorage.setting.put(_syncKey, on);
   }
 
-  void _onShutdown() {
+  Future<void> _onShutdown(bool exit) async {
     _leader?.pauseAll();
     _follower?.stopAll();
+    if (!exit) return;
+    // 退出应用：结束会话，等停止消息发出
+    final leader = _leader;
+    final follower = _follower;
+    _leader = null;
+    _follower = null;
+    await Future.wait<void>([
+      if (leader != null) leader.dispose(),
+      if (follower != null) follower.dispose(),
+    ]);
   }
 
   Future<bool> _requestPermissions() async {
@@ -436,8 +474,20 @@ class LinkedPlayback {
     final full = syncOn.value ? text : '$text（未同步播放）';
     if (full == _serviceText) return;
     _serviceText = full;
-    _channel.invokeMethod('start', {'text': full}).catchError((_) {
-      SmartDialog.showToast('联动播放：后台保持服务启动失败，熄屏后可能中断');
-    });
+    _channel
+        .invokeMethod<void>('start', {'text': full})
+        .then<void>(
+          (_) {
+            _serviceFailed = false;
+          },
+          onError: (_) {
+            // 未运行：之后（如回到前台）重试
+            if (_serviceText == full) _serviceText = null;
+            if (!_serviceFailed) {
+              _serviceFailed = true;
+              SmartDialog.showToast('联动播放：后台保持服务启动失败，熄屏后可能中断');
+            }
+          },
+        );
   }
 }

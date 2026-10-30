@@ -460,6 +460,10 @@ class AudioController extends GetxController
 
   /// 发出请求时固定分P 与联动内容，以最近一次请求为准，迟到的旧结果不再打开
   _AudioRequest _beginRequest() {
+    // 最上层（或正在打开的）本页发起的请求取得播放归属，后台页面的续播不能再作废它
+    if (route?.isCurrent ?? true) {
+      linkedPlayback.claim(_linkedTarget);
+    }
     final load = _openingLoad = shutdownTimerService.beginLoad();
     return _AudioRequest(
       load: load,
@@ -560,6 +564,15 @@ class AudioController extends GetxController
     linkedPlayback.loadFailed(LinkedKind.audio, cid, reason);
   }
 
+  /// 继续播放已加载的内容（如返回本页后继续）时重新成为联动的内容
+  void _resumeLinked() {
+    final cid = _loadedCid;
+    if (_yielded || cid == null) return;
+    final content = _linkedContent;
+    if (content != null && content.cid != cid) return;
+    linkedPlayback.resume(content, _linkedTarget);
+  }
+
   /// 联动播放切换到同页面的另一内容
   void _openLinked(LinkedContent content) {
     id = oid = Int64(content.aid);
@@ -624,6 +637,7 @@ class AudioController extends GetxController
       }),
       stream.playing.listen((playing) {
         if (playing) {
+          _resumeLinked();
           animController.forward();
           _playerStatus = .playing;
           _stopStatusTimer();
@@ -1063,7 +1077,7 @@ final class _AudioLinkedTarget implements LinkedTarget {
   LinkedKind get kind => LinkedKind.audio;
 
   @override
-  bool get isActive => !_controller.isClosed && _controller.player != null;
+  bool get isActive => !_controller.isClosed;
 
   @override
   bool get isLoading => _controller._loadedCid == null;

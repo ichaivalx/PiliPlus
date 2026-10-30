@@ -246,16 +246,18 @@ class FollowerSession {
     _ticker = Timer.periodic(_tickInterval, _tick);
   }
 
-  void dispose() {
+  /// 结束会话；返回的 Future 在已发出的消息（如一起停止）送达连接后完成
+  Future<void> dispose() {
     _ticker?.cancel();
     _playingSubscription?.cancel();
     _generation++;
     _halt();
     _release();
-    _transport.dispose();
+    final closing = _transport.dispose();
     leader.value = null;
     driftMs.value = null;
     rttMs.value = null;
+    return closing;
   }
 
   void wake() => _transport.wake();
@@ -436,6 +438,7 @@ class FollowerSession {
     _readyRound = null;
     _pausePos = null;
     _jumps = 0;
+    _localPaused = false;
   }
 
   void _onMessage(LinkMessage message) {
@@ -492,6 +495,15 @@ class FollowerSession {
           return;
         }
         _round = round;
+        if (_localPaused) {
+          // 被本机暂停：不参与本轮，回报就绪以免主控等待，本机恢复播放后单独对齐；
+          // 主控的进度模型随本轮重新开始
+          _pausePos = pos;
+          _intercepts.clear();
+          _drifts.clear();
+          _transport.send({'t': LinkMessageType.ready, 'round': round});
+          return;
+        }
         _generation++;
         _halt();
         _pendingRound = round;
@@ -695,8 +707,12 @@ class FollowerSession {
       _leaderAhead(_loadedPlayer, now);
 
   /// 跳转时预留的定位时间
+  /// 跳转时预留的定位时间；起播补偿为负时播放命令提前发出，预留时间相应加长，
+  /// 保证播放命令的计划时刻晚于预计就绪时刻
   int get _jumpLeadUs =>
-      (seekCostUs * _seekLeadFactor).round() + _seekMarginUs;
+      (seekCostUs * _seekLeadFactor).round() +
+      _seekMarginUs +
+      max(0, -startBiasUs);
 
   /// 跳转的目标位置距结尾还有余量，跳转加入后来得及播放
   bool _leaderAhead(Player? player, int now) {
@@ -933,11 +949,12 @@ class FollowerSession {
     }
   }
 
+  /// 被本机暂停的状态不在此清除：同一内容的暂停、重新起播期间保留，
+  /// 本机恢复播放或内容变化时才结束
   void _resetCorrection() {
     _jumpToken++;
     _jumping = false;
     _awaitingSeek = false;
-    _localPaused = false;
     _intercepts.clear();
     _drifts.clear();
     _correcting = false;
@@ -992,7 +1009,11 @@ class FollowerSession {
   bool _requestResync(int now) {
     if (now - _lastResync < _resyncIntervalUs) return false;
     _lastResync = now;
-    _transport.send({'t': LinkMessageType.resync, 'round': _round});
+    _transport.send({
+      't': LinkMessageType.resync,
+      'round': _round,
+      'cid': _content?.cid,
+    });
     _resetCorrection();
     return true;
   }
@@ -1073,6 +1094,7 @@ class FollowerSession {
     if (_failure != null || _target?.failureFor(content.cid) != null) {
       return LinkedPeerState.failed;
     }
+    if (_localPaused) return LinkedPeerState.localPaused;
     if (player == null ||
         !_loaded ||
         _pendingRound != null ||
@@ -1082,7 +1104,6 @@ class FollowerSession {
       return LinkedPeerState.preparing;
     }
     if (_shouldPlay) {
-      if (_localPaused) return LinkedPeerState.localPaused;
       return player.state.buffering
           ? LinkedPeerState.buffering
           : LinkedPeerState.playing;
@@ -1112,6 +1133,18 @@ class FollowerSession {
           _jumps = 0;
           _realign(target, player, now);
         }
+      } else if (_localPaused && !player.state.completed) {
+        if (player.state.playing) {
+          // 本机恢复播放（打断结束、用户播放）：主控在播时跳转重新对齐，
+          // 主控已暂停时随主控暂停
+          _localPaused = false;
+          if (_shouldPlay) {
+            _jumps = 0;
+            _realign(target, player, now);
+          } else if (_startTimer == null) {
+            _pause(target);
+          }
+        }
       } else if (_shouldPlay) {
         if (player.state.completed) {
           // 本机已播完而主控仍在本内容中播放：重新定位加入
@@ -1121,14 +1154,9 @@ class FollowerSession {
           }
         } else if (!player.state.playing) {
           // 未收到暂停事件时的兜底：起播后稳定期过后仍未播放
-          if (!_localPaused && _startTimer == null && now >= _settleUntil) {
+          if (_startTimer == null && now >= _settleUntil) {
             _markLocalPaused(player);
           }
-        } else if (_localPaused) {
-          // 本机恢复播放（打断结束、用户播放）后跳转重新对齐
-          _localPaused = false;
-          _jumps = 0;
-          _realign(target, player, now);
         } else {
           drift = _follow(target, player, now);
         }

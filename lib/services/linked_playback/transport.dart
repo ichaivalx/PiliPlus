@@ -57,18 +57,22 @@ class LinkConnection {
     }
   }
 
-  void close() {
-    if (_closed) return;
+  /// 关闭连接；返回的 Future 在已写入的消息发出（或超时）后完成
+  Future<void> close() {
+    if (_closed) return _closing;
     _closed = true;
     _subscription.cancel();
     // 先发出已写入的消息（如停止）再断开
-    _socket
+    _closing = _socket
         .close()
         .timeout(const Duration(seconds: 2))
         .then((_) {}, onError: (_) {})
         .whenComplete(_socket.destroy);
     _onClosed(this);
+    return _closing;
   }
+
+  Future<void> _closing = Future.value();
 }
 
 /// 发现用的 UDP 套接字，网络变化后可重新绑定
@@ -274,16 +278,18 @@ class LeaderTransport {
     }
   }
 
-  void dispose() {
+  /// 返回的 Future 在各连接已写入的消息发出后完成
+  Future<void> dispose() {
     _disposed = true;
     _timer?.cancel();
-    for (final connection in connections.toList()) {
-      connection.close();
-    }
+    final closing = [
+      for (final connection in connections.toList()) connection.close(),
+    ];
     connections.clear();
     _discovery.close();
     _server?.close();
     _server = null;
+    return Future.wait(closing);
   }
 }
 
@@ -480,12 +486,14 @@ class FollowerTransport {
 
   void send(Map<String, Object?> message) => _connection?.send(message);
 
-  void dispose() {
+  /// 返回的 Future 在已写入的消息发出后完成
+  Future<void> dispose() {
     _disposed = true;
     _probeTimer?.cancel();
     _pingTimer?.cancel();
-    _connection?.close();
+    final closing = _connection?.close() ?? Future<void>.value();
     _connection = null;
     _discovery.close();
+    return closing;
   }
 }

@@ -55,16 +55,25 @@ class ShutdownTimerService {
 
   void removeTarget(ShutdownTarget target) => _targets.remove(target);
 
-  final List<VoidCallback> _expiredListeners = [];
+  final List<Future<void> Function(bool exit)> _expiredListeners = [];
 
-  /// 定时关闭到期（含播完后停止）时通知
-  void addExpiredListener(VoidCallback listener) =>
+  /// 退出应用前等待到期通知完成（如联动播放发出停止消息）的上限
+  static const _expiredWait = Duration(seconds: 2);
+
+  /// 定时关闭到期（含播完后停止）时通知，[exit] 为随后退出应用
+  void addExpiredListener(Future<void> Function(bool exit) listener) =>
       _expiredListeners.add(listener);
 
-  void _notifyExpired() {
-    for (final listener in _expiredListeners.toList()) {
-      listener();
-    }
+  Future<void> _notifyExpired({bool exit = false}) =>
+      Future.wait<void>([
+            for (final listener in _expiredListeners.toList()) listener(exit),
+          ])
+          .timeout(_expiredWait, onTimeout: () => const <void>[])
+          .then<void>((_) {}, onError: (_) {});
+
+  /// 通知到期并等待完成后退出应用
+  void _exitAfterNotify() {
+    _notifyExpired(exit: true).whenComplete(_syncProgressAndExit);
   }
 
   final Rxn<DateTime> _deadline = Rxn<DateTime>();
@@ -167,20 +176,21 @@ class ShutdownTimerService {
         _isWaiting.value = true;
         return;
       }
-      _notifyExpired();
       if (_shutdownType == _ShutdownType.exit) {
-        _syncProgressAndExit();
+        _exitAfterNotify();
         return;
       }
+      _notifyExpired();
       _blockLoads();
       _pause();
       SmartDialog.showToast('定时时间已到，已暂停');
     } else {
-      _notifyExpired();
       if (_shutdownType == _ShutdownType.exit) {
-        _syncProgressAndExit();
+        _exitAfterNotify();
         return;
-      } else if (_blockLoads()) {
+      }
+      _notifyExpired();
+      if (_blockLoads()) {
         SmartDialog.showToast('定时时间已到，已暂停');
       }
     }
@@ -188,15 +198,15 @@ class ShutdownTimerService {
   }
 
   void handleWaiting() {
-    _notifyExpired();
     switch (_shutdownType) {
       case .pause:
+        _notifyExpired();
         _blockLoads();
         _isWaiting.value = false;
         _durationInMinutes = 0;
         SmartDialog.showToast('定时时间已到，已暂停');
       case .exit:
-        _syncProgressAndExit();
+        _exitAfterNotify();
     }
   }
 

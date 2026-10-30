@@ -95,9 +95,14 @@ class PlayerBottomBar extends StatelessWidget {
         ),
       ),
       onTap: () {
-        linkedPlayback
-          ..toggleSync()
-          ..wake();
+        // 同步已开启但未连接：只重连，不改动同步开关
+        if (on && !connected) {
+          linkedPlayback.wake();
+        } else {
+          linkedPlayback
+            ..toggleSync()
+            ..wake();
+        }
       },
     );
   });
