@@ -18,7 +18,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
@@ -211,18 +210,24 @@ class LinkedPlaybackService : Service() {
         private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
         private const val EXTRA_VOLUME_STREAM_VALUE = "android.media.EXTRA_VOLUME_STREAM_VALUE"
 
-        /** 本机设置音量后，等待系统回报的最长时间 */
-        private const val OWN_CHANGE_MS = 1500L
+        /** 本机设置音量后等待系统回报确认的最长时间，超时后不再视为待确认 */
+        private const val PENDING_TIMEOUT_MS = 1000L
 
         private var lastText = ""
         private var channel: MethodChannel? = null
         private val mainHandler = Handler(Looper.getMainLooper())
 
-        /** 本机设置、尚待系统回报确认的音量档位及时间，按设置顺序 */
-        private val ownChanges = ArrayDeque<Pair<Int, Long>>()
+        private var audioManager: AudioManager? = null
 
-        /** 最近一次确认为本机设置的档位及时间，用于识别同一变化的重复回报 */
-        private var lastOwn: Pair<Int, Long>? = null
+        /**
+         * 本机发起、尚待系统回报确认的音量档位。设置串行进行，同一时刻最多一条，
+         * 系统回报的档位与之相同即为确认，否则为用户调整
+         */
+        private var pendingIndex: Int? = null
+        private var pendingToken = 0
+
+        /** 待确认期间收到的最新设置目标，确认或超时后再应用 */
+        private var queuedIndex: Int? = null
 
         private fun notifyDart(method: String, arguments: Any? = null) {
             mainHandler.post { channel?.invokeMethod(method, arguments) }
@@ -233,51 +238,58 @@ class LinkedPlaybackService : Service() {
             return if (max > 0) index.toDouble() / max else 0.0
         }
 
-        /**
-         * 系统回报的音量是否为本机设置所致：与待确认的设置一致时，消费截至最近一条
-         * 匹配的记录（未投递的广播可能被合并，之前的设置已被覆盖）；与刚确认过的
-         * 档位相同视为重复回报；否则为用户调整，清除所有待确认记录
-         */
-        private fun isOwnChange(index: Int): Boolean = synchronized(ownChanges) {
-            val now = SystemClock.elapsedRealtime()
-            while (ownChanges.isNotEmpty() && now - ownChanges.first().second > OWN_CHANGE_MS) {
-                ownChanges.removeFirst()
+        /** 系统回报的音量是否为本机设置所致（在主线程调用） */
+        private fun isOwnChange(index: Int): Boolean {
+            val pending = pendingIndex ?: return false
+            pendingIndex = null
+            if (pending != index) {
+                // 用户调整：作废排队的设置，以用户的音量为准
+                queuedIndex = null
+                return false
             }
-            val match = ownChanges.indexOfLast { it.first == index }
-            val last = lastOwn
-            when {
-                match >= 0 -> {
-                    repeat(match + 1) { ownChanges.removeFirst() }
-                    lastOwn = index to now
-                    true
-                }
-
-                last != null && last.first == index && now - last.second <= OWN_CHANGE_MS -> true
-
-                else -> {
-                    ownChanges.clear()
-                    lastOwn = null
-                    false
-                }
-            }
+            applyQueued()
+            return true
         }
 
-        /** 设置媒体音量（取最接近的档位），不显示系统音量界面，返回实际音量 */
-        private fun setVolume(context: Context, volume: Double): Double {
-            val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        private fun applyQueued() {
+            val queued = queuedIndex ?: return
+            queuedIndex = null
+            applyIndex(queued)
+        }
+
+        private fun applyIndex(index: Int) {
+            val audio = audioManager ?: return
+            if (index == audio.getStreamVolume(AudioManager.STREAM_MUSIC)) return
+            val token = ++pendingToken
+            pendingIndex = index
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
+            mainHandler.postDelayed({
+                if (token == pendingToken && pendingIndex == index) {
+                    pendingIndex = null
+                    applyQueued()
+                }
+            }, PENDING_TIMEOUT_MS)
+        }
+
+        /**
+         * 设置媒体音量（取最接近的档位），不显示系统音量界面，返回当前实际音量；
+         * 上一次设置尚未确认时只记下最新目标（在主线程调用）
+         */
+        private fun setVolume(volume: Double): Double {
+            val audio = audioManager ?: return 0.0
             val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             val index = Math.round(volume.coerceIn(0.0, 1.0) * max).toInt()
-            if (index != audio.getStreamVolume(AudioManager.STREAM_MUSIC)) {
-                synchronized(ownChanges) {
-                    ownChanges.addLast(index to SystemClock.elapsedRealtime())
-                }
-                audio.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
+            if (pendingIndex != null) {
+                queuedIndex = index
+            } else {
+                applyIndex(index)
             }
             return volumeOf(audio, audio.getStreamVolume(AudioManager.STREAM_MUSIC))
         }
 
         fun register(context: Context, engine: FlutterEngine) {
             val appContext = context.applicationContext
+            audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             channel = MethodChannel(engine.dartExecutor.binaryMessenger, METHOD_CHANNEL).apply {
                 setMethodCallHandler { call, result ->
                     try {
@@ -308,7 +320,7 @@ class LinkedPlaybackService : Service() {
                             }
 
                             "setVolume" -> {
-                                result.success(setVolume(appContext, call.argument<Double>("v") ?: 0.0))
+                                result.success(setVolume(call.argument<Double>("v") ?: 0.0))
                             }
 
                             else -> result.notImplemented()

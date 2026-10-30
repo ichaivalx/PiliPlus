@@ -99,6 +99,10 @@ class LinkedPlayback {
   int get epoch => _epoch;
   int _epoch = 0;
 
+  /// 最近登记播放内容的是 [target]，或已无页面登记
+  bool isCurrentOwner(LinkedTarget target) =>
+      _currentTarget == null || identical(_currentTarget, target);
+
   LeaderSession? _leader;
   FollowerSession? _follower;
 

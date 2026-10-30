@@ -451,6 +451,11 @@ class AudioController extends GetxController
   /// 最近一次打开播放源的请求
   ShutdownLoad? _openingLoad;
 
+  /// 本页持有播放归属：最近登记播放内容的是本页，或本页正显示在最上层（用户在本页操作）
+  bool get _ownsPlayback =>
+      linkedPlayback.isCurrentOwner(_linkedTarget) ||
+      Get.currentRoute.split('?').first == '/audio';
+
   /// 发出请求时固定分P 与联动内容，以最近一次请求为准，迟到的旧结果不再打开
   _AudioRequest _beginRequest() {
     final load = _openingLoad = shutdownTimerService.beginLoad();
@@ -483,9 +488,10 @@ class AudioController extends GetxController
       headers: {'Referer': ?referer},
     );
     _loadedCid = null;
-    // 已让出给视频，或请求期间其他页面（如视频）已登记播放内容：
-    // 不登记为联动内容，也不自动播放
-    final superseded = linkedPlayback.epoch != request.epoch;
+    // 已让出给视频，或请求期间其他页面（如视频）已登记播放内容，或本页已不持有
+    // 播放归属（如视频已登记、正等待起播时本页自动续播）：不登记为联动内容，也不自动播放
+    final superseded =
+        linkedPlayback.epoch != request.epoch || !_ownsPlayback;
     final linkedLoad = _yielded || superseded
         ? null
         : linkedPlayback.gateLoad(
