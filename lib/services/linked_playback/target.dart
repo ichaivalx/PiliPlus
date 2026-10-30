@@ -30,6 +30,9 @@ abstract class LinkedTarget {
 
   Future<void> play();
 
+  /// 恢复被音频打断暂停的播放，按页面原有方式（如在后台时等回到前台）
+  void resume();
+
   Future<void> pause();
 
   Future<void> seek(Duration position);
@@ -92,6 +95,9 @@ final class VideoLinkedTarget implements LinkedTarget {
   Future<void> play() async {
     await _controller?.play();
   }
+
+  @override
+  void resume() => PlPlayerController.resumeIfExists();
 
   @override
   Future<void> pause() async {

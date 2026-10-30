@@ -37,10 +37,12 @@ class _Round {
   bool intendsPlay;
 
   /// 起播的许可，起播前复核：页面加载时的自动播放许可（如定时关闭在加载期间到期后
-  /// 不再许可），及轮次期间的停止播放（拔出耳机）、音频打断；用户手动播放后为空，不再受限
+  /// 不再许可），及轮次期间的停止播放（拔出耳机）、音频打断；用户手动播放解除此前的
+  /// 禁止，之后的停止播放、打断仍可撤销
   bool Function()? permits;
 
-  /// 轮次期间登记的待自动播放，使停止播放、音频打断能撤销本轮起播；轮次结束时注销
+  /// 轮次期间登记的待自动播放，使停止播放、音频打断能撤销本轮起播；起播或作废时注销，
+  /// 重新就绪时连同许可转交给新一轮
   ShutdownLoad? load;
 
   bool selfLoaded;
@@ -427,7 +429,11 @@ class LeaderSession {
     required bool selfLoaded,
     Iterable<LinkConnection>? loading,
     bool Function()? autoplay,
+    _Round? inherit,
   }) {
+    // 转交的许可在作废旧轮次前取出，不随旧轮次注销
+    final inherited = inherit?.load;
+    inherit?.load = null;
     _cancelRound();
     final now = LinkClock.nowUs;
     final participants = {
@@ -444,9 +450,15 @@ class LeaderSession {
       participants: participants,
       loading: (loading ?? participants).toSet(),
     );
-    final load = round.load = shutdownTimerService.beginLoad();
-    round.permits = () =>
-        shutdownTimerService.canAutoplay(load) && (autoplay?.call() ?? true);
+    if (inherit != null && inherited != null) {
+      round
+        ..load = inherited
+        ..permits = inherit.permits;
+    } else {
+      final load = round.load = shutdownTimerService.beginLoad();
+      round.permits = () =>
+          shutdownTimerService.canAutoplay(load) && (autoplay?.call() ?? true);
+    }
     round.timer = Timer(_loadTimeout, () => _onLoadTimeout(round));
     return round;
   }
@@ -474,10 +486,12 @@ class LeaderSession {
     if (load != null) shutdownTimerService.endLoad(load);
   }
 
-  /// 用户手动播放：本轮起播不再受自动播放许可限制
+  /// 用户手动播放：解除此前的禁止（定时关闭、停止播放、打断），重新登记，
+  /// 之后的停止播放、打断仍能撤销本轮起播
   void _allowPlay(_Round round) {
-    round.permits = null;
     _endLoad(round);
+    final load = round.load = shutdownTimerService.beginLoad();
+    round.permits = () => shutdownTimerService.canAutoplay(load);
   }
 
   void _advance(_Round round) {
@@ -622,14 +636,12 @@ class LeaderSession {
 
   /// 定位就绪期间本机拖动了进度：作废旧的定位，按最新位置重新就绪
   void _reprepare(_Round old) {
-    final permits = old.permits;
     final round = _beginRound(
       intendsPlay: old.intendsPlay,
       selfLoaded: true,
       loading: const [],
-      autoplay: permits,
+      inherit: old,
     );
-    if (permits == null) _allowPlay(round);
     _prepare(round);
   }
 

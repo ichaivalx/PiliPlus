@@ -1164,6 +1164,9 @@ final class _AudioLinkedTarget implements LinkedTarget {
   }
 
   @override
+  void resume() => _controller.onPlay();
+
+  @override
   Future<void> pause() async {
     await _controller.onPause();
   }

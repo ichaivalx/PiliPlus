@@ -319,6 +319,10 @@ class LinkedPlayback {
     }
   }
 
+  /// 音频打断结束：联动跟随且被本机暂停时恢复当前跟随内容的播放器（打断期间可能
+  /// 已切换到另一页面），返回是否已处理
+  bool resumeInterrupted() => _follower?.resumeInterrupted() ?? false;
+
   void _setSync(bool on) {
     if (syncOn.value == on) return;
     syncOn.value = on;

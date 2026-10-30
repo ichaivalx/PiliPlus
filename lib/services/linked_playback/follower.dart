@@ -197,6 +197,10 @@ class FollowerSession {
   /// 属于本机的会话状态，主控切换内容时保留，期间不参与共同起播
   bool _localPaused = false;
 
+  /// 本机暂停期间收到恢复（音频打断结束）而当前内容尚无可用的播放器（加载中、
+  /// 加载失败后重试），加载完成后恢复
+  bool _resumePending = false;
+
   /// 监听播放状态的播放器，暂停时及时识别是否为本机暂停
   Player? _observedPlayer;
   StreamSubscription<bool>? _playingSubscription;
@@ -314,6 +318,7 @@ class FollowerSession {
     if (!syncOn()) {
       _clearContent();
       _localPaused = false;
+      _resumePending = false;
       // 关闭同步前排队的一起停止不再发出
       _pendingStopAll = false;
     }
@@ -338,6 +343,7 @@ class FollowerSession {
       // 断开期间本机打开了其他内容：用户接管，不再跟随
       _clearContent();
       _localPaused = false;
+      _resumePending = false;
       return null;
     }
     if (!isConnected) {
@@ -359,6 +365,22 @@ class FollowerSession {
         _onLoaded();
       },
     );
+  }
+
+  /// 本机音频打断结束：被本机暂停时恢复当前跟随内容的播放器（打断期间主控可能已
+  /// 切换内容、页面），之后按跟随逻辑对齐；播放器尚不可用时加载完成后恢复。
+  /// 返回是否由联动处理
+  bool resumeInterrupted() {
+    if (!_localPaused || !isFollowing) return false;
+    final target = _target;
+    final player = _loadedPlayer;
+    if (target != null && player != null && LinkedPlayer.isOpened(player)) {
+      _resumePending = false;
+      target.resume();
+    } else {
+      _resumePending = true;
+    }
+    return true;
   }
 
   /// 会话启动时登记已打开的听视频页
@@ -969,9 +991,12 @@ class FollowerSession {
   void _onLeaderSeek() {
     _intercepts.clear();
     _drifts.clear();
+    // 已约定共同起播时刻、尚未起播（起播补偿为正时晚于主控）：作废旧位置的
+    // 定时起播，按主控的新进度单独加入
+    final starting = !_shouldPlay && _startTimer != null;
     // 被本机暂停时保持暂停，本机恢复播放后按新进度对齐；同时按播放器的实际状态
     // 核验，暂停事件可能尚未处理
-    if (!_shouldPlay || _localPaused) return;
+    if ((!_shouldPlay && !starting) || _localPaused) return;
     if (_loadedPlayer case final player? when _isLocallyPaused(player)) {
       _markLocalPaused(player);
       return;
@@ -980,6 +1005,8 @@ class FollowerSession {
     _jumping = false;
     _startTimer?.cancel();
     _startTimer = null;
+    _readyRound = null;
+    _shouldPlay = true;
     _localPaused = false;
     _correcting = false;
     _tracking = false;
@@ -1167,6 +1194,17 @@ class FollowerSession {
         _openCheckedAt = now;
       }
     }
+    if (_resumePending) {
+      if (!_localPaused) {
+        _resumePending = false;
+      } else if (target != null &&
+          player != null &&
+          LinkedPlayer.isOpened(player)) {
+        // 加载完成：恢复播放，随后按本机恢复对齐
+        _resumePending = false;
+        target.resume();
+      }
+    }
     if (syncOn() && _restored && target != null && player != null) {
       if (!_loaded && !target.isLoading) {
         // 未经联动接管的加载（如用户在本机打开了同一视频）
@@ -1230,8 +1268,10 @@ class FollowerSession {
       _lastProgress = now;
       return;
     }
-    // 被本机暂停时不跟随播放，内容一致即可
-    if ((_shouldPlay || _localPaused) && _content?.cid == _leaderCid) {
+    // 被本机暂停时不跟随播放，内容一致且本机的加载有效即可；加载失败、超时时
+    // 继续请主控重发以重新加载，加载后仍保持本机暂停
+    if ((_shouldPlay || (_localPaused && _keepsLoad)) &&
+        _content?.cid == _leaderCid) {
       _lastProgress = now;
       return;
     }

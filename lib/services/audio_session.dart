@@ -1,5 +1,6 @@
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:audio_session/audio_session.dart';
 
@@ -85,7 +86,9 @@ class AudioSessionHandler {
           case AudioInterruptionType.pause:
             if (resume != null && shutdownTimerService.canAutoplay(resume)) {
               shutdownTimerService.releasePendingAutoplay();
-              if (_interruptedPlayback) {
+              // 联动跟随时恢复当前跟随内容的播放器：打断期间主控可能已切换到
+              // 听视频，原视频播放器已释放
+              if (_interruptedPlayback && !linkedPlayback.resumeInterrupted()) {
                 PlPlayerController.resumeIfExists();
               }
             }
