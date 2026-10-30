@@ -99,7 +99,8 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
   Widget buildModalBarrier() => const SizedBox.shrink();
 
   @override
-  Widget buildContent(BuildContext context) => _WindowContent(this);
+  Widget buildContent(BuildContext context) =>
+      _WindowFocus(route: this, child: _WindowContent(this));
 
   /// 转场由宿主中的详情页以 [buildPresentation] 绘制
   @override
@@ -205,21 +206,7 @@ class MiniPlayerWindowRoute extends GetPageRoute<void> {
   }
 
   @override
-  void install() {
-    super.install();
-    focusScopeNode.addListener(_onFocusChanged);
-  }
-
-  /// 窗口本身没有可获得焦点的内容，焦点落在窗口上时交给详情页
-  void _onFocusChanged() {
-    if (focusScopeNode.hasPrimaryFocus) {
-      miniPlayerSession.focusWindow(this);
-    }
-  }
-
-  @override
   void dispose() {
-    focusScopeNode.removeListener(_onFocusChanged);
     miniPlayerSession.windowDisposed(this);
     super.dispose();
   }
@@ -231,6 +218,53 @@ class MiniPlayerDormant {
 
   final Map<String, dynamic> args;
   final MiniPlayerResume resume;
+}
+
+/// 窗口本身没有可获得焦点的内容，焦点落在窗口的焦点范围上时（如其上方的
+/// 弹窗、菜单关闭后）交给详情页
+class _WindowFocus extends StatefulWidget {
+  const _WindowFocus({required this.route, required this.child});
+
+  final MiniPlayerWindowRoute route;
+  final Widget child;
+
+  @override
+  State<_WindowFocus> createState() => _WindowFocusState();
+}
+
+class _WindowFocusState extends State<_WindowFocus> {
+  /// 窗口路由的焦点范围
+  FocusNode? _scope;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final scope = Focus.maybeOf(
+      context,
+      scopeOk: true,
+      createDependency: false,
+    );
+    if (!identical(scope, _scope)) {
+      _scope?.removeListener(_onFocusChanged);
+      _scope = scope?..addListener(_onFocusChanged);
+    }
+  }
+
+  void _onFocusChanged() {
+    final scope = _scope;
+    if (scope != null && scope.hasPrimaryFocus) {
+      miniPlayerSession.focusWindow(widget.route, scope);
+    }
+  }
+
+  @override
+  void dispose() {
+    _scope?.removeListener(_onFocusChanged);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// 窗口的内容：不绘制，命中测试转交给所呈现的详情页

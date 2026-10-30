@@ -1325,11 +1325,11 @@ class MiniPlayerSession {
 
   /// 窗口自身获得焦点（如其上方的弹窗、菜单关闭后焦点回到窗口）：焦点
   /// 交给所呈现的详情页；详情页随路由变化重新显示时在其构建后交给
-  void focusWindow(MiniPlayerWindowRoute window) {
+  void focusWindow(MiniPlayerWindowRoute window, FocusNode scope) {
     WidgetsBinding.instance
       ..addPostFrameCallback((_) {
         final host = window.host;
-        if (window.focusScopeNode.hasPrimaryFocus &&
+        if (scope.hasPrimaryFocus &&
             host != null &&
             host.state == .shown &&
             host.shown &&

@@ -106,6 +106,7 @@ class _AboutPageState extends State<AboutPage> {
               }
             },
             onSecondaryTap: PlatformUtils.isDesktop ? _showDialog : null,
+            onLongPress: MyApp.togglePerformanceOverlay,
             child: Image.asset(
               width: 150,
               height: 150,
@@ -138,7 +139,7 @@ class _AboutPageState extends State<AboutPage> {
           ),
           ListTile(
             onTap: () => Update.checkUpdate(false),
-            onLongPress: MyApp.togglePerformanceOverlay,
+            onLongPress: () => Utils.copyText(currentVersion),
             onSecondaryTap: PlatformUtils.isMobile
                 ? null
                 : () => Utils.copyText(currentVersion),

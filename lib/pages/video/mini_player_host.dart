@@ -272,10 +272,16 @@ mixin MiniPlayerHostMixin on State<VideoDetailPageV>, RouteAware
 
   @override
   void focusMiniPlayer() {
-    if (!mounted) {
+    if (!mounted || _host == null) {
       return;
     }
-    final scope = _host?.route.focusScopeNode;
+    // 详情页路由的焦点范围
+    final focus = Focus.maybeOf(
+      context,
+      scopeOk: true,
+      createDependency: false,
+    );
+    final scope = focus is FocusScopeNode ? focus : focus?.enclosingScope;
     if (scope == null) {
       return;
     }
