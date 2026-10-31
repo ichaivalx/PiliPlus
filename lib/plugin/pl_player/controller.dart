@@ -1481,20 +1481,31 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
   }
 
-  /// 本机音量操作（用户调节、静音、联动设置）的代号：底层音量异步依次写入，
-  /// 写入完成时已有更晚的操作则不再通知联动，联动以最后一次操作为准
+  /// 写入底层音量的本机操作（用户调节、静音、联动设置）的代号：底层音量异步
+  /// 依次写入，写入完成时已有更晚的操作则不再通知联动，联动以最后一次操作为准
   int _volumeOp = 0;
+
+  /// [player] 上代号为 [op] 的写入完成后仍应通知联动：没有更晚的操作，播放器
+  /// 仍是同一个，且本页仍是联动的播放目标
+  bool _notifiesVolume(int op, Player player) =>
+      op == _volumeOp &&
+      identical(_videoPlayerController, player) &&
+      linkedPlayback.isCurrentOwner(const VideoLinkedTarget());
 
   /// 用户在本机调节音量（手势、滚轮、快捷键）：写入后联动播放随之同步。与缓存
   /// 相同时不写入底层（静音时保持静音，与未开联动时一致），不通知
   Future<void> adjustVolume(double volume) async {
+    if (this.volume.value == volume) return setVolume(volume);
     final op = ++_volumeOp;
-    final changed = this.volume.value != volume;
+    final player = _videoPlayerController;
     await setVolume(volume);
-    if (changed && op == _volumeOp) linkedPlayback.onUserVolume(volume);
+    if (player != null && _notifiesVolume(op, player)) {
+      linkedPlayback.onUserVolume(volume);
+    }
   }
 
-  /// 用户在本机静音、取消静音（快捷键）：写入后联动播放随之同步
+  /// 用户在本机静音、取消静音（快捷键）：写入后联动播放随之同步，写入失败时
+  /// 不通知
   Future<void> toggleMute() async {
     final player = _videoPlayerController;
     if (player == null) return;
@@ -1504,8 +1515,11 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       await player.setVolume(muted ? 0 : volume.value * 100);
     } catch (err) {
       if (kDebugMode) debugPrint(err.toString());
+      return;
     }
-    if (op == _volumeOp) linkedPlayback.onUserVolume(muted ? 0 : volume.value);
+    if (_notifiesVolume(op, player)) {
+      linkedPlayback.onUserVolume(muted ? 0 : volume.value);
+    }
   }
 
   /// Toggle Change the videofit accordingly
