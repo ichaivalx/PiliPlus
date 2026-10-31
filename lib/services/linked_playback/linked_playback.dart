@@ -226,7 +226,9 @@ class LinkedPlayback {
     });
     AppLifecycleListener(onResume: wake, onShow: wake);
     Connectivity().onConnectivityChanged.skip(1).listen((_) => _refresh());
-    shutdownTimerService.addExpiredListener(_onShutdown);
+    shutdownTimerService
+      ..addExpiredListener(_onShutdown)
+      ..addExitTask(linkedDiagnostics.close);
     peers.listen((_) => _updateService());
     leader.listen((_) => _updateService());
     syncOn.listen((_) => _updateService());
@@ -462,7 +464,8 @@ class LinkedPlayback {
 
   /// 应用退出前调用（桌面端关闭窗口、托盘退出、定时关闭退出）：结束会话，等
   /// 停止消息发出，主控的跟随端随之停止跟随，再等诊断记录写完；重复调用等待
-  /// 同一次结束
+  /// 同一次结束。定时关闭退出时会话的结束受到期通知的等待上限限制，诊断记录
+  /// 另在退出前等待写完
   Future<void> close() => _closing ??= _close();
 
   Future<void>? _closing;

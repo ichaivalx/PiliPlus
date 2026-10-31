@@ -51,8 +51,12 @@ class LinkedSpeedControl {
   double _pendingUs = 0;
   double _shift = 0;
 
+  /// 上次计时的时刻，暂停计时（缓冲、未播放）期间为空
   int? _lastAt;
   int _holdUntil = 0;
+
+  /// 最近一次更新时的播放倍速，结算开环移动用
+  double _rate = 1;
 
   double get integral => _integral;
   double get proportional => _proportional;
@@ -77,9 +81,31 @@ class LinkedSpeedControl {
     }
   }
 
-  /// 播放未推进（缓冲）：其间开环移动不计入，恢复后从下次更新起重新计时
-  void suspend() {
+  /// 播放停止推进（缓冲、未播放）：结算此前的开环移动并暂停计时
+  void suspend(int now) {
+    if (_lastAt == null) return;
+    _settle(now);
     _lastAt = null;
+  }
+
+  /// 播放恢复推进：从此刻起计时
+  void resume(int now) {
+    _lastAt ??= now;
+  }
+
+  /// 结算上次计时以来开环移动的量（按实际播放的时长），返回经过的时长
+  int _settle(int now) {
+    final last = _lastAt;
+    _lastAt = now;
+    if (last == null) return 0;
+    final elapsed = now - last;
+    if (_shift != 0 && elapsed > 0) {
+      final moved = -_shift * _rate * elapsed;
+      _pendingUs = _pendingUs > 0
+          ? max(0.0, _pendingUs - moved)
+          : min(0.0, _pendingUs - moved);
+    }
+    return elapsed;
   }
 
   /// 停止修正（定位、跳转、暂停等），保留已学到的频差；[keepShift] 为 false 时
@@ -109,17 +135,8 @@ class LinkedSpeedControl {
     required double rate,
     required int now,
   }) {
-    final last = _lastAt;
-    _lastAt = now;
-    final elapsed = last == null ? 0 : now - last;
-    final dt = min(elapsed, _maxDtUs);
-    // 上次更新以来开环移动的量，按实际播放的时长结算
-    if (_shift != 0 && elapsed > 0) {
-      final moved = -_shift * rate * elapsed;
-      _pendingUs = _pendingUs > 0
-          ? max(0.0, _pendingUs - moved)
-          : min(0.0, _pendingUs - moved);
-    }
+    final dt = min(_settle(now), _maxDtUs);
+    _rate = rate;
     if (_pendingUs.abs() >= 1) {
       final magnitude = _pendingUs.abs() / 1e6;
       // 按 0.25 秒后再次更新估计，不超过剩余量

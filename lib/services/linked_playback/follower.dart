@@ -215,6 +215,9 @@ class FollowerSession {
   Player? _observedPlayer;
   StreamSubscription<bool>? _playingSubscription;
 
+  /// 监听缓冲状态，播放停止与恢复推进时结算倍速微调的开环移动
+  StreamSubscription<bool>? _bufferingSubscription;
+
   /// 联动自身发起了暂停，期待的暂停事件到来时消费；播放器开始播放时清除
   bool _expectOwnPause = false;
 
@@ -269,6 +272,7 @@ class FollowerSession {
   Future<void> dispose() {
     _ticker?.cancel();
     _playingSubscription?.cancel();
+    _bufferingSubscription?.cancel();
     _generation++;
     _halt();
     _release();
@@ -1125,9 +1129,14 @@ class FollowerSession {
   void _observe(Player player) {
     if (identical(player, _observedPlayer)) return;
     _playingSubscription?.cancel();
+    _bufferingSubscription?.cancel();
     _observedPlayer = player;
     _expectOwnPause = false;
+    _bufferingSubscription = player.stream.buffering.listen(
+      (_) => _onAdvancing(player),
+    );
     _playingSubscription = player.stream.playing.listen((playing) {
+      _onAdvancing(player);
       if (playing) {
         _expectOwnPause = false;
         // 本机恢复播放时立即结束本机暂停，不等下次检查（期间主控可能已暂停）
@@ -1145,6 +1154,18 @@ class FollowerSession {
         _awaitStart();
       }
     });
+  }
+
+  /// 播放器是否在推进播放变化时，倍速微调随之暂停或恢复计时
+  void _onAdvancing(Player player) {
+    if (!identical(player, _loadedPlayer)) return;
+    final state = player.state;
+    final now = LinkClock.nowUs;
+    if (state.playing && !state.buffering) {
+      _speed.resume(now);
+    } else {
+      _speed.suspend(now);
+    }
   }
 
   /// 应跟随播放却未在播放，且不是联动自身发起、等待起播或播完：为本机暂停
@@ -1342,7 +1363,7 @@ class FollowerSession {
 
   double? _follow(LinkedTarget target, Player player, int now) {
     if (player.state.buffering) {
-      _speed.suspend();
+      _speed.suspend(now);
       if (++_stall >= _stallTicks) {
         _stall = 0;
         _requestResync(now);
@@ -1465,7 +1486,7 @@ class FollowerSession {
             _realign(target, player, now);
           }
         } else if (!player.state.playing) {
-          _speed.suspend();
+          _speed.suspend(now);
           // 未收到暂停事件时的兜底：起播后稳定期过后仍未播放
           if (_startTimer == null && now >= _settleUntil) {
             _markLocalPaused(player);

@@ -71,6 +71,11 @@ class ShutdownTimerService {
           .timeout(_expiredWait, onTimeout: () => const <void>[])
           .then<void>((_) {}, onError: (_) {});
 
+  /// 定时关闭退出前须完成的工作（如写完诊断记录），不受 [_expiredWait] 限制
+  final List<Future<void> Function()> _exitTasks = [];
+
+  void addExitTask(Future<void> Function() task) => _exitTasks.add(task);
+
   /// 通知到期并等待完成后退出应用
   void _exitAfterNotify() {
     _notifyExpired(exit: true).whenComplete(_syncProgressAndExit);
@@ -219,19 +224,20 @@ class ShutdownTimerService {
     }
   }
 
+  /// 上报历史与退出前的工作同时进行，都结束（含失败）后退出
   void _syncProgressAndExit() {
+    final tasks = [for (final task in _exitTasks) task()];
     if (PlPlayerController.instance case final player?) {
       final res = player.makeHeartBeat(
         player.position.value,
         type: .completed,
         isManual: true,
       );
-      if (res != null) {
-        res.whenComplete(DeviceUtils.exitApp);
-        return;
-      }
+      if (res != null) tasks.add(res);
     }
-    DeviceUtils.exitApp();
+    Future.wait<void>([
+      for (final task in tasks) task.then<void>((_) {}, onError: (_) {}),
+    ]).whenComplete(DeviceUtils.exitApp);
   }
 
   static (int hour, int minute) _parseMinutes(int minutes) =>
