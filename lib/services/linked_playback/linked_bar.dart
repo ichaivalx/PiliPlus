@@ -19,7 +19,8 @@ const _calibrateLabel = '校准';
 /// 播放器底栏中的联动控件。从左到右分组：当前调节的跟随端（主控）、跟随端音量（模式
 /// 切换、数值与竖向拨轮）、延迟偏移（拨轮与数值）、归零与校准（校准仅主控）、同步开关；
 /// 偏移与音量都作用于当前调节的跟随端。组内、组间（含与两侧的底栏控件之间）各用统一的
-/// 间距。全部平铺：多出的宽度先加长偏移拨轮至上限，其余均分到各组间距；宽度不足时依次
+/// 间距。全部平铺：多出的宽度先加长偏移拨轮至上限，再加宽组间距至上限，其余留在
+/// 左侧，控件整体靠右（与定时关闭之间仍为一个组间距）；宽度不足时依次
 /// 缩短偏移拨轮、收紧间距、改用短文案，仍放不下时才依次把音量、调节部分收进按钮弹出，
 /// 最窄时整体收为一个按钮
 class LinkedBarControls extends StatelessWidget {
@@ -275,9 +276,10 @@ abstract final class _Size {
   static const double tightInner = 4;
 
   /// 组间距（含与两侧的底栏控件之间），宽度不足时收紧到 [tightGroup]；宽度有余时
-  /// 均分加宽
+  /// 均分加宽，至多 [maxGroup]
   static const double group = 14;
   static const double tightGroup = 8;
+  static const double maxGroup = 24;
 
   /// 偏移拨轮的长度：宽度有余时先加长到 [maxDial]，不足时先缩短到 [minDial]
   static const double minDial = 56;
@@ -516,8 +518,8 @@ class _Groups {
     );
   }
 
-  /// [loose] 为常规间距与最短的偏移拨轮：宽度有余时先加长拨轮，其余均分到各组
-  /// 间距；不足时按比例收紧间距，收紧到底仍放不下为 null
+  /// [loose] 为常规间距与最短的偏移拨轮：宽度有余时先加长拨轮，再均分加宽各组
+  /// 间距至上限，其余不占用；不足时按比例收紧间距，收紧到底仍放不下为 null
   _Layout? _fit(double width, _Layout loose) {
     final normal = total(loose);
     final dialRange = loose.collapse.index <= _Collapse.volume.index
@@ -526,9 +528,11 @@ class _Groups {
     if (width >= normal + dialRange) {
       return loose.copyWith(
         dial: _Size.maxDial,
-        group:
-            _Size.group +
-            (width - normal - dialRange) / (_widths(loose).length + 1),
+        group: math.min(
+          _Size.maxGroup,
+          _Size.group +
+              (width - normal - dialRange) / (_widths(loose).length + 1),
+        ),
       );
     }
     if (width >= normal) {
