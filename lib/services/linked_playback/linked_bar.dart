@@ -544,8 +544,10 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
 
   static String _signed(int value) => '${value > 0 ? '+' : ''}$value';
 
-  /// 拖动中已提交的音量：重建前连续多次更新也在其上逐格累加，拖动结束后清除
-  LinkedVolume? _dragVolume;
+  /// 拖动中已提交给设备 [id] 的音量：重建前连续多次更新也在其上逐格累加，拖动
+  /// 结束后清除；调节的设备变化（含所选设备离线后自动改选）时拨轮随设备重建，
+  /// 当前拖动随之结束
+  ({String? id, LinkedVolume volume})? _dragVolume;
 
   void _onDragging(bool dragging) {
     if (!dragging) _dragVolume = null;
@@ -603,7 +605,11 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
     );
   }
 
-  Widget _adjust(LinkedVolume volume, ValueChanged<LinkedVolume> onChanged) {
+  Widget _adjust(
+    String? id,
+    LinkedVolume volume,
+    ValueChanged<LinkedVolume> onChanged,
+  ) {
     final follow = volume.mode == LinkedVolumeMode.follow;
     final index = follow ? volume.offset : (volume.level * 100).round();
     return Row(
@@ -623,6 +629,7 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
         ),
         const SizedBox(width: _Widths._spacing),
         LinkedDial(
+          key: ValueKey<String?>(id),
           index: index,
           axis: Axis.horizontal,
           length: _Widths._volumeDial,
@@ -630,7 +637,10 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
           onInteraction: widget.onInteraction,
           onDragging: _onDragging,
           onSteps: (steps) {
-            final base = _dragVolume ?? volume;
+            final pending = _dragVolume;
+            final base = pending != null && pending.id == id
+                ? pending.volume
+                : volume;
             final next = base.mode == LinkedVolumeMode.follow
                 ? base.copyWith(
                     offset: (base.offset + steps).clamp(-100, 100),
@@ -640,7 +650,7 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
                         ((base.level * 100).round() + steps).clamp(0, 100) /
                         100,
                   );
-            _dragVolume = next;
+            _dragVolume = (id: id, volume: next);
             onChanged(next);
           },
         ),
@@ -654,6 +664,7 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
       final LinkedVolume volume;
       final ValueChanged<LinkedVolume> onChanged;
       LinkedPeerInfo? peer;
+      String? id;
       List<LinkedPeerInfo> peers = const [];
       if (linkedPlayback.role.value == LinkedRole.follower) {
         volume = linkedPlayback.volume.value;
@@ -666,9 +677,9 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
           if (item.id == _selectedId) selected = item;
         }
         peer = selected;
-        final id = selected.id;
+        final selectedId = id = selected.id;
         volume = selected.volume!;
-        onChanged = (value) => linkedPlayback.setVolume(id, value);
+        onChanged = (value) => linkedPlayback.setVolume(selectedId, value);
       }
       final peerChip = peers.length > 1
           ? GestureDetector(
@@ -722,7 +733,7 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
                 child: _modeToggle(volume, onChanged),
               ),
             ),
-            _adjust(volume, onChanged),
+            _adjust(id, volume, onChanged),
           ],
         ),
       );
