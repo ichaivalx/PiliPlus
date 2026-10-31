@@ -1117,9 +1117,9 @@ class LeaderSession {
 
   // 跟随端
 
+  /// 收到 hello 且协议版本一致后才列入跟随端
   void _onConnected(LinkConnection peer) {
     _peers[peer] = _PeerState(peer.address);
-    _notifyPeers();
   }
 
   void _onHello(LinkConnection peer, _PeerState state, LinkMessage message) {
@@ -1127,9 +1127,11 @@ class LeaderSession {
     final name = message['name'];
     if (id is! String) return;
     if (message['version'] != LinkProtocol.version) {
-      // 协议版本不同：不建立联动
-      linkedDiagnostics.log('incompatible peer=$id version=${message['version']}');
+      // 协议版本不同：不建立联动；旧版本的跟随端会反复重连，只记录、提示一次
       if (_incompatible.add(id)) {
+        linkedDiagnostics.log(
+          'incompatible peer=$id version=${message['version']}',
+        );
         SmartDialog.showToast(
           '联动播放：${name is String && name.isNotEmpty ? name : peer.address} '
           '的 PiliPlus 版本不同，请将所有设备更新到同一版本',
@@ -1162,16 +1164,10 @@ class LeaderSession {
         '联动播放：${state.name} ${wasOffline ? '已重新连接' : '已连接'}',
       );
     }
+    // 同步状态带协议版本，跟随端据此确认后建立联动
     peer
       ..send(_syncMessage)
       ..send(_volumeMessage);
-    if (message['sync'] case final bool on when on != syncOn()) {
-      onSyncRequest(on);
-    }
-    // 同步已关闭时各端互不影响
-    if (message['stopAll'] == true && syncOn()) {
-      pauseAll();
-    }
     if (_content == null) {
       // 断开期间本机已停止：跟随端不再自行播放
       peer.send(const {'t': LinkMessageType.stop});
@@ -1259,7 +1255,7 @@ class LeaderSession {
       _offline[state.id!] = state.info(state: LinkedPeerState.offline);
       SmartDialog.showToast('联动播放：${state.name} 已离线');
     }
-    _notifyPeers();
+    if (state?.id != null) _notifyPeers();
     final round = _round;
     if (round != null) {
       round
@@ -1279,7 +1275,7 @@ class LeaderSession {
   void _notifyPeers() {
     onPeersChanged([
       for (final state in _peers.values)
-        if (!state.replaced) state.info(),
+        if (state.id != null && !state.replaced) state.info(),
       ..._offline.values,
     ]);
   }

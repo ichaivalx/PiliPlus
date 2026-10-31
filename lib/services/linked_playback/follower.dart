@@ -143,7 +143,7 @@ class FollowerSession {
   ClockSync get _clock => _transport.clock;
   Timer? _ticker;
 
-  /// 连接前请求的同步开关与定时关闭到期，连接后发给主控
+  /// 连接前请求的同步开关与定时关闭到期，确认协议版本一致后发给主控
   bool? _pendingSync;
   bool _pendingStopAll = false;
 
@@ -252,7 +252,10 @@ class FollowerSession {
   int _lastWant = -_wantIntervalUs;
   LinkedPeerState? _reportedState;
 
-  bool get isConnected => _transport.isConnected;
+  /// 已确认主控的协议版本一致，联动已建立
+  bool _linked = false;
+
+  bool get isConnected => _linked && _transport.isConnected;
 
   /// 跟随中：已连接主控，或断开后仍在自行播放主控的内容；本机不自行推进下一项
   bool get isFollowing => syncOn() && (isConnected || _content != null);
@@ -560,7 +563,9 @@ class FollowerSession {
 
   // 连接
 
+  /// 只发送身份与协议版本，主控回应同步状态确认版本一致后再建立联动
   void _onConnected() {
+    _linked = false;
     _restored = false;
     // 主控可能已换，两端的频差需重新学习
     _speed.reset();
@@ -569,24 +574,39 @@ class FollowerSession {
       'version': LinkProtocol.version,
       'id': deviceId,
       'name': deviceName,
-      'sync': ?_pendingSync,
-      if (_pendingStopAll) 'stopAll': true,
     });
-    _pendingSync = null;
-    _pendingStopAll = false;
-    _lastProgress = LinkClock.nowUs;
     linkedDiagnostics.log(
       'connected leader=${_transport.connection?.address} '
       'offset=$_offsetUs bias=$startBiasUs',
     );
+  }
+
+  /// 主控的同步状态 [sync] 带有相同的协议版本：建立联动，再发出连接前的请求
+  void _onLinked(LinkMessage sync) {
+    _linked = true;
+    _lastProgress = LinkClock.nowUs;
     _volume.connect();
     leader.value = _transport.connection?.address;
     SmartDialog.showToast('联动播放：已连接主控 ${leader.value}');
+    final on = sync['on'];
+    if (on is bool) onSyncChanged(on);
+    if (_pendingSync case final pending? when pending != on) {
+      _transport.send({'t': LinkMessageType.sync, 'on': pending});
+    }
+    // 主控的同步已关闭时随同步开关的变化作废
+    if (_pendingStopAll) {
+      _transport.send(const {'t': LinkMessageType.stopAll});
+    }
+    _pendingSync = null;
+    _pendingStopAll = false;
   }
 
   /// 断开期间按当前内容与倍速继续自行播放，播完即停；进行中的定位、起播作废
   void _onDisconnected() {
     linkedDiagnostics.log('disconnected');
+    // 未建立联动（如协议版本不同被拒）时不提示断开
+    final wasLinked = _linked;
+    _linked = false;
     _stopCalibration();
     _volume.disconnect();
     _restored = false;
@@ -613,7 +633,9 @@ class FollowerSession {
     driftMs.value = null;
     rttMs.value = null;
     _reportedState = null;
-    SmartDialog.showToast('联动播放：与主控的连接已断开，正在重新连接');
+    if (wasLinked) {
+      SmartDialog.showToast('联动播放：与主控的连接已断开，正在重新连接');
+    }
   }
 
   /// 停止跟随并忘记主控的内容；被本机暂停的状态不随内容清除
@@ -648,14 +670,19 @@ class FollowerSession {
   }
 
   void _onMessage(LinkMessage message) {
+    if (!_linked) {
+      // 主控收到 hello 后先回应同步状态（旧版本的主控不带协议版本）；确认版本
+      // 一致前不处理其他消息
+      switch (message['t']) {
+        case LinkMessageType.sync
+            when message['version'] == LinkProtocol.version:
+          _onLinked(message);
+        case LinkMessageType.sync || LinkMessageType.incompatible:
+          _rejectLeader(message['version']);
+      }
+      return;
+    }
     switch (message['t']) {
-      case LinkMessageType.incompatible:
-        _rejectLeader(message['version']);
-        return;
-      // 主控连接后先发送同步状态，旧版本的主控不带协议版本
-      case LinkMessageType.sync when message['version'] != LinkProtocol.version:
-        _rejectLeader(message['version']);
-        return;
       case LinkMessageType.offset:
         if (message['us'] case final int us when us != _offsetUs) {
           _setOffset(us);
