@@ -4,6 +4,7 @@ import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_status.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
+import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:get/get.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -121,8 +122,9 @@ final class VideoLinkedTarget implements LinkedTarget {
   double? get playerVolume {
     final controller = _controller;
     if (controller == null) return null;
-    final player = controller.videoPlayerController;
-    if (player != null && !player.disposed) return player.state.volume / 100;
+    if (controller.videoPlayerController case final player?) {
+      if (LinkedPlayer.volume(player) case final volume?) return volume;
+    }
     return controller.isMuted ? 0 : controller.volume.value;
   }
 

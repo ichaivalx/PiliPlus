@@ -30,6 +30,7 @@ import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
+import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/services/playback_focus.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
@@ -1231,10 +1232,10 @@ final class _AudioLinkedTarget implements LinkedTarget {
 
   @override
   double? get playerVolume {
-    final player = _controller.player;
-    return player != null && !player.disposed
-        ? player.state.volume / 100
-        : _controller.desktopVolume.value;
+    if (_controller.player case final player?) {
+      if (LinkedPlayer.volume(player) case final volume?) return volume;
+    }
+    return _controller.desktopVolume.value;
   }
 
   /// 同时结束静音

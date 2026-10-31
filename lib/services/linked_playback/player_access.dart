@@ -28,6 +28,14 @@ abstract final class LinkedPlayer {
   static bool isOpened(Player player) =>
       !player.disposed && player.state.duration > Duration.zero;
 
+  /// 播放器实际的音量（0~1，静音时为 0）；播放器状态中的音量不随设置更新，
+  /// 直接读取 mpv 属性
+  static double? volume(Player player) {
+    if (player.disposed) return null;
+    final value = double.tryParse(player.getProperty('volume'));
+    return value == null ? null : value / 100;
+  }
+
   /// 当前画面位置（time-pos，微秒）
   static int? timePos(Player player) {
     final seconds = _seconds(player, 'time-pos');
