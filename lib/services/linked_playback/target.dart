@@ -37,7 +37,10 @@ abstract class LinkedTarget {
 
   Future<void> seek(Duration position);
 
-  /// 桌面端：把页面播放器的音量设为 [volume]（0~1），不显示音量提示
+  /// 桌面端：页面播放器当前的有效音量（0~1，静音时为 0），播放器不存在时为空
+  double? get playerVolume;
+
+  /// 桌面端：联动把页面播放器的音量设为 [volume]（0~1）并解除静音，不显示音量提示
   void setPlayerVolume(double volume);
 
   /// 在当前页面内切换到 [content]，不能切换时返回 false
@@ -115,8 +118,17 @@ final class VideoLinkedTarget implements LinkedTarget {
   }
 
   @override
+  double? get playerVolume {
+    final controller = _controller;
+    if (controller == null) return null;
+    final player = controller.videoPlayerController;
+    if (player != null && !player.disposed) return player.state.volume / 100;
+    return controller.isMuted ? 0 : controller.volume.value;
+  }
+
+  @override
   void setPlayerVolume(double volume) {
-    _controller?.setVolume(volume, showIndicator: false);
+    _controller?.setLinkedVolume(volume);
   }
 
   /// 持有播放器的是普通视频详情页（非播放全部）且已在播放时在页内切换

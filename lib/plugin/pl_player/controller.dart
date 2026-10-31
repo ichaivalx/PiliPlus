@@ -1463,6 +1463,20 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     });
   }
 
+  /// 联动设置本机音量（桌面端）：解除静音并设为 [volume]，不显示音量提示；静音时
+  /// 底层音量与缓存值不同，缓存值与目标相同时同样设置底层
+  Future<void> setLinkedVolume(double volume) async {
+    isMuted = false;
+    if (this.volume.value != volume) {
+      return setVolume(volume, showIndicator: false);
+    }
+    try {
+      await _videoPlayerController?.setVolume(volume * 100);
+    } catch (err) {
+      if (kDebugMode) debugPrint(err.toString());
+    }
+  }
+
   /// 用户在本机调节音量（手势、滚轮、快捷键）：联动播放随之同步
   Future<void> adjustVolume(double volume) {
     final done = setVolume(volume);

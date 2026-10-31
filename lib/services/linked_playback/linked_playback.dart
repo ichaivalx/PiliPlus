@@ -333,7 +333,9 @@ class LinkedPlayback {
 
   /// 本机媒体音量：安卓为系统媒体音量，桌面端为播放器音量
   Future<double?> _getSystemVolume() async {
-    if (PlatformUtils.isDesktop) return LinkedDesktopVolume.value;
+    if (PlatformUtils.isDesktop) {
+      return LinkedDesktopVolume.current(_currentTarget);
+    }
     if (!Platform.isAndroid) return null;
     try {
       return await _channel.invokeMethod<double>('getVolume');

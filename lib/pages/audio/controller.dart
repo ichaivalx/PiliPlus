@@ -1230,6 +1230,15 @@ final class _AudioLinkedTarget implements LinkedTarget {
   }
 
   @override
+  double? get playerVolume {
+    final player = _controller.player;
+    return player != null && !player.disposed
+        ? player.state.volume / 100
+        : _controller.desktopVolume.value;
+  }
+
+  /// 同时结束静音
+  @override
   void setPlayerVolume(double volume) => _controller.setVolume(volume);
 
   @override
