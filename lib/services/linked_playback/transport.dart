@@ -384,6 +384,9 @@ class FollowerTransport {
   /// 唤醒后确认连接存活的等待时间
   static const _wakeCheckUs = 3000000;
 
+  /// 拒绝协议版本不同的主控后，此时间内不再连接它
+  static const _rejectUs = 30000000;
+
   final void Function() onConnected;
   final void Function(LinkMessage) onMessage;
   final void Function() onDisconnected;
@@ -401,6 +404,9 @@ class FollowerTransport {
   bool _disposed = false;
   int _pingSeq = 0;
   int? _wakeAt;
+
+  /// 被拒绝的主控地址及可再次连接的时刻
+  final Map<String, int> _rejected = {};
 
   LinkConnection? get connection => _connection;
 
@@ -476,7 +482,16 @@ class FollowerTransport {
     }
   }
 
+  /// 断开当前主控（协议版本不同），一段时间内不再连接它
+  void reject() {
+    final connection = _connection;
+    if (connection == null) return;
+    _rejected[connection.address] = LinkClock.nowUs + _rejectUs;
+    connection.close();
+  }
+
   Future<void> _connect(InternetAddress address, int port) async {
+    if ((_rejected[address.address] ?? 0) > LinkClock.nowUs) return;
     _connecting = true;
     try {
       final socket = await Socket.connect(

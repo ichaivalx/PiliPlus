@@ -224,8 +224,12 @@ class LinkedCalibration {
         return _fail('未获得麦克风权限：校准需要用主控的麦克风录下各设备的测试音');
       }
     }
+    // 等待授权期间状态可能已变（如自动加载了下一项），暂停前再确认
+    if (leader.isClosed) return _fail('联动已关闭');
+    if (!leader.syncOn()) return _fail('开启同步播放后可以校准');
+    if (leader.isStarting) return _fail('正在加载，稍后再校准');
     final peers = leader.calibrationPeers;
-    if (leader.isClosed || peers.isEmpty) return _fail('没有可校准的跟随端');
+    if (peers.isEmpty) return _fail('没有已连接的跟随端');
     devices.assignAll([
       CalibrationDevice(id: null, name: '本机（主控）', slot: 0),
       for (final (index, peer) in peers.indexed)
@@ -550,14 +554,18 @@ class LinkedCalibration {
     final load = _resume;
     _resume = null;
     if (load != null) {
-      final allowed = resume && shutdownTimerService.canAutoplay(load);
-      shutdownTimerService.endLoad(load);
-      if (allowed &&
+      if (resume &&
           leader != null &&
           !leader.isClosed &&
           identical(leader.currentContent, _content)) {
-        leader.resumeAfterCalibration();
+        if (shutdownTimerService.canAutoplay(load)) {
+          leader.resumeAfterCalibration();
+        } else if (shutdownTimerService.isHeld(load)) {
+          // 仍被打断：打断结束后继续播放
+          leader.deferResume(load);
+        }
       }
+      shutdownTimerService.endLoad(load);
     }
   }
 

@@ -81,6 +81,13 @@ class LinkedSpeedControl {
     _pendingUs += deltaUs;
   }
 
+  /// 播放倍速改变：结算此前的开环移动，尚待移动的量乘以 [ratio]（旧倍速 /
+  /// 新倍速）
+  void rescale(double ratio, int now) {
+    if (_lastAt != null) _settle(now);
+    _pendingUs *= ratio;
+  }
+
   /// 已按 [previous] → [current] 改变倍速；按步数比较，避免浮点误差漏判。返回
   /// 是否开始等待瞬态：此前的读数已不反映新倍速下的状态，调用方应清空，否则
   /// 等待结束后滤波仍按旧读数修正而过冲

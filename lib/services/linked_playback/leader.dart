@@ -243,7 +243,11 @@ class LeaderSession {
   Map<String, Object?> get _syncMessage => {
     't': LinkMessageType.sync,
     'on': syncOn(),
+    'version': LinkProtocol.version,
   };
+
+  /// 已提示过协议版本不同的跟随端，同一会话只提示一次
+  final Set<String> _incompatible = {};
 
   Player? get _loadedPlayer {
     final content = _content;
@@ -511,6 +515,13 @@ class LeaderSession {
     final playing = playIntended;
     pauseAll();
     return playing;
+  }
+
+  /// 校准结束时恢复许可仍被暂缓（如来电占用音频）：转为等待暂缓解除后按页面
+  /// 原有方式继续播放；停止播放、新的轮次或页面变化时作废
+  void deferResume(ShutdownLoad load) {
+    _dropDeferred();
+    _deferred = shutdownTimerService.beginLoad(from: load);
   }
 
   /// 校准结束后按用户播放的方式恢复，经共同起播一起开始
@@ -1115,6 +1126,23 @@ class LeaderSession {
     final id = message['id'];
     final name = message['name'];
     if (id is! String) return;
+    if (message['version'] != LinkProtocol.version) {
+      // 协议版本不同：不建立联动
+      linkedDiagnostics.log('incompatible peer=$id version=${message['version']}');
+      if (_incompatible.add(id)) {
+        SmartDialog.showToast(
+          '联动播放：${name is String && name.isNotEmpty ? name : peer.address} '
+          '的 PiliPlus 版本不同，请将所有设备更新到同一版本',
+        );
+      }
+      peer
+        ..send({
+          't': LinkMessageType.incompatible,
+          'version': LinkProtocol.version,
+        })
+        ..close();
+      return;
+    }
     state
       ..id = id
       ..name = name is String && name.isNotEmpty ? name : peer.address;

@@ -566,6 +566,7 @@ class FollowerSession {
     _speed.reset();
     _transport.send({
       't': LinkMessageType.hello,
+      'version': LinkProtocol.version,
       'id': deviceId,
       'name': deviceName,
       'sync': ?_pendingSync,
@@ -633,8 +634,28 @@ class FollowerSession {
     _jumps = 0;
   }
 
+  /// 已提示过主控的协议版本不同，同一会话只提示一次
+  bool _incompatibleNotified = false;
+
+  /// 主控的协议版本不同：不建立联动，断开并暂不再连接它
+  void _rejectLeader(Object? version) {
+    linkedDiagnostics.log('incompatible leader version=$version');
+    if (!_incompatibleNotified) {
+      _incompatibleNotified = true;
+      SmartDialog.showToast('联动播放：主控的 PiliPlus 版本不同，请将所有设备更新到同一版本');
+    }
+    _transport.reject();
+  }
+
   void _onMessage(LinkMessage message) {
     switch (message['t']) {
+      case LinkMessageType.incompatible:
+        _rejectLeader(message['version']);
+        return;
+      // 主控连接后先发送同步状态，旧版本的主控不带协议版本
+      case LinkMessageType.sync when message['version'] != LinkProtocol.version:
+        _rejectLeader(message['version']);
+        return;
       case LinkMessageType.offset:
         if (message['us'] case final int us when us != _offsetUs) {
           _setOffset(us);
@@ -1163,9 +1184,12 @@ class FollowerSession {
       _rate = rate;
       _intercepts.clear();
       _drifts.clear();
-      // 同样的延迟偏移在新倍速下对应不同的媒体位置差，按差额移动（起播前的
-      // 定位按起播时比较定位所用的媒体位置差补上）
-      _speed.shift((_offsetUs * (1 - previous / rate)).round());
+      // 已移动的媒体位置差在新倍速下对应的实际时间不同：尚待移动的量按倍速
+      // 之比换算，再加上同样的偏移在新倍速下多出的媒体位置差（起播前的定位
+      // 按起播时比较定位所用的媒体位置差补上）
+      _speed
+        ..rescale(previous / rate, LinkClock.nowUs)
+        ..shift((_offsetUs * (1 - previous / rate)).round());
     }
     if (target.rate != rate) {
       target.setRate(rate).whenComplete(() {

@@ -12,6 +12,10 @@ abstract final class LinkProtocol {
   /// 区分本功能的报文
   static const app = 'PiliPlus.linked';
 
+  /// 联动协议版本，两端不同时不建立联动（同名字段的含义可能已不同）。
+  /// 2：延迟偏移为实际时间（与倍速无关）、新增声学校准
+  static const version = 2;
+
   static String encode(Map<String, Object?> message) => jsonEncode(message);
 
   static LinkMessage? decode(String text) {
@@ -42,13 +46,17 @@ abstract final class LinkMessageType {
   static const ping = 'ping';
   static const pong = 'pong';
 
-  /// 跟随端 → 主控：连接后的第一条消息，带设备标识
+  /// 跟随端 → 主控：连接后的第一条消息，带设备标识与协议版本 `version`
   static const hello = 'hello';
+
+  /// 主控 → 跟随端：协议版本不同，随后断开
+  static const incompatible = 'incompatible';
 
   /// 主控 → 跟随端：设置该跟随端的延迟偏移（实际时间，微秒）
   static const offset = 'offset';
 
-  /// 主控 → 跟随端：是否一起播放；跟随端 → 主控：请求切换
+  /// 主控 → 跟随端：是否一起播放（连接后的第一条带协议版本 `version`）；
+  /// 跟随端 → 主控：请求切换
   static const sync = 'sync';
 
   /// 主控 → 跟随端：本轮播放的内容，跟随端开始加载
