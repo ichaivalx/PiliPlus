@@ -173,13 +173,17 @@ class FollowerSession {
   bool _shouldPlay = false;
   Timer? _startTimer;
 
-  /// 本机的延迟偏移，各跟随端分别设置
+  /// 本机的延迟偏移（实际时间，微秒），各跟随端分别设置
   int _offsetUs;
   int? _pausePos;
 
   /// 主控的播放进度模型：位置 = 截距 + 倍速 × 主控时刻
   double _rate = 1.0;
   final List<int> _intercepts = [];
+
+  /// 延迟偏移（实际时间）按当前倍速对应的媒体位置差：倍速 r 下同样的实际时间
+  /// 对应 r 倍的媒体时长
+  int get _mediaOffsetUs => (_offsetUs * _rate).round();
 
   /// 主控最近的进度采样可用于精细对齐
   bool _leaderFine = false;
@@ -196,7 +200,8 @@ class FollowerSession {
   /// 连接后已收到主控当前的内容（或得知主控没有内容），此前不按主控进度对齐
   bool _restored = false;
 
-  /// 当前定位所用的延迟偏移；起播时与当前偏移不同则定位已过期
+  /// 当前定位所用的延迟偏移对应的媒体位置差；起播时与当前的不同（偏移或倍速
+  /// 已变）则按差额移动
   int? _positionedOffsetUs;
 
   /// 应跟随播放而被本机暂停（音频焦点、媒体控制等），本机恢复播放后重新对齐；
@@ -388,7 +393,9 @@ class FollowerSession {
     final pendingPos = _pendingPos;
     return LinkedLoad(
       position: Duration(
-        microseconds: pendingPos == null ? 0 : max(0, pendingPos - _offsetUs),
+        microseconds: pendingPos == null
+            ? 0
+            : max(0, pendingPos - _mediaOffsetUs),
       ),
       onLoaded: () {
         if (token != _loadToken || _loadedPlayer == null) return;
@@ -610,6 +617,8 @@ class FollowerSession {
 
   /// 停止跟随并忘记主控的内容；被本机暂停的状态不随内容清除
   void _clearContent() {
+    // 关闭同步、换内容时不再播放校准的测试音
+    _stopCalibration();
     _generation++;
     _loadToken++;
     _halt();
@@ -725,7 +734,7 @@ class FollowerSession {
         // 定位中时以定位为准
         if (message['pos'] case final int pos when _pendingRound == null) {
           _pausePos = pos;
-          _target!.seek(Duration(microseconds: max(0, pos - _offsetUs)));
+          _target!.seek(Duration(microseconds: max(0, pos - _mediaOffsetUs)));
         }
       case LinkMessageType.position:
         _onLeaderPosition(message);
@@ -813,7 +822,9 @@ class FollowerSession {
         _pendingRound == null &&
         !player.state.playing) {
       _positionedOffsetUs = null;
-      _target!.seek(Duration(microseconds: max(0, pausePos - _offsetUs)));
+      _target!.seek(
+        Duration(microseconds: max(0, pausePos - _mediaOffsetUs)),
+      );
     }
   }
 
@@ -885,13 +896,13 @@ class FollowerSession {
     // 定位期间延迟偏移变化时按新偏移重新定位
     int offset;
     do {
-      offset = _offsetUs;
+      offset = _mediaOffsetUs;
       final destination = max(0, pos - offset);
       await target.seek(Duration(microseconds: destination));
       if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) {
         return;
       }
-    } while (offset != _offsetUs);
+    } while (offset != _mediaOffsetUs);
     _positionedOffsetUs = offset;
     while (!_clock.isReady) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -944,11 +955,13 @@ class FollowerSession {
     // 新目标
     _speed.stop();
     final positioned = _positionedOffsetUs;
-    if (positioned == _offsetUs) {
+    if (positioned == _mediaOffsetUs) {
       _learnAt = now + _learnUs;
     } else {
       _learnAt = null;
-      if (positioned != null) _speed.shift(_offsetUs - positioned);
+      if (positioned != null) {
+        _speed.shift(((_mediaOffsetUs - positioned) / _rate).round());
+      }
     }
   }
 
@@ -980,7 +993,7 @@ class FollowerSession {
   /// 跳转的目标位置距结尾还有余量，跳转加入后来得及播放
   bool _leaderAhead(Player? player, int now) {
     if (player == null) return false;
-    final plan = _jumpPlan(player, now, _offsetUs);
+    final plan = _jumpPlan(player, now, _mediaOffsetUs);
     final durationUs = player.state.duration.inMicroseconds;
     return plan != null &&
         durationUs > 0 &&
@@ -1046,7 +1059,7 @@ class FollowerSession {
     while (lateCount < 2) {
       if (!isCurrent()) return;
       final begin = LinkClock.nowUs;
-      final offset = _offsetUs;
+      final offset = _mediaOffsetUs;
       final plan = _jumpPlan(player, begin, offset);
       if (plan == null) break;
       final (:at, :destination, :cold) = plan;
@@ -1054,7 +1067,7 @@ class FollowerSession {
       if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) return;
       _learnSeekCost(LinkClock.nowUs - begin, cold: cold);
       // 定位期间延迟偏移变化时重新定位
-      if (offset != _offsetUs) continue;
+      if (offset != _mediaOffsetUs) continue;
       _positionedOffsetUs = offset;
       final playAt = at + startBiasUs;
       if (LinkClock.nowUs < playAt) {
@@ -1146,9 +1159,13 @@ class FollowerSession {
 
   void _setRate(LinkedTarget target, double rate) {
     if (rate != _rate) {
+      final previous = _rate;
       _rate = rate;
       _intercepts.clear();
       _drifts.clear();
+      // 同样的延迟偏移在新倍速下对应不同的媒体位置差，按差额移动（起播前的
+      // 定位按起播时比较定位所用的媒体位置差补上）
+      _speed.shift((_offsetUs * (1 - previous / rate)).round());
     }
     if (target.rate != rate) {
       target.setRate(rate).whenComplete(() {
@@ -1299,7 +1316,7 @@ class FollowerSession {
         _pause(target);
       }
       if (pos != null) {
-        target.seek(Duration(microseconds: max(0, pos - _offsetUs)));
+        target.seek(Duration(microseconds: max(0, pos - _mediaOffsetUs)));
       }
     }
   }
@@ -1357,7 +1374,8 @@ class FollowerSession {
     if (sample == null) return null;
     final leaderPos = _leaderPosition(sample.at);
     if (leaderPos == null) return null;
-    final raw = (sample.pos - leaderPos + _offsetUs) / 1000;
+    // 媒体位置差按倍速换算为实际时间
+    final raw = ((sample.pos - leaderPos) / _rate + _offsetUs) / 1000;
     final holding = _speed.isHolding(now);
     if (!holding) {
       _drifts.add((value: raw, fine: sample.fine && _leaderFine));
@@ -1452,12 +1470,7 @@ class FollowerSession {
     if (now >= _judgeAfter) {
       _jumps = 0;
     }
-    _speed.update(
-      errorMs: drift,
-      fine: measured.fine,
-      rate: _rate,
-      now: now,
-    );
+    _speed.update(errorMs: drift, fine: measured.fine, now: now);
     _applySpeed(player);
     return drift;
   }

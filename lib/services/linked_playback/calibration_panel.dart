@@ -31,6 +31,13 @@ class _CalibrationDialog extends StatefulWidget {
 class _CalibrationDialogState extends State<_CalibrationDialog> {
   bool _closing = false;
 
+  /// 面板被关闭（含未经按钮的返回）时，仍在进行的校准随之取消
+  @override
+  void dispose() {
+    linkedCalibration.cancel();
+    super.dispose();
+  }
+
   /// 校准已取消、撤销或关闭结果时关闭对话框
   void _close() {
     if (_closing) return;

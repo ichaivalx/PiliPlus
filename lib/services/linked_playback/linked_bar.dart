@@ -5,6 +5,7 @@ import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/services/linked_playback/calibration_panel.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -80,6 +81,12 @@ class LinkedBarControls extends StatelessWidget {
       final (:linkable, :peers) = _state(controller);
       if (!linkable) return const SizedBox.shrink();
       final leader = linkedPlayback.role.value == LinkedRole.leader;
+      // 主控有跟随端但同步关闭：调节控件不显示，校准按钮置灰说明原因
+      final idleCalibrate =
+          leader &&
+          peers == 0 &&
+          !linkedPlayback.syncOn.value &&
+          linkedPlayback.adjustablePeers.isNotEmpty;
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
@@ -94,6 +101,12 @@ class LinkedBarControls extends StatelessWidget {
           final List<Widget> children;
           if (peers == 0) {
             children = [
+              if (idleCalibrate &&
+                  width >= widths.calibrate + _gap + widths.sync)
+                _LinkedCalibrateButton(
+                  widths: widths,
+                  onInteraction: onInteraction,
+                ),
               if (width >= widths.sync)
                 _LinkedSyncSwitch(widths: widths)
               else
@@ -520,27 +533,31 @@ class _LinkedOffsetControl extends StatelessWidget {
   final VoidCallback onInteraction;
   final ValueChanged<bool> onDragging;
 
-  static Widget _button(double width, String text, VoidCallback? onTap) =>
-      GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: SizedBox(
-          width: width,
-          height: LinkedBarControls._height,
-          child: Center(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(
-                text,
-                maxLines: 1,
-                style: onTap == null
-                    ? _dimTextStyle.copyWith(color: Colors.white38)
-                    : _dimTextStyle,
-              ),
-            ),
+  static Widget _button(
+    double width,
+    String text,
+    VoidCallback onTap, {
+    bool enabled = true,
+  }) => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    onTap: onTap,
+    child: SizedBox(
+      width: width,
+      height: LinkedBarControls._height,
+      child: Center(
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            text,
+            maxLines: 1,
+            style: enabled
+                ? _dimTextStyle
+                : _dimTextStyle.copyWith(color: Colors.white38),
           ),
         ),
-      );
+      ),
+    ),
+  );
 
   static Widget _label(double width, String text, TextStyle style) => SizedBox(
     width: width,
@@ -579,25 +596,48 @@ class _LinkedOffsetControl extends StatelessWidget {
             linkedPlayback.setOffset(0);
           }),
           if (calibrate)
-            Obx(() {
-              final unavailable = linkedPlayback.calibrationUnavailable;
-              return Tooltip(
-                message: unavailable ?? '一键声学校准',
-                child: _button(
-                  widths.calibrate,
-                  '校准',
-                  unavailable == null
-                      ? () {
-                          onInteraction();
-                          openLinkedCalibration();
-                        }
-                      : null,
-                ),
-              );
-            }),
+            _LinkedCalibrateButton(
+              widths: widths,
+              onInteraction: onInteraction,
+            ),
         ],
       ),
     );
+  }
+}
+
+/// 主控的校准按钮：不能校准时置灰，悬停查看原因，点击时提示原因（点击由按钮
+/// 接住，不会落到播放器上）
+class _LinkedCalibrateButton extends StatelessWidget {
+  const _LinkedCalibrateButton({
+    required this.widths,
+    required this.onInteraction,
+  });
+
+  final _Widths widths;
+  final VoidCallback onInteraction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      final unavailable = linkedPlayback.calibrationUnavailable;
+      return Tooltip(
+        message: unavailable ?? '一键声学校准',
+        child: _LinkedOffsetControl._button(
+          widths.calibrate,
+          '校准',
+          () {
+            onInteraction();
+            if (unavailable == null) {
+              openLinkedCalibration();
+            } else {
+              SmartDialog.showToast(unavailable);
+            }
+          },
+          enabled: unavailable == null,
+        ),
+      );
+    });
   }
 }
 

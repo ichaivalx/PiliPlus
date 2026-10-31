@@ -45,7 +45,7 @@ abstract final class LinkMessageType {
   /// 跟随端 → 主控：连接后的第一条消息，带设备标识
   static const hello = 'hello';
 
-  /// 主控 → 跟随端：设置该跟随端的延迟偏移（微秒）
+  /// 主控 → 跟随端：设置该跟随端的延迟偏移（实际时间，微秒）
   static const offset = 'offset';
 
   /// 主控 → 跟随端：是否一起播放；跟随端 → 主控：请求切换

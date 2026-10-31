@@ -260,10 +260,8 @@ void _onBack() {
     }
   }
 
-  final navigator = Get.key.currentState!;
-  if (navigator.canPop()) {
-    navigator.pop();
-  }
+  // 与系统返回一致，尊重页面与弹窗的退出限制（如进行中的联动校准）
+  Get.key.currentState!.maybePop();
 }
 
 class MyApp extends StatelessWidget {

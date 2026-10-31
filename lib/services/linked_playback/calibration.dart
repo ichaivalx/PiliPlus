@@ -11,9 +11,10 @@ import 'package:PiliPlus/services/linked_playback/clock.dart';
 import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/leader.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart'
-    show LinkedPlayback;
+    show LinkedContent, LinkedPlayback;
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
+import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/permission_handler.dart';
 import 'package:collection/collection.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
@@ -80,10 +81,18 @@ typedef _RoundInput = ({
   List<int?> emits,
 });
 
-typedef _Hit = ({int slot, double index, double snr});
+typedef _Hit = ({int slot, double index, double snr, double identity});
+
+extension on _Hit {
+  /// 峰值足够突出，且确是该设备的扫频音
+  bool get accepted =>
+      snr >= CalibrationSignal.minSnr &&
+      identity >= CalibrationSignal.minIdentity;
+}
 
 /// 先在预计位置附近找主控自身的测试音，各跟随端再按与主控的发声时刻之差在
-/// 其附近寻找，窗口足以容纳输出与录音的未知延迟
+/// 其附近寻找，窗口足以容纳输出与录音的未知延迟；窗口可能覆盖相邻设备的扫频
+/// 音，每次检测再核对扫频音的身份
 List<_Hit> _detectRound(_RoundInput input) {
   int samplesOf(num us) => (us * CalibrationPlan.sampleRate / 1e6).round();
   final emits = input.emits;
@@ -97,8 +106,16 @@ List<_Hit> _detectRound(_RoundInput input) {
     expected + samplesOf(600000),
   );
   if (lead == null) return const [];
-  final hits = <_Hit>[(slot: 0, index: lead.index, snr: lead.snr)];
-  if (lead.snr < CalibrationSignal.minSnr) return hits;
+  final devices = emits.length;
+  _Hit hit(int slot, ChirpDetection found) => (
+    slot: slot,
+    index: found.index,
+    snr: found.snr,
+    identity: chirpIdentity(input.samples, slot, found.index, devices),
+  );
+  final reference = hit(0, lead);
+  final hits = [reference];
+  if (!reference.accepted) return hits;
   for (var slot = 1; slot < emits.length; slot++) {
     final emit = emits[slot];
     if (emit == null) continue;
@@ -109,9 +126,7 @@ List<_Hit> _detectRound(_RoundInput input) {
       (at - samplesOf(300000)).floor(),
       (at + samplesOf(500000)).ceil(),
     );
-    if (found != null) {
-      hits.add((slot: slot, index: found.index, snr: found.snr));
-    }
+    if (found != null) hits.add(hit(slot, found));
   }
   return hits;
 }
@@ -122,7 +137,8 @@ Future<List<_Hit>> _detectInBackground(_RoundInput input) =>
 
 /// 主控的一键声学校准：一起暂停后各设备依次播放测试音（共 [CalibrationPlan.rounds]
 /// 轮），主控录音并检测各测试音的到达时刻，按与主控的声学延迟差替换各跟随端
-/// 的延迟偏移，结束后恢复播放
+/// 的延迟偏移，结束后恢复播放。关闭同步、跟随端断开、换了内容或用户恢复播放
+/// 时结束，不改动偏移
 class LinkedCalibration {
   LinkedCalibration._();
 
@@ -162,8 +178,13 @@ class LinkedCalibration {
   CalibrationTone? _tone;
   CalibrationPlan? _plan;
   Timer? _ticker;
-  bool _wasPlaying = false;
-  bool _paused = false;
+
+  /// 校准前在播放时登记的待恢复播放：期间的定时关闭、拔出耳机、打断等照常
+  /// 撤销或暂缓，结束时仍可自动播放才恢复
+  ShutdownLoad? _resume;
+
+  /// 开始时本机播放的内容，换了内容时不恢复
+  LinkedContent? _content;
   int _beginAt = 0;
   int _recordStart = 0;
   final List<Int16List> _chunks = [];
@@ -188,7 +209,6 @@ class LinkedCalibration {
     _detecting = Future.value();
     _scheduledRounds = 0;
     _finishing = false;
-    _paused = false;
     message.value = null;
     needsSettings.value = false;
     round.value = 0;
@@ -216,8 +236,9 @@ class LinkedCalibration {
           offsetUs: peer.offsetUs,
         ),
     ]);
-    _wasPlaying = leader.pauseForCalibration();
-    _paused = true;
+    final playing = leader.pauseForCalibration();
+    _resume = playing ? shutdownTimerService.beginLoad() : null;
+    _content = leader.currentContent;
     leader.onCalibration = _onMessage;
     final recorder = _recorder = CalibrationRecorder.create();
     final String source;
@@ -305,14 +326,14 @@ class LinkedCalibration {
     if (generation != _generation) return;
     final leader = _leader!;
     final plan = _plan!;
-    if (leader.isClosed) {
-      _fail('联动已关闭');
-      return;
-    }
-    if (leader.playIntended && !_finishing) {
-      // 用户在校准期间恢复了播放
+    if (leader.playIntended) {
+      // 用户在校准期间（含计算中）恢复了播放
       cancel(resume: false);
       SmartDialog.showToast('已恢复播放，校准已取消');
+      return;
+    }
+    if (_interruption(leader) case final reason?) {
+      _fail(reason);
       return;
     }
     _read();
@@ -339,6 +360,19 @@ class LinkedCalibration {
       stage.value = CalibrationStage.computing;
       _finish(generation);
     }
+  }
+
+  /// 校准不能继续的原因：联动已关闭、同步已关闭、参与的跟随端已断开或换了内容
+  String? _interruption(LeaderSession leader) {
+    if (leader.isClosed) return '联动已关闭，校准已取消';
+    if (!leader.syncOn()) return '同步播放已关闭，校准已取消';
+    for (final device in devices.skip(1)) {
+      if (!leader.hasPeer(device.id!)) return '${device.name} 已断开，校准已取消';
+    }
+    if (!identical(leader.currentContent, _content)) {
+      return '播放内容已变化，校准已取消';
+    }
+    return null;
   }
 
   void _read() {
@@ -398,16 +432,17 @@ class LinkedCalibration {
         'calib hit round=$index slot=${hit.slot} '
         'index=${hit.index.toStringAsFixed(2)} '
         'at=${(_recordStart + hit.index / rate * 1e6).round()} '
-        'emit=${emits[hit.slot]} snr=${hit.snr.toStringAsFixed(1)}',
+        'emit=${emits[hit.slot]} snr=${hit.snr.toStringAsFixed(1)} '
+        'identity=${hit.identity.toStringAsFixed(1)} accepted=${hit.accepted}',
       );
     }
-    if (lead == null || lead.snr < CalibrationSignal.minSnr) {
+    if (lead == null || !lead.accepted) {
       linkedDiagnostics.log('calib round=$index reference missed');
       return;
     }
     devices.first.rounds.add(0);
     for (final hit in hits) {
-      if (hit.slot == 0 || hit.snr < CalibrationSignal.minSnr) continue;
+      if (hit.slot == 0 || !hit.accepted) continue;
       final late =
           (hit.index - lead.index) / rate * 1e6 -
           (emits[hit.slot]! - emits[0]!);
@@ -443,6 +478,14 @@ class LinkedCalibration {
       return _fail('未录到主控自己的测试音：请确认本机未静音、音量足够，且麦克风未被遮挡');
     }
     final leader = _leader!;
+    // 计算期间可能已取消或中断，写入偏移前再确认
+    if (generation != _generation) return;
+    if (leader.playIntended) {
+      cancel(resume: false);
+      SmartDialog.showToast('已恢复播放，校准已取消');
+      return;
+    }
+    if (_interruption(leader) case final reason?) return _fail(reason);
     for (final device in devices.skip(1)) {
       device.problem = _resolve(device);
       final late = device.lateUs;
@@ -450,7 +493,7 @@ class LinkedCalibration {
       const step = LinkedPlayback.offsetStepUs;
       final offset = (-late / step).round() * step;
       device.newOffsetUs = offset;
-      if (!leader.isClosed) leader.setOffset(device.id!, offset);
+      leader.setOffset(device.id!, offset);
     }
     linkedDiagnostics.log(
       'calib result ${[for (final device in devices.skip(1)) 'slot=${device.slot} rounds=${device.rounds.map((e) => e.round()).join('/')} late=${device.lateUs} offset=${device.offsetUs}->${device.newOffsetUs} problem=${device.problem}'].join('; ')}',
@@ -487,7 +530,8 @@ class LinkedCalibration {
     _end(resume: true);
   }
 
-  /// 结束本次校准：停止测试音与录音，通知跟随端停止，按需恢复播放
+  /// 结束本次校准：停止测试音与录音，通知跟随端停止；[resume] 时若校准前在
+  /// 播放、期间未被停止或暂缓且仍是同一内容，则恢复播放
   void _end({required bool resume}) {
     _generation++;
     _ticker?.cancel();
@@ -502,9 +546,19 @@ class LinkedCalibration {
         leader.broadcast({'t': LinkMessageType.calibrateStop, 'id': plan.id});
       }
       if (leader.onCalibration == _onMessage) leader.onCalibration = null;
-      if (resume && _paused && _wasPlaying) leader.resumeAfterCalibration();
     }
-    _paused = false;
+    final load = _resume;
+    _resume = null;
+    if (load != null) {
+      final allowed = resume && shutdownTimerService.canAutoplay(load);
+      shutdownTimerService.endLoad(load);
+      if (allowed &&
+          leader != null &&
+          !leader.isClosed &&
+          identical(leader.currentContent, _content)) {
+        leader.resumeAfterCalibration();
+      }
+    }
   }
 
   /// 取消进行中的校准：偏移未改动，按需恢复播放

@@ -1,6 +1,8 @@
 import 'dart:math' show max, min;
 
-/// 跟随端的倍速微调：输出相对倍速（1 为原速），由三部分组成
+/// 跟随端的倍速微调：输出相对倍速（1 为原速），偏差与移动量均为实际时间（相对
+/// 倍速 1 + s 时，本机相对主控每秒实际时间移动 s 秒，与播放倍速无关），由三部分
+/// 组成
 /// - 频差：两端音频时钟的长期速率差，按偏差积分学习，进入死区后保留；
 /// - 位置修正：按当前偏差比例追赶，偏差在 [_deadbandMs] 以内不修正；
 /// - 偏移移动：用户改变延迟偏移后，按改变量开环移动到新位置，不受死区限制。
@@ -52,7 +54,7 @@ class LinkedSpeedControl {
   double _integral = 0;
   double _proportional = 0;
 
-  /// 尚待开环移动的位置（微秒），正值表示本机需相对主控后退
+  /// 尚待开环移动的实际时间（微秒），正值表示本机需相对主控延后
   double _pendingUs = 0;
   double _shift = 0;
 
@@ -60,8 +62,8 @@ class LinkedSpeedControl {
   int? _lastAt;
   int _holdUntil = 0;
 
-  /// 最近一次更新时的播放倍速，结算开环移动用
-  double _rate = 1;
+  /// 两次更新的间隔（秒），开环移动每次不超过剩余量
+  static const _updateSeconds = 0.25;
 
   double get integral => _integral;
   double get proportional => _proportional;
@@ -74,7 +76,7 @@ class LinkedSpeedControl {
   /// 读数受倍速变化瞬态影响，不用于修正
   bool isHolding(int now) => _shift != 0 || now < _holdUntil;
 
-  /// 延迟偏移增加 [deltaUs]（本机需后退同样的量）
+  /// 本机需相对主控延后 [deltaUs]（实际时间，如延迟偏移增加）
   void shift(int deltaUs) {
     _pendingUs += deltaUs;
   }
@@ -107,7 +109,7 @@ class LinkedSpeedControl {
     if (last == null) return 0;
     final elapsed = now - last;
     if (_shift != 0 && elapsed > 0) {
-      final moved = -_shift * _rate * elapsed;
+      final moved = -_shift * elapsed;
       _pendingUs = _pendingUs > 0
           ? max(0.0, _pendingUs - moved)
           : min(0.0, _pendingUs - moved);
@@ -133,23 +135,20 @@ class LinkedSpeedControl {
     _holdUntil = 0;
   }
 
-  /// 每次采样后调用。[errorMs] 为滤波后的偏差（正值表示本机超前），[fine] 表示
-  /// 读数可用于精细修正（两端都取自音频输出位置且采样耗时正常），[rate] 为当前
-  /// 播放倍速
+  /// 每次采样后调用。[errorMs] 为滤波后的偏差（实际时间，正值表示本机超前），
+  /// [fine] 表示读数可用于精细修正（两端都取自音频输出位置且采样耗时正常）
   void update({
     required double? errorMs,
     required bool fine,
-    required double rate,
     required int now,
   }) {
     final dt = min(_settle(now), _maxDtUs);
-    _rate = rate;
     if (_pendingUs.abs() >= 1) {
       final magnitude = _pendingUs.abs() / 1e6;
-      // 按 0.25 秒后再次更新估计，不超过剩余量
+      // 按下次更新时再次估计，不超过剩余量
       final shift = min(
         (magnitude / _shiftSeconds).clamp(_minShift, _maxShift).toDouble(),
-        magnitude / (rate * 0.25),
+        magnitude / _updateSeconds,
       );
       _shift = _pendingUs > 0 ? -shift : shift;
       _proportional = 0;

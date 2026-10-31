@@ -186,6 +186,12 @@ class LeaderSession {
 
   bool get isClosed => _closed;
 
+  /// 正在共同加载、定位或起播
+  bool get isStarting => _round != null;
+
+  /// 本机当前播放的可联动内容
+  LinkedContent? get currentContent => _content;
+
   /// 会话已结束：仅剩归还给本机的自行起播
   bool _closed = false;
 
@@ -480,6 +486,10 @@ class LeaderSession {
           when !state.replaced && state.offsetUs != null)
         (id: id, name: state.name ?? state.address, offsetUs: state.offsetUs!),
   ];
+
+  /// 设备标识为 [id] 的跟随端仍连接着
+  bool hasPeer(String id) =>
+      _peers.values.any((state) => state.id == id && !state.replaced);
 
   void sendTo(String id, Map<String, Object?> message) {
     for (final MapEntry(key: peer, value: state) in _peers.entries) {

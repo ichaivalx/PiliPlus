@@ -55,4 +55,20 @@ void main() {
     final missing = detectChirp(samples, 3, 45600, 84000)!;
     expect(missing.snr, lessThan(CalibrationSignal.minSnr));
   });
+
+  test('rejects a neighbouring device tone inside a silent device window', () {
+    // 第 1 台静音，第 2 台的扫频音在其窗口内
+    final samples = record(192000, {24000: (0, 0.3), 72000: (2, 0.4)});
+    final wrong = detectChirp(samples, 1, 33600, 72000)!;
+    expect(
+      chirpIdentity(samples, 1, wrong.index, 3),
+      lessThan(CalibrationSignal.minIdentity),
+    );
+    final right = detectChirp(samples, 2, 57600, 96000)!;
+    expect(right.index, closeTo(72000, 0.5));
+    expect(
+      chirpIdentity(samples, 2, right.index, 3),
+      greaterThan(CalibrationSignal.minIdentity),
+    );
+  });
 }

@@ -74,8 +74,8 @@ class LinkedPlayback {
   /// 延迟偏移的最小调节单位（微秒）
   static const offsetStepUs = 500;
 
-  /// 跟随端：本机的延迟偏移（微秒），正值使本机相对主控延后；各跟随端分别
-  /// 设置，主控可调节各跟随端的
+  /// 跟随端：本机的延迟偏移（实际时间，微秒，与播放倍速无关），正值使本机相对
+  /// 主控延后；各跟随端分别设置，主控可调节各跟随端的
   final RxInt offsetUs = RxInt(
     GStorage.setting.get(_offsetKey, defaultValue: 0) as int,
   );
@@ -110,6 +110,7 @@ class LinkedPlayback {
     if (!CalibrationRecorder.isSupported) return '本平台暂不支持校准';
     if (!syncOn.value) return '开启同步播放后可以校准';
     if (adjustablePeers.isEmpty) return '没有已连接的跟随端';
+    if (_leader?.isStarting ?? false) return '正在加载，稍后再校准';
     return null;
   }
 

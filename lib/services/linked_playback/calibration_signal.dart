@@ -65,11 +65,20 @@ abstract final class CalibrationSignal {
   /// 检测结果的峰值与背景之比低于此值时视为未检测到
   static const minSnr = 6.0;
 
+  /// 检测到的位置上，本设备模板的相关须至少为附近其他设备模板的此倍数，否则
+  /// 多半是窗口内相邻设备的扫频音被误认（合成含噪声与混响的录音中，误认时约
+  /// 0.06~0.2，真实检测约 2.2~6.6）
+  static const minIdentity = 1.5;
+
+  /// 不同的扫频音个数，设备序号按此循环
+  static int get templates => _bands.length;
+
   static int get chirpSamples =>
       chirpUs * CalibrationPlan.sampleRate ~/ 1000000;
 
-  /// 设备 [slot] 的扫频音，幅度 -1~1
-  static Float64List chirp(int slot) {
+  /// 设备 [slot] 的扫频音，幅度 -1~1；[quadrature] 时为相位差 90° 的同一扫频，
+  /// 两者合起来计算与相位无关的相关
+  static Float64List chirp(int slot, {bool quadrature = false}) {
     final (f0, f1) = _bands[slot % _bands.length];
     const rate = CalibrationPlan.sampleRate;
     final n = chirpSamples;
@@ -83,7 +92,7 @@ abstract final class CalibrationSignal {
       final window = edge >= taper
           ? 1.0
           : 0.5 * (1 - math.cos(math.pi * edge / taper));
-      samples[i] = math.sin(phase) * window;
+      samples[i] = (quadrature ? math.cos(phase) : math.sin(phase)) * window;
     }
     return samples;
   }
@@ -207,6 +216,61 @@ ChirpDetection? detectChirp(Int16List samples, int slot, int from, int to) {
     index: start + peak + fraction,
     snr: noise == 0 ? double.infinity : envelope[peak] / noise,
   );
+}
+
+/// 录音 [samples] 中自 [index] 起的一段与设备 [slot] 扫频音的归一化相关（0~1，
+/// 与相位无关），在前后 [span] 个采样内取最大
+double chirpMatch(Int16List samples, int slot, double index, {int span = 96}) {
+  final sine = CalibrationSignal.chirp(slot);
+  final cosine = CalibrationSignal.chirp(slot, quadrature: true);
+  final m = sine.length;
+  var norm = 0.0;
+  for (final value in sine) {
+    norm += value * value;
+  }
+  norm = math.sqrt(norm);
+  final center = index.round();
+  var best = 0.0;
+  for (var lag = center - span; lag <= center + span; lag++) {
+    if (lag < 0 || lag + m > samples.length) continue;
+    var s = 0.0;
+    var c = 0.0;
+    var energy = 0.0;
+    for (var j = 0; j < m; j++) {
+      final x = samples[lag + j].toDouble();
+      s += x * sine[j];
+      c += x * cosine[j];
+      energy += x * x;
+    }
+    if (energy == 0) continue;
+    best = math.max(best, math.sqrt(s * s + c * c) / (math.sqrt(energy) * norm));
+  }
+  return best;
+}
+
+/// 录音中 [index] 处确是设备 [slot]（共 [devices] 台）的扫频音的程度：本设备
+/// 模板在该处的相关，与其他设备模板在前后一个扫频音长度内最佳对齐处的相关
+/// 中最高者之比（相邻设备的扫频音只与该处部分重叠时也能认出）
+double chirpIdentity(Int16List samples, int slot, double index, int devices) {
+  final own = chirpMatch(samples, slot, index);
+  final m = CalibrationSignal.chirpSamples;
+  var other = 0.0;
+  for (var candidate = 0; candidate < devices; candidate++) {
+    // 循环使用的同一扫频音无法区分，只能靠时间错开
+    if (candidate % CalibrationSignal.templates ==
+        slot % CalibrationSignal.templates) {
+      continue;
+    }
+    final found = detectChirp(
+      samples,
+      candidate,
+      (index - m).floor(),
+      (index + m).ceil(),
+    );
+    if (found == null) continue;
+    other = math.max(other, chirpMatch(samples, candidate, found.index));
+  }
+  return other == 0 ? double.infinity : own / other;
 }
 
 /// 原位基 2 快速傅里叶变换，长度须为 2 的幂；[inverse] 时含 1/n 归一化
