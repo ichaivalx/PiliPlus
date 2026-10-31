@@ -131,6 +131,7 @@ class AudioController extends GetxController
     _statusTimer = null;
   }
 
+  /// 用户静音、取消静音
   void toggleVolume() {
     if (_lastVolume == null) {
       _lastVolume = desktopVolume.value;
@@ -138,6 +139,7 @@ class AudioController extends GetxController
     } else {
       setVolume(_lastVolume!);
     }
+    linkedPlayback.onUserVolume(desktopVolume.value);
   }
 
   void setVolume(double volume, {bool clearLastVolme = true}) {
@@ -154,6 +156,8 @@ class AudioController extends GetxController
       ?..volume.value = volume
       ..videoPlayerController?.setVolume(volume * 100);
     GStorage.setting.put(SettingBoxKey.desktopVolume, volume.toPrecision(3));
+    // 用户调节音量条结束
+    linkedPlayback.onUserVolume(volume);
   }
 
   @override
@@ -647,12 +651,13 @@ class AudioController extends GetxController
 
   Future<void> _initPlayer() async {
     assert(player == null, _subscriptions = null);
+    final initialVolume = desktopVolume.value;
     player = await Player.create(
       configuration: PlayerConfiguration(
         options: {
           if (Platform.isAndroid) 'ao': Pref.audioOutput,
           'volume': PlatformUtils.isDesktop
-              ? (desktopVolume.value * 100).toString()
+              ? (initialVolume * 100).toString()
               : Pref.playerVolume.toString(),
           ...Pref.initBuffer(),
         },
@@ -662,6 +667,10 @@ class AudioController extends GetxController
       player!.dispose();
       player = null;
       return;
+    }
+    // 创建期间音量有变化（如联动设置跟随端音量）时补上
+    if (PlatformUtils.isDesktop && desktopVolume.value != initialVolume) {
+      player!.setVolume(desktopVolume.value * 100);
     }
     final stream = player!.stream;
     _subscriptions = [

@@ -1095,7 +1095,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
       EasyThrottle.throttle(
         'setVolume',
         const Duration(milliseconds: 20),
-        () => plPlayerController.setVolume(
+        () => plPlayerController.adjustVolume(
           clampDouble(
             plPlayerController.volume.value - delta.dy / (maxHeight * 0.5),
             0.0,
@@ -1295,7 +1295,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
       EasyThrottle.throttle(
         'setVolume',
         const Duration(milliseconds: 20),
-        () => plPlayerController.setVolume(
+        () => plPlayerController.adjustVolume(
           clampDouble(
             plPlayerController.volume.value -
                 event.localPanDelta.dy / (maxHeight * 0.5),
@@ -1322,7 +1322,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         0.0,
         plPlayerController.maxVolume,
       );
-      plPlayerController.setVolume(volume);
+      plPlayerController.adjustVolume(volume);
     }
   }
 

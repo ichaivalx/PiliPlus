@@ -190,9 +190,6 @@ class LinkedPlayback {
           }
       }
     });
-    if (PlatformUtils.isDesktop) {
-      LinkedDesktopVolume.listen((value) => _onSystemVolume(value, self: false));
-    }
     AppLifecycleListener(onResume: wake, onShow: wake);
     Connectivity().onConnectivityChanged.skip(1).listen((_) => _refresh());
     shutdownTimerService.addExpiredListener(_onShutdown);
@@ -318,6 +315,13 @@ class LinkedPlayback {
     }
   }
 
+  /// 桌面端：用户在本机调节播放器音量（音量条、手势、滚轮、快捷键、静音等）后
+  /// 调用，主控通知跟随端，跟随端据此调整偏移或设定值；联动自身的设置不经此
+  void onUserVolume(double volume) {
+    if (!PlatformUtils.isDesktop) return;
+    _onSystemVolume(volume.clamp(0.0, 1.0).toDouble(), self: false);
+  }
+
   void _onSystemVolume(double value, {required bool self}) {
     if (_leader case final leader?) {
       leaderVolume.value = value;
@@ -398,8 +402,12 @@ class LinkedPlayback {
   }
 
   /// 应用退出前调用（桌面端关闭窗口、托盘退出）：结束会话，等停止消息发出，
-  /// 主控的跟随端随之停止跟随
-  Future<void> close() {
+  /// 主控的跟随端随之停止跟随；重复调用等待同一次结束
+  Future<void> close() => _closing ??= _close();
+
+  Future<void>? _closing;
+
+  Future<void> _close() {
     final leader = _leader;
     final follower = _follower;
     _leader = null;

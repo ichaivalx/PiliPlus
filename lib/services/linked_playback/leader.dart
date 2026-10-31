@@ -453,6 +453,8 @@ class LeaderSession {
 
   /// 本机与各跟随端一起停止，进行中的共同起播不再开始播放
   void pauseAll() {
+    // 因打断暂缓的共同起播不再在打断结束后继续
+    _dropDeferred();
     _standaloneRound?.intendsPlay = false;
     final round = _round;
     if (round != null) {

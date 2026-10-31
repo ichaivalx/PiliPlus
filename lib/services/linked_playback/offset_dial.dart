@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:flutter/gestures.dart'
     show GestureBinding, PointerScrollEvent, PointerSignalEvent;
@@ -36,7 +38,7 @@ class LinkedDial extends StatefulWidget {
   /// 拖动期间持续调用，供播放器保持控件显示
   final VoidCallback? onInteraction;
 
-  /// 拖动开始时以 true、结束或取消（含拖动中被移除）时以 false 调用
+  /// 拖动或连续滚动滚轮开始时以 true、结束或取消（含期间被移除）时以 false 调用
   final ValueChanged<bool>? onDragging;
 
   @override
@@ -46,6 +48,11 @@ class LinkedDial extends StatefulWidget {
 class _LinkedDialState extends State<LinkedDial> {
   /// 每格的像素
   static const _extent = 10.0;
+
+  /// 滚轮停止滚动此时长后视为一次调节结束
+  static const _wheelIdle = Duration(milliseconds: 500);
+
+  Timer? _wheelTimer;
 
   /// 未满一格的拖动距离，正值为增大方向
   double _drag = 0;
@@ -58,7 +65,11 @@ class _LinkedDialState extends State<LinkedDial> {
     widget.onDragging?.call(dragging);
   }
 
-  void _onStart(DragStartDetails details) => _setDragging(true);
+  void _onStart(DragStartDetails details) {
+    _wheelTimer?.cancel();
+    _wheelTimer = null;
+    _setDragging(true);
+  }
 
   void _onUpdate(DragUpdateDetails details) {
     widget.onInteraction?.call();
@@ -81,6 +92,7 @@ class _LinkedDialState extends State<LinkedDial> {
 
   @override
   void dispose() {
+    _wheelTimer?.cancel();
     _setDragging(false);
     super.dispose();
   }
@@ -92,6 +104,13 @@ class _LinkedDialState extends State<LinkedDial> {
       final delta = (event as PointerScrollEvent).scrollDelta;
       final amount = delta.dy != 0 ? -delta.dy : delta.dx;
       if (amount == 0) return;
+      // 连续滚动视为一次调节，停止滚动后结束
+      _setDragging(true);
+      _wheelTimer?.cancel();
+      _wheelTimer = Timer(_wheelIdle, () {
+        _wheelTimer = null;
+        _setDragging(false);
+      });
       widget.onInteraction?.call();
       widget.onSteps(amount > 0 ? 1 : -1);
     });

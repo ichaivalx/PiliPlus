@@ -118,13 +118,16 @@ class WindowController {
     });
   }
 
+  /// 只在隐藏时确实暂停了播放时恢复，恢复后清除
   void _playIfNeeded() {
-    if (pauseOnMinimize && isPlaying) {
+    if (isPlaying) {
+      isPlaying = false;
       PlPlayerController.instance?.play();
     }
   }
 
   void _pauseIfNeeded() {
+    isPlaying = false;
     // 联动播放期间与对端一起播放，隐藏窗口时不暂停
     if (pauseOnMinimize && !linkedPlayback.holdsPlayback) {
       if (PlPlayerController.instance case final player?) {
@@ -137,7 +140,12 @@ class WindowController {
     }
   }
 
-  Future<void> onClose() async {
+  /// 退出流程只执行一次，重复退出等待同一流程
+  Future<void>? _closing;
+
+  Future<void> onClose() => _closing ??= _close();
+
+  Future<void> _close() async {
     // 先通知联动的对端停止
     await linkedPlayback.close();
     await GStorage.compact();

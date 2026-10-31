@@ -952,11 +952,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
 
   Future<Player> _initPlayer() async {
     assert(_videoPlayerController == null);
+    final initialVolume = volume.value;
     final opt = {
       'video-sync': Pref.videoSync,
       if (Platform.isAndroid) 'ao': Pref.audioOutput,
       'volume':
-          (PlatformUtils.isMobile ? Pref.playerVolume : volume.value * 100)
+          (PlatformUtils.isMobile ? Pref.playerVolume : initialVolume * 100)
               .toString(),
     };
     final autosync = Pref.autosync;
@@ -988,6 +989,11 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
 
     player.setMediaHeader(userAgent: BrowserUa.pc, referer: HttpString.baseUrl);
+
+    // 创建期间音量有变化（如联动设置跟随端音量）时补上
+    if (PlatformUtils.isDesktop && volume.value != initialVolume) {
+      player.setVolume(volume.value * 100);
+    }
 
     _startListeners(player);
 
@@ -1455,6 +1461,13 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         setting.put(SettingBoxKey.desktopVolume, volume.toPrecision(3));
       }
     });
+  }
+
+  /// 用户在本机调节音量（手势、滚轮、快捷键）：联动播放随之同步
+  Future<void> adjustVolume(double volume) {
+    final done = setVolume(volume);
+    linkedPlayback.onUserVolume(volume);
+    return done;
   }
 
   /// Toggle Change the videofit accordingly

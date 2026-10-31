@@ -549,9 +549,9 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
 
   static String _signed(int value) => '${value > 0 ? '+' : ''}$value';
 
-  /// 拖动中已提交给设备 [id] 的音量：重建前连续多次更新也在其上逐格累加，拖动
-  /// 结束后清除；调节的设备变化（含所选设备离线后自动改选）时拨轮随设备重建，
-  /// 当前拖动随之结束
+  /// 拖动或连续滚动滚轮期间已提交给设备 [id] 的音量：重建前连续多次更新也在其上
+  /// 逐格累加，调节结束后清除；调节的设备变化（含所选设备离线后自动改选）时拨轮
+  /// 随设备重建，当前调节随之结束；模式变化时不再沿用
   ({String? id, LinkedVolume volume})? _dragVolume;
 
   void _onDragging(bool dragging) {
@@ -577,6 +577,7 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
                 behavior: HitTestBehavior.opaque,
                 onTap: () {
                   widget.onInteraction();
+                  _dragVolume = null;
                   if (mode != volume.mode) {
                     onChanged(
                       volume.switchTo(mode, linkedPlayback.leaderVolume.value),
@@ -643,7 +644,10 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
           onDragging: _onDragging,
           onSteps: (steps) {
             final pending = _dragVolume;
-            final base = pending != null && pending.id == id
+            final base =
+                pending != null &&
+                    pending.id == id &&
+                    pending.volume.mode == volume.mode
                 ? pending.volume
                 : volume;
             final next = base.mode == LinkedVolumeMode.follow
