@@ -1261,6 +1261,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                 controller: videoDetailController.plPlayerController,
                 videoDetailCtr: videoDetailController,
                 heroTag: heroTag,
+                showViewPoints: showViewPoints,
               ),
               danmuWidget: isPipMode && pipNoDanmaku
                   ? null

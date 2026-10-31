@@ -8,7 +8,6 @@ import 'package:PiliPlus/common/constants.dart';
 import 'package:PiliPlus/common/style.dart';
 import 'package:PiliPlus/common/widgets/cropped_image.dart';
 import 'package:PiliPlus/common/widgets/custom_icon.dart';
-import 'package:PiliPlus/common/widgets/disabled_icon.dart';
 import 'package:PiliPlus/common/widgets/gesture/immediate_tap_gesture_recognizer.dart';
 import 'package:PiliPlus/common/widgets/gesture/mouse_interactive_viewer.dart';
 import 'package:PiliPlus/common/widgets/gesture/player_gesture_recognizer.dart';
@@ -46,6 +45,7 @@ import 'package:PiliPlus/plugin/pl_player/widgets/backward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/bottom_control.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/bottom_bar.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
+import 'package:PiliPlus/plugin/pl_player/widgets/extra_items.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/forward_seek.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/mpv_convert_webp.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/play_pause_btn.dart';
@@ -457,31 +457,6 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         ),
       ),
 
-      /// 高能进度条
-      BottomControlType.dmChart => Obx(
-        () {
-          final list = videoDetailController.dmTrend.value?.dataOrNull;
-          if (list != null && list.isNotEmpty) {
-            final show = videoDetailController.showDmTrendChart.value;
-            return ComBtn(
-              width: widgetWidth,
-              height: 30,
-              tooltip: '高能进度条',
-              icon: DisabledIcon(
-                disable: !show,
-                child: const Icon(
-                  Icons.show_chart,
-                  size: 22,
-                  color: Colors.white,
-                ),
-              ),
-              onTap: () => videoDetailController.showDmTrendChart.value = !show,
-            );
-          }
-          return const SizedBox.shrink();
-        },
-      ),
-
       /// 超分辨率
       BottomControlType.superResolution => Obx(
         () {
@@ -518,36 +493,6 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
               ),
             ),
           );
-        },
-      ),
-
-      /// 分段信息
-      BottomControlType.viewPoints => Obx(
-        () {
-          if (videoDetailController.viewPointList.isNotEmpty) {
-            return ComBtn(
-              width: widgetWidth,
-              height: 30,
-              tooltip: '分段信息',
-              icon: DisabledIcon(
-                disable: !videoDetailController.showVP.value,
-                child: const Icon(
-                  CustomIcons.view_headline_rotate_90,
-                  size: 22,
-                  color: Colors.white,
-                ),
-              ),
-              onTap: widget.showViewPoints,
-              onLongPress: () {
-                Feedback.forLongPress(context);
-                videoDetailController.showVP.toggle();
-              },
-              onSecondaryTap: PlatformUtils.isMobile
-                  ? null
-                  : () => videoDetailController.showVP.toggle(),
-            );
-          }
-          return const SizedBox.shrink();
         },
       ),
 
@@ -631,144 +576,17 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         },
       ),
 
-      BottomControlType.aiTranslate => Obx(
-        () {
-          final list = videoDetailController.languages.value;
-          if (list != null && list.isNotEmpty) {
-            return PopupMenuButton<String>(
-              tooltip: '翻译',
-              requestFocus: false,
-              initialValue: videoDetailController.currLang.value,
-              onSelected: videoDetailController.setLanguage,
-              color: Colors.black.withValues(alpha: 0.8),
-              itemBuilder: (context) => [
-                const PopupMenuItem<String>(
-                  height: 35,
-                  value: '',
-                  child: Text(
-                    "关闭翻译",
-                    style: TextStyle(color: Colors.white, fontSize: 13),
-                  ),
-                ),
-                ...list.map(
-                  (e) => PopupMenuItem<String>(
-                    height: 35,
-                    value: e.lang,
-                    child: Text(
-                      e.title!,
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                    ),
-                  ),
-                ),
-              ],
-              child: SizedBox(
-                width: widgetWidth,
-                height: 30,
-                child: const Icon(
-                  Icons.translate,
-                  size: 18,
-                  color: Colors.white,
-                ),
-              ),
-            );
-          }
-          return const SizedBox.shrink();
-        },
-      ),
-
-      /// 字幕
-      BottomControlType.subtitle => Obx(
-        () {
-          if (videoDetailController.subtitles.isNotEmpty) {
-            final val = videoDetailController.vttSubtitlesIndex.value;
-            return PopupMenuButton<int>(
-              tooltip: '字幕',
-              requestFocus: false,
-              initialValue: val,
-              color: Colors.black.withValues(alpha: 0.8),
-              itemBuilder: (context) {
-                return [
-                  PopupMenuItem<int>(
-                    value: 0,
-                    height: 35,
-                    onTap: () => videoDetailController.setSubtitle(0),
-                    child: const Text(
-                      "关闭字幕",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
-                  ...videoDetailController.subtitles.mapIndexed((i, e) {
-                    return PopupMenuItem<int>(
-                      value: i + 1,
-                      height: 35,
-                      onTap: () => videoDetailController.setSubtitle(i + 1),
-                      child: Text(
-                        e.lanDoc ?? e.lan,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const .new(color: Colors.white, fontSize: 13),
-                      ),
-                    );
-                  }),
-                ];
-              },
-              child: SizedBox(
-                width: widgetWidth,
-                height: 30,
-                child: val == 0
-                    ? const Icon(
-                        Icons.closed_caption_off_outlined,
-                        size: 22,
-                        color: Colors.white,
-                      )
-                    : const Icon(
-                        Icons.closed_caption_off_rounded,
-                        size: 22,
-                        color: Colors.white,
-                      ),
-              ),
-            );
-          }
-          return const SizedBox.shrink();
-        },
-      ),
-
-      /// 播放速度
-      BottomControlType.speed => Obx(
-        () => PopupMenuButton<double>(
-          tooltip: '倍速',
-          requestFocus: false,
-          initialValue: plPlayerController.playbackSpeed,
-          color: Colors.black.withValues(alpha: 0.8),
-          itemBuilder: (context) {
-            return plPlayerController.speedList
-                .map(
-                  (double speed) => PopupMenuItem<double>(
-                    height: 35,
-                    padding: const EdgeInsets.only(left: 30),
-                    value: speed,
-                    onTap: () => plPlayerController.setPlaybackSpeed(speed),
-                    child: Text(
-                      "${speed}X",
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      semanticsLabel: "$speed倍速",
-                    ),
-                  ),
-                )
-                .toList();
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Text(
-              "${plPlayerController.playbackSpeed}X",
-              style: const TextStyle(color: Colors.white, fontSize: 13),
-              semanticsLabel: "${plPlayerController.playbackSpeed}倍速",
-            ),
-          ),
-        ),
+      BottomControlType.speed ||
+      BottomControlType.dmChart ||
+      BottomControlType.viewPoints ||
+      BottomControlType.aiTranslate ||
+      BottomControlType.subtitle => PlayerExtraItem(
+        type: bottomControl,
+        player: plPlayerController,
+        videoDetail: videoDetailController,
+        width: widgetWidth,
+        height: 30,
+        showViewPoints: widget.showViewPoints,
       ),
 
       BottomControlType.qa => Obx(
@@ -864,21 +682,16 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
       ),
     };
 
-    final isNotFileSource = !plPlayerController.isFileSource;
-
-    final List<BottomControlType> userSpecifyItemLeft = [
-      .playOrPause,
-      .time,
-      .speed,
-      if (isNotFileSource && plPlayerController.showDmChart) .dmChart,
-      if (isNotFileSource && plPlayerController.showViewPoints) .viewPoints,
-      if (isNotFileSource) .aiTranslate,
-      .subtitle,
-    ];
     return PlayerBottomBar(
       controller: plPlayerController,
       isFullScreen: isFullScreen,
-      children: userSpecifyItemLeft.map(progressWidget).toList(),
+      leading: const <BottomControlType>[
+        .playOrPause,
+        .time,
+      ].map(progressWidget).toList(),
+      extra: PlayerExtraItem.typesFor(
+        plPlayerController,
+      ).map(progressWidget).toList(),
     );
   }
 

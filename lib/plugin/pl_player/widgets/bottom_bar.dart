@@ -8,15 +8,16 @@ import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
-/// 视频播放器底栏：左侧控件 | 定时关闭（占满剩余宽度） | 临时单个循环；开启联动
-/// 播放时定时关闭改为固定宽度，左侧控件与定时关闭之间为联动控件（同步开关、
-/// 延迟偏移、跟随端音量，宽度不足时收起）
+/// 视频播放器底栏：左侧控件 | 定时关闭（占满剩余宽度） | 临时单个循环；显示联动
+/// 控件时左侧只留 [leading]（[extra] 移到顶部栏），定时关闭改为固定宽度，其左侧
+/// 的剩余宽度为联动控件
 class PlayerBottomBar extends StatelessWidget {
   const PlayerBottomBar({
     super.key,
     required this.controller,
     required this.isFullScreen,
-    required this.children,
+    required this.leading,
+    required this.extra,
   });
 
   static const double _loopWidth = 64;
@@ -25,7 +26,12 @@ class PlayerBottomBar extends StatelessWidget {
 
   final PlPlayerController controller;
   final bool isFullScreen;
-  final List<Widget> children;
+
+  /// 播放暂停与时间
+  final List<Widget> leading;
+
+  /// 倍速、字幕等，显示联动控件时不在底栏
+  final List<Widget> extra;
 
   Widget _timerButton(BuildContext context, {required double width}) {
     return ShutdownPanel(
@@ -110,7 +116,10 @@ class PlayerBottomBar extends StatelessWidget {
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
-                child: Row(mainAxisSize: MainAxisSize.min, children: children),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: showLinked ? leading : [...leading, ...extra],
+                ),
               ),
             ),
             if (showLinked) ...[

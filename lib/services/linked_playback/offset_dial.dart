@@ -273,6 +273,10 @@ class _DialPainter extends CustomPainter {
 const linkedSlowerLabel = '慢一点';
 const linkedFasterLabel = '快一点';
 
+/// 播放器底栏宽度不足时的短文案
+const linkedSlowerShortLabel = '慢点';
+const linkedFasterShortLabel = '快点';
+
 /// 偏移值的文本，按 0.5ms 取整：偏移为正（出声更晚）为「慢」，为负为「快」，
 /// 整毫秒不带小数，半毫秒带 .5，零为「0 ms」
 String formatLinkedOffset(int us) {

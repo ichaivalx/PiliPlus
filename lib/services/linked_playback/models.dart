@@ -88,12 +88,15 @@ class LinkedContent {
 
 /// 跟随端系统媒体音量的控制方式
 enum LinkedVolumeMode {
-  follow('跟随主控'),
-  independent('独立');
+  follow('跟随主控', '跟随'),
+  independent('独立', '独立');
 
-  const LinkedVolumeMode(this.label);
+  const LinkedVolumeMode(this.label, this.shortLabel);
 
   final String label;
+
+  /// 播放器底栏宽度不足时的短文案
+  final String shortLabel;
 }
 
 /// 跟随端的音量设置与当前实际音量，由跟随端保存
