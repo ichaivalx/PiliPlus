@@ -38,8 +38,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
 
   /// 桌面端未连接时的提示：防火墙未放行时其他设备找不到本机
   static final String _desktopHint = PlatformUtils.isDesktop
-      ? '
-若一直无法连接：确认本机当前网络为「专用网络」，并在系统防火墙中允许'
+      ? '\n若一直无法连接：确认本机当前网络为「专用网络」，并在系统防火墙中允许'
             ' PiliPlus 通过专用网络（首次开启时弹出的防火墙提示请选择允许）'
       : '';
 
