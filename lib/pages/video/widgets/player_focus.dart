@@ -5,7 +5,6 @@ import 'dart:math' as math;
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
-import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
@@ -232,15 +231,10 @@ class PlayerFocus extends StatelessWidget {
 
         case LogicalKeyboardKey.keyM:
           if (hasPlayer) {
-            final isMuted = !plPlayerController.isMuted;
-            plPlayerController.videoPlayerController!.setVolume(
-              isMuted ? 0 : plPlayerController.volume.value * 100,
+            plPlayerController.toggleMute();
+            SmartDialog.showToast(
+              '${plPlayerController.isMuted ? '' : '取消'}静音',
             );
-            plPlayerController.isMuted = isMuted;
-            linkedPlayback.onUserVolume(
-              isMuted ? 0 : plPlayerController.volume.value,
-            );
-            SmartDialog.showToast('${isMuted ? '' : '取消'}静音');
           }
           return true;
 

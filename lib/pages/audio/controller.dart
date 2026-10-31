@@ -669,13 +669,11 @@ class AudioController extends GetxController
       player = null;
       return;
     }
-    if (PlatformUtils.isDesktop) {
-      // 创建期间音量有变化（如联动设置跟随端音量）时补上
-      if (desktopVolume.value != initialVolume) {
-        player!.setVolume(desktopVolume.value * 100);
-      }
-      linkedPlayback.onPlayerCreated(_linkedTarget);
-    }
+    // 创建期间音量有变化（如联动设置跟随端音量）时补上
+    final volumeSet =
+        PlatformUtils.isDesktop && desktopVolume.value != initialVolume
+        ? player!.setVolume(desktopVolume.value * 100)
+        : null;
     final stream = player!.stream;
     _subscriptions = [
       stream.position.listen((position) {
@@ -745,6 +743,11 @@ class AudioController extends GetxController
         }
       }),
     ];
+    if (PlatformUtils.isDesktop) {
+      // 补写完成后才交给联动采样
+      await volumeSet;
+      if (!isClosed) linkedPlayback.onPlayerCreated(_linkedTarget);
+    }
   }
 
   @override
