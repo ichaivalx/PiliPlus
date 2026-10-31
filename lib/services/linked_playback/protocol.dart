@@ -95,4 +95,15 @@ abstract final class LinkMessageType {
 
   /// 主控 → 跟随端：设置跟随端的音量模式、偏移或音量
   static const volumeSet = 'volumeSet';
+
+  /// 主控 → 跟随端：声学校准，按安排（`id`、`devices`、`start`）在约定时刻播放
+  /// 第 `slot` 台设备的测试音
+  static const calibrate = 'calib';
+
+  /// 主控 → 跟随端：校准 `id` 结束或取消，停止测试音
+  static const calibrateStop = 'calibStop';
+
+  /// 跟随端 → 主控：校准 `id` 的测试音文件起点实际发声的时刻 `origin`（主控时钟，
+  /// 按 audio-pts 推算），或未能播放的原因 `error`
+  static const calibrateOrigin = 'calibOrigin';
 }

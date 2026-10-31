@@ -11,6 +11,7 @@ class MainActivity : AudioServiceActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         LinkedPlaybackService.register(this, flutterEngine)
+        CalibrationRecorder.register(this, flutterEngine)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

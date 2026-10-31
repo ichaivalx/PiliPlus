@@ -1,5 +1,7 @@
 import 'dart:io' show Platform;
 
+import 'package:PiliPlus/services/linked_playback/calibration.dart';
+import 'package:PiliPlus/services/linked_playback/calibration_recorder.dart';
 import 'package:PiliPlus/services/linked_playback/desktop_volume.dart';
 import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/follower.dart';
@@ -101,6 +103,23 @@ class LinkedPlayback {
   }
 
   void selectPeer(String id) => _selectedPeerId.value = id;
+
+  /// 主控不能进行声学校准的原因，可以时为空；在 Obx 中调用
+  String? get calibrationUnavailable {
+    if (role.value != LinkedRole.leader) return '只有主控可以校准';
+    if (!CalibrationRecorder.isSupported) return '本平台暂不支持校准';
+    if (!syncOn.value) return '开启同步播放后可以校准';
+    if (adjustablePeers.isEmpty) return '没有已连接的跟随端';
+    return null;
+  }
+
+  /// 主控开始声学校准，返回是否已开始
+  bool calibrate() {
+    final leader = _leader;
+    if (leader == null || calibrationUnavailable != null) return false;
+    linkedCalibration.start(leader);
+    return true;
+  }
 
   /// 当前调节的延迟偏移：跟随端为本机的，主控为当前跟随端的
   int? get currentOffsetUs => role.value == LinkedRole.follower

@@ -8,8 +8,10 @@ import 'dart:math' show max, min;
 /// 改变倍速后音频输出管线中仍有按旧倍速排队的声音，读到的位置在约一个输出延迟
 /// 内会出现与倍速变化成正比的瞬态，期间（含开环移动期间）不更新修正
 class LinkedSpeedControl {
-  /// 位置修正的时间常数：偏差 e 时修正 e / τ
-  static const _tauSeconds = 8.0;
+  /// 位置修正的时间常数：偏差 e 时修正 e / τ。测量与执行的滞后（5 点中位数约
+  /// 0.5s、倍速改变后的 0.75s 等待、输出缓冲）合计约 1~1.5s，在 1/τ 处的相位
+  /// 滞后约 15°~20°，临界阻尼下仍有 55° 以上的相位裕度，不会振荡
+  static const _tauSeconds = 4.0;
 
   /// 频差学习的积分增益，取临界阻尼 Ki = (1/τ)² / 4
   static const _integralGain = 1 / (_tauSeconds * _tauSeconds * 4);
@@ -17,23 +19,26 @@ class LinkedSpeedControl {
   /// 偏差在此以内不做位置修正，只由频差保持；约为滤波后读数噪声的两倍
   static const _deadbandMs = 1.0;
 
-  /// 位置修正与频差的上限
-  static const _maxProportional = 0.005;
+  /// 位置修正的上限：略高于精细区内能达到的最大值（(10 - 1)ms / 4s = 0.225%），
+  /// 只作保护；频差的上限按两端时钟可能的速率差，与 τ 无关
+  static const _maxProportional = 0.0025;
   static const _maxIntegral = 0.002;
 
-  /// 积分时单次计入的偏差上限，避免大偏差期间积累过多
+  /// 积分时单次计入的偏差上限（精细区的一半），避免较大偏差期间积累过多
   static const _maxIntegralErrorMs = 5.0;
 
   /// 偏差超过此值时按较快的速率追赶，此时不学习频差
-  static const _coarseMs = 20.0;
+  static const _coarseMs = 10.0;
   static const _coarseTauSeconds = 2.0;
   static const _maxCoarse = 0.04;
 
   /// 闭环修正（频差与位置修正之和）按此步长取整，变化不足一步时不改倍速
   static const step = 0.0001;
 
-  /// 开环移动：按约 [_shiftSeconds] 完成，倍速改变量在上下限之间
-  static const _shiftSeconds = 1.0;
+  /// 开环移动：按约 [_shiftSeconds]（一次采样间隔）完成，倍速改变量在上下限之间：
+  /// 10ms 以内的改变约 0.25s 到位，更大的改变按上限尽快完成；下限使 0.5ms 的
+  /// 改变也在一次采样间隔内完成
+  static const _shiftSeconds = 0.25;
   static const _minShift = 0.002;
   static const _maxShift = 0.04;
 
@@ -74,11 +79,13 @@ class LinkedSpeedControl {
     _pendingUs += deltaUs;
   }
 
-  /// 已按 [previous] → [current] 改变倍速；按步数比较，避免浮点误差漏判
-  void onApplied(double previous, double current, int now) {
-    if (((current - previous).abs() / step).round() >= _holdSteps) {
-      _holdUntil = now + holdUs;
-    }
+  /// 已按 [previous] → [current] 改变倍速；按步数比较，避免浮点误差漏判。返回
+  /// 是否开始等待瞬态：此前的读数已不反映新倍速下的状态，调用方应清空，否则
+  /// 等待结束后滤波仍按旧读数修正而过冲
+  bool onApplied(double previous, double current, int now) {
+    if (((current - previous).abs() / step).round() < _holdSteps) return false;
+    _holdUntil = now + holdUs;
+    return true;
   }
 
   /// 播放停止推进（缓冲、未播放）：结算此前的开环移动并暂停计时

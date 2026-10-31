@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:PiliPlus/common/widgets/scaffold/simple_scaffold.dart';
 import 'package:PiliPlus/common/widgets/view_safe_area.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/menu_row.dart';
+import 'package:PiliPlus/services/linked_playback/calibration_panel.dart';
 import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
@@ -162,7 +163,24 @@ class LinkedPlaybackPanel extends StatelessWidget {
             : null,
       ),
       for (final peer in peers) ..._peer(theme, peer),
+      _calibration(),
     ];
+  }
+
+  /// 主控的一键声学校准，不能校准时置灰并说明原因
+  Widget _calibration() {
+    final unavailable = linkedPlayback.calibrationUnavailable;
+    return ListTile(
+      enabled: unavailable == null,
+      onTap: openLinkedCalibration,
+      leading: const Icon(Icons.graphic_eq_rounded),
+      title: const Text('一键声学校准'),
+      subtitle: Text(
+        unavailable ??
+            '主控用麦克风录下各设备依次发出的提示音，自动设置各跟随端的延迟偏移；'
+                '约需数秒，期间暂停播放，结束后恢复',
+      ),
+    );
   }
 
   /// 拖动进度时的同步方式，由主控决定

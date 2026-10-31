@@ -184,6 +184,8 @@ class LeaderSession {
 
   bool get hasPeers => _transport.connections.isNotEmpty;
 
+  bool get isClosed => _closed;
+
   /// 会话已结束：仅剩归还给本机的自行起播
   bool _closed = false;
 
@@ -464,6 +466,53 @@ class LeaderSession {
       }
     }
     _notifyPeers();
+  }
+
+  // 声学校准
+
+  /// 收到跟随端（设备标识）的校准消息
+  void Function(String id, LinkMessage message)? onCalibration;
+
+  /// 可参与校准的跟随端：已连接且回报过延迟偏移
+  List<({String id, String name, int offsetUs})> get calibrationPeers => [
+    for (final state in _peers.values)
+      if (state.id case final id?
+          when !state.replaced && state.offsetUs != null)
+        (id: id, name: state.name ?? state.address, offsetUs: state.offsetUs!),
+  ];
+
+  void sendTo(String id, Map<String, Object?> message) {
+    for (final MapEntry(key: peer, value: state) in _peers.entries) {
+      if (state.id == id) peer.send(message);
+    }
+  }
+
+  void broadcast(Map<String, Object?> message) => _transport.broadcast(message);
+
+  /// 本机当前的播放器，测试音按其音频输出播放
+  Player? get calibrationReference => _loadedPlayer;
+
+  /// 本机与跟随端是否要播放（含共同起播中）；暂停后为 false，用户再次播放时
+  /// 为 true
+  bool get playIntended => _expectPlaying || (_round?.intendsPlay ?? false);
+
+  /// 校准前一起暂停，返回暂停前是否在播放
+  bool pauseForCalibration() {
+    final playing = playIntended;
+    pauseAll();
+    return playing;
+  }
+
+  /// 校准结束后按用户播放的方式恢复，经共同起播一起开始
+  void resumeAfterCalibration() {
+    final player = _loadedPlayer;
+    if (_closed ||
+        player == null ||
+        player.state.playing ||
+        player.state.completed) {
+      return;
+    }
+    _target?.play();
   }
 
   /// 本机与各跟随端一起停止，进行中的共同起播不再开始播放
@@ -1111,6 +1160,8 @@ class LeaderSession {
         }
       case LinkMessageType.stopAll:
         if (syncOn()) pauseAll();
+      case LinkMessageType.calibrateOrigin:
+        onCalibration?.call(state.id!, message);
       case LinkMessageType.want:
         if (round == null || !round.participants.contains(peer)) {
           state.needsContent = true;

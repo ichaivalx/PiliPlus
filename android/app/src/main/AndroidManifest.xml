@@ -269,6 +269,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 联动播放的声学校准：主控录下各设备的测试音 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!--
       Media access permissions.
       Android 13 or higher.

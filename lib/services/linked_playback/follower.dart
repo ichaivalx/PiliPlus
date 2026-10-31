@@ -4,6 +4,8 @@ import 'dart:math' show max;
 import 'package:PiliPlus/grpc/bilibili/app/listener/v1.pbenum.dart'
     show PlaylistSource;
 import 'package:PiliPlus/services/linked_playback/background_frames.dart';
+import 'package:PiliPlus/services/linked_playback/calibration_signal.dart';
+import 'package:PiliPlus/services/linked_playback/calibration_tone.dart';
 import 'package:PiliPlus/services/linked_playback/clock.dart';
 import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
@@ -273,6 +275,7 @@ class FollowerSession {
     _ticker?.cancel();
     _playingSubscription?.cancel();
     _bufferingSubscription?.cancel();
+    _stopCalibration();
     _generation++;
     _halt();
     _release();
@@ -576,6 +579,7 @@ class FollowerSession {
   /// 断开期间按当前内容与倍速继续自行播放，播完即停；进行中的定位、起播作废
   void _onDisconnected() {
     linkedDiagnostics.log('disconnected');
+    _stopCalibration();
     _volume.disconnect();
     _restored = false;
     _generation++;
@@ -640,6 +644,10 @@ class FollowerSession {
         if (LinkedVolume.fromJson(message) case final volume?) {
           _volume.update(volume);
         }
+      case LinkMessageType.calibrate:
+        _onCalibrate(message);
+      case LinkMessageType.calibrateStop:
+        if (message['id'] == _calibrationId) _stopCalibration();
       case LinkMessageType.open:
         final round = message['round'];
         final content = LinkedContent.fromJson(message['content']);
@@ -729,6 +737,57 @@ class FollowerSession {
         _leaderPosAt = -_lostUs;
         _clearContent();
     }
+  }
+
+  // 声学校准
+
+  CalibrationTone? _calibrationTone;
+  int? _calibrationId;
+
+  /// 主控开始声学校准：在约定时刻播放本机的测试音，回报其起点实际发声的时刻
+  void _onCalibrate(LinkMessage message) {
+    final plan = CalibrationPlan.fromJson(message);
+    final slot = message['slot'];
+    if (plan == null || slot is! int) return;
+    _stopCalibration();
+    final id = _calibrationId = plan.id;
+    if (!_clock.isReady) {
+      _transport.send({
+        't': LinkMessageType.calibrateOrigin,
+        'id': id,
+        'error': '尚未完成对时',
+      });
+      return;
+    }
+    SmartDialog.showToast('联动播放：主控正在校准');
+    _calibrationTone = CalibrationTone(
+      plan: plan,
+      slot: slot,
+      reference: _loadedPlayer,
+      startAt: _clock.toLocal(plan.startAt),
+      onResult: (origin, error) {
+        if (_calibrationId != id) return;
+        final remote = origin == null ? null : _clock.toRemote(origin.origin);
+        linkedDiagnostics.log(
+          'calib origin slot=$slot local=${origin?.origin} remote=$remote '
+          'spread=${origin?.spread} n=${origin?.samples} error=$error',
+        );
+        _transport.send({
+          't': LinkMessageType.calibrateOrigin,
+          'id': id,
+          'origin': ?remote,
+          'spread': ?origin?.spread,
+          'samples': ?origin?.samples,
+          'error': ?error,
+        });
+      },
+    )..start();
+  }
+
+  void _stopCalibration() {
+    _calibrationId = null;
+    _calibrationTone?.stop();
+    _calibrationTone = null;
   }
 
   void _setOffset(int offsetUs) {
@@ -1266,8 +1325,9 @@ class FollowerSession {
     if (!force && same && (speed - applied).abs() < 1e-7) {
       return;
     }
-    if (same) {
-      _speed.onApplied(applied / _rate, speed / _rate, LinkClock.nowUs);
+    if (same &&
+        _speed.onApplied(applied / _rate, speed / _rate, LinkClock.nowUs)) {
+      _drifts.clear();
     }
     _speedPlayer = player;
     _appliedSpeed = speed;

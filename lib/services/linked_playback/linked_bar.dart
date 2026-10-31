@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
+import 'package:PiliPlus/services/linked_playback/calibration_panel.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
 import 'package:get/get.dart';
@@ -10,8 +12,8 @@ const _textStyle = TextStyle(color: Colors.white, fontSize: 12);
 const _dimTextStyle = TextStyle(color: Colors.white70, fontSize: 11);
 
 /// 播放器底栏中的联动控件，从左到右为当前调节的跟随端（主控有多台跟随端时）、
-/// 跟随端音量（模式切换与竖向拨轮）、延迟偏移（拨轮与归零）、同步开关；偏移与
-/// 音量都作用于当前调节的跟随端。放得下时全部展开，多出的宽度加长偏移拨轮；
+/// 跟随端音量（模式切换与竖向拨轮）、延迟偏移（拨轮、归零，主控另有校准）、
+/// 同步开关；偏移与音量都作用于当前调节的跟随端。放得下时全部展开，多出的宽度加长偏移拨轮；
 /// 放不下时依次把音量、调节部分（含跟随端切换）收进按钮弹出，最窄时整体收为
 /// 一个按钮
 class LinkedBarControls extends StatelessWidget {
@@ -35,12 +37,15 @@ class LinkedBarControls extends StatelessWidget {
   /// 操作期间调用，保持播放器控件显示
   final VoidCallback onInteraction;
 
-  /// 拖动拨轮期间不自动隐藏播放器控件
+  /// 拨动结束后继续保持控件显示的时长，便于拨完听一会再决定，之后照常计时隐藏
+  static const _lingerAfterDial = Duration(seconds: 3);
+
+  /// 拖动拨轮期间及结束后 [_lingerAfterDial] 内不自动隐藏播放器控件
   void _onDragging(bool dragging) {
     if (dragging) {
       controller.holdControls();
     } else {
-      controller.releaseControls();
+      Timer(_lingerAfterDial, controller.releaseControls);
     }
   }
 
@@ -74,13 +79,16 @@ class LinkedBarControls extends StatelessWidget {
     return Obx(() {
       final (:linkable, :peers) = _state(controller);
       if (!linkable) return const SizedBox.shrink();
+      final leader = linkedPlayback.role.value == LinkedRole.leader;
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
           final peer = peers > 1 ? _peerWidth + _gap : 0.0;
           // 偏移拨轮取最短时，偏移及其右侧所需的宽度
           final offset =
-              widths.offsetFor(_Widths._minOffsetDial) + _gap + widths.sync;
+              widths.offsetFor(_Widths._minOffsetDial, calibrate: leader) +
+              _gap +
+              widths.sync;
           final full = peer + widths.volume + _gap + offset;
           final volumeCollapsed = peer + _buttonWidth + _gap + offset;
           final List<Widget> children;
@@ -112,6 +120,7 @@ class LinkedBarControls extends StatelessWidget {
               _LinkedOffsetControl(
                 widths: widths,
                 dial: dial,
+                calibrate: leader,
                 onInteraction: onInteraction,
                 onDragging: _onDragging,
               ),
@@ -198,6 +207,7 @@ class _Widths {
     required this.faster,
     required this.offsetValue,
     required this.offsetZero,
+    required this.calibrate,
     required this.toggle,
     required this.volumeValue,
   });
@@ -239,6 +249,7 @@ class _Widths {
         ),
       ),
       offsetZero: math.max(36.0, measure('归零', _dimTextStyle) + 12),
+      calibrate: math.max(36.0, measure('校准', _dimTextStyle) + 12),
       toggle: toggle,
       volumeValue: math.max(
         32.0,
@@ -267,6 +278,9 @@ class _Widths {
   final double offsetValue;
   final double offsetZero;
 
+  /// 主控的校准按钮
+  final double calibrate;
+
   /// 音量模式切换
   final double toggle;
 
@@ -274,7 +288,7 @@ class _Widths {
   final double volumeValue;
 
   /// 偏移拨轮长为 [dial] 时偏移部分的宽度
-  double offsetFor(double dial) =>
+  double offsetFor(double dial, {required bool calibrate}) =>
       slower +
       _spacing +
       dial +
@@ -283,7 +297,8 @@ class _Widths {
       _spacing +
       offsetValue +
       _spacing +
-      offsetZero;
+      offsetZero +
+      (calibrate ? _spacing + this.calibrate : 0);
 
   double get volume =>
       _volumeIcon +
@@ -297,7 +312,7 @@ class _Widths {
   /// 弹出层内容
   double get panel => math.max(
     math.max(sync, LinkedBarControls._peerWidth),
-    math.max(offsetFor(_maxOffsetDial), volume),
+    math.max(offsetFor(_maxOffsetDial, calibrate: true), volume),
   );
 }
 
@@ -370,6 +385,7 @@ class _PanelEntryState extends State<_PanelEntry> {
         return const SizedBox.shrink();
       }
       final (:linkable, :peers) = LinkedBarControls._state(widget.controller);
+      final leader = linkedPlayback.role.value == LinkedRole.leader;
       final children = [
         if (widget.offset && peers > 1)
           _LinkedPeerChip(onInteraction: widget.onInteraction),
@@ -383,6 +399,7 @@ class _PanelEntryState extends State<_PanelEntry> {
           _LinkedOffsetControl(
             widths: widths,
             dial: _Widths._maxOffsetDial,
+            calibrate: leader,
             onInteraction: widget.onInteraction,
             onDragging: widget.onDragging,
           ),
@@ -484,11 +501,13 @@ class _LinkedSyncSwitch extends StatelessWidget {
   }
 }
 
-/// 延迟偏移：两端标注快慢的横向拨轮（每格 0.5ms）、当前值、归零
+/// 延迟偏移：两端标注快慢的横向拨轮（每格 0.5ms）、当前值、归零，主控另有
+/// 校准（不能校准时置灰，悬停或长按查看原因）
 class _LinkedOffsetControl extends StatelessWidget {
   const _LinkedOffsetControl({
     required this.widths,
     required this.dial,
+    required this.calibrate,
     required this.onInteraction,
     required this.onDragging,
   });
@@ -497,8 +516,31 @@ class _LinkedOffsetControl extends StatelessWidget {
 
   /// 拨轮长度
   final double dial;
+  final bool calibrate;
   final VoidCallback onInteraction;
   final ValueChanged<bool> onDragging;
+
+  static Widget _button(double width, String text, VoidCallback? onTap) =>
+      GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: SizedBox(
+          width: width,
+          height: LinkedBarControls._height,
+          child: Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                text,
+                maxLines: 1,
+                style: onTap == null
+                    ? _dimTextStyle.copyWith(color: Colors.white38)
+                    : _dimTextStyle,
+              ),
+            ),
+          ),
+        ),
+      );
 
   static Widget _label(double width, String text, TextStyle style) => SizedBox(
     width: width,
@@ -511,7 +553,7 @@ class _LinkedOffsetControl extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: widths.offsetFor(dial),
+      width: widths.offsetFor(dial, calibrate: calibrate),
       height: LinkedBarControls._height,
       child: Row(
         spacing: _Widths._spacing,
@@ -532,21 +574,27 @@ class _LinkedOffsetControl extends StatelessWidget {
               _textStyle,
             ),
           ),
-          Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                onInteraction();
-                linkedPlayback.setOffset(0);
-              },
-              child: const Center(
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text('归零', maxLines: 1, style: _dimTextStyle),
+          _button(widths.offsetZero, '归零', () {
+            onInteraction();
+            linkedPlayback.setOffset(0);
+          }),
+          if (calibrate)
+            Obx(() {
+              final unavailable = linkedPlayback.calibrationUnavailable;
+              return Tooltip(
+                message: unavailable ?? '一键声学校准',
+                child: _button(
+                  widths.calibrate,
+                  '校准',
+                  unavailable == null
+                      ? () {
+                          onInteraction();
+                          openLinkedCalibration();
+                        }
+                      : null,
                 ),
-              ),
-            ),
-          ),
+              );
+            }),
         ],
       ),
     );
