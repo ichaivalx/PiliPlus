@@ -377,8 +377,9 @@ class HeaderControlState extends State<HeaderControl>
               for (final speed in plPlayerController.speedList)
                 PopupMenuItem<double>(value: speed, child: Text('${speed}X')),
             ],
-            onSelected: (value, setState) {
-              plPlayerController.setPlaybackSpeed(value);
+            // 倍速在播放器设置完成后才更新
+            onSelected: (value, setState) async {
+              await plPlayerController.setPlaybackSpeed(value);
               setState();
             },
             descPosType: .subtitle,

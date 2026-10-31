@@ -30,8 +30,8 @@ class LinkedBarControls extends StatelessWidget {
     required this.onInteraction,
   });
 
-  /// 整体收为一个按钮时的宽度（含两侧间距），底栏至少为此预留
-  static const double minWidth = _Size.button + 2 * _Size.tightGroup;
+  /// 整体收为一个按钮时的宽度，底栏至少为此预留；更窄时不显示
+  static const double minWidth = _Size.button;
 
   /// 本播放器：只在其内容是联动的内容时显示偏移与音量
   final PlPlayerController controller;
@@ -103,12 +103,12 @@ class LinkedBarControls extends StatelessWidget {
           linkedPlayback.adjustablePeers.isNotEmpty;
       return LayoutBuilder(
         builder: (context, constraints) {
-          // 留出小数误差，各段之和不超出
-          final width = constraints.maxWidth - 0.1;
+          final width = constraints.maxWidth;
           final double group;
           final List<(Widget, double)> items;
           if (peers > 0) {
             final layout = groups.solve(width);
+            if (layout == null) return const SizedBox.shrink();
             group = layout.group;
             items = _items(groups, layout);
           } else if (width >= groups.sync + 2 * _Size.group) {
@@ -123,16 +123,18 @@ class LinkedBarControls extends StatelessWidget {
                           2 * _Size.textInset)
                 (
                   _LinkedCalibrateButton(
-                    width: calibrate,
+                    metrics: metrics,
                     onInteraction: onInteraction,
                   ),
                   _Size.textInset,
                 ),
               (_LinkedSyncSwitch(width: groups.sync), 0.0),
             ];
-          } else {
-            group = _Size.tightGroup;
+          } else if (width >= _Size.button) {
+            group = math.min(_Size.tightGroup, (width - _Size.button) / 2);
             items = [(_panelButton(groups, sync: true, offset: true), 0.0)];
+          } else {
+            return const SizedBox.shrink();
           }
           return SizedBox(
             height: _Size.height,
@@ -198,13 +200,15 @@ class LinkedBarControls extends StatelessWidget {
     ];
   }
 
-  /// 各组之间与两端加上组间距 [group]，扣除文字按钮的透明边距，使看到的间距一致
+  /// 各组之间与两端加上组间距 [group]，扣除文字按钮的透明边距，使看到的间距一致；
+  /// 最左侧的间距可被压缩，吸收小数误差
   static List<Widget> _spaced(List<(Widget, double)> items, double group) {
     final children = <Widget>[];
     var previous = 0.0;
     for (final (child, inset) in items) {
+      final gap = SizedBox(width: math.max(0.0, group - previous - inset));
       children
-        ..add(SizedBox(width: math.max(0.0, group - previous - inset)))
+        ..add(children.isEmpty ? Flexible(child: gap) : gap)
         ..add(child);
       previous = inset;
     }
@@ -464,13 +468,14 @@ class _Groups {
       layout.dial +
       3 * layout.inner;
 
-  /// 归零与校准之间：扣除两侧的点击边距，看到的间距与组内一致
-  double buttonGap(_Layout layout) =>
-      math.max(0.0, layout.inner - 2 * _Size.textInset);
-
+  /// 归零与校准相邻的一侧各以组内间距的一半为点击边距，看到的间距与组内一致
   double buttons(_Layout layout) =>
       metrics.button(_zeroLabel) +
-      (calibrate ? buttonGap(layout) + metrics.button(_calibrateLabel) : 0);
+      (calibrate
+          ? metrics.button(_calibrateLabel) +
+                layout.inner -
+                2 * _Size.textInset
+          : 0);
 
   /// 各组的宽度与两侧的透明边距
   List<(double, double)> _widths(_Layout layout) => switch (layout.collapse) {
@@ -499,8 +504,9 @@ class _Groups {
   }
 
   /// 宽度为 [width] 时的排布：依次缩短偏移拨轮、收紧间距、改用短文案，仍放不下
-  /// 时依次收起音量、调节部分，最后整体收起
-  _Layout solve(double width) {
+  /// 时依次收起音量、调节部分，最后整体收起（两侧间距可压缩到 0）；连收起的按钮
+  /// 都放不下时为 null，不显示
+  _Layout? solve(double width) {
     for (final collapse in _Collapse.values) {
       for (final short
           in collapse == _Collapse.none ? const [false, true] : const [true]) {
@@ -510,11 +516,12 @@ class _Groups {
         }
       }
     }
-    return const _Layout(
+    if (width < _Size.button) return null;
+    return _Layout(
       collapse: _Collapse.all,
       short: true,
       inner: _Size.tightInner,
-      group: _Size.tightGroup,
+      group: (width - _Size.button) / 2,
     );
   }
 
@@ -767,19 +774,23 @@ class _LinkedSyncSwitch extends StatelessWidget {
   }
 }
 
-/// 宽为 [width]、文字居中的按钮，文字两侧为点击边距
+/// 文字按钮，文字两侧为点击边距 [padding]，宽度为文字与边距之和
 Widget _textButton(
-  double width,
   String text,
   VoidCallback onTap, {
+  EdgeInsets padding = const EdgeInsets.symmetric(
+    horizontal: _Size.textInset,
+  ),
+  required _Metrics metrics,
   bool enabled = true,
 }) => GestureDetector(
   behavior: HitTestBehavior.opaque,
   onTap: onTap,
   child: SizedBox(
-    width: width,
+    width: metrics.measure(text, _dimTextStyle) + padding.horizontal,
     height: _Size.height,
-    child: Center(
+    child: Padding(
+      padding: padding,
       child: FittedBox(
         fit: BoxFit.scaleDown,
         child: Text(
@@ -855,7 +866,8 @@ class _LinkedOffsetControl extends StatelessWidget {
               metrics.offsetValue,
               formatLinkedOffset(linkedPlayback.currentOffsetUs ?? 0),
               _textStyle,
-              alignment: Alignment.centerLeft,
+              // 预留最宽的值，较短的值靠右贴近归零
+              alignment: Alignment.centerRight,
             ),
           ),
         ],
@@ -878,19 +890,29 @@ class _LinkedOffsetButtons extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 相邻的一侧各以组内间距的一半为点击边距
+    final half = layout.inner / 2;
     return SizedBox(
       width: groups.buttons(layout),
       height: _Size.height,
       child: Row(
-        spacing: groups.buttonGap(layout),
         children: [
-          _textButton(groups.metrics.button(_zeroLabel), _zeroLabel, () {
-            onInteraction();
-            linkedPlayback.setOffset(0);
-          }),
+          _textButton(
+            _zeroLabel,
+            () {
+              onInteraction();
+              linkedPlayback.setOffset(0);
+            },
+            padding: EdgeInsets.only(
+              left: _Size.textInset,
+              right: groups.calibrate ? half : _Size.textInset,
+            ),
+            metrics: groups.metrics,
+          ),
           if (groups.calibrate)
             _LinkedCalibrateButton(
-              width: groups.metrics.button(_calibrateLabel),
+              metrics: groups.metrics,
+              padding: EdgeInsets.only(left: half, right: _Size.textInset),
               onInteraction: onInteraction,
             ),
         ],
@@ -903,11 +925,15 @@ class _LinkedOffsetButtons extends StatelessWidget {
 /// 接住，不会落到播放器上）
 class _LinkedCalibrateButton extends StatelessWidget {
   const _LinkedCalibrateButton({
-    required this.width,
+    required this.metrics,
+    this.padding = const EdgeInsets.symmetric(horizontal: _Size.textInset),
     required this.onInteraction,
   });
 
-  final double width;
+  final _Metrics metrics;
+
+  /// 文字两侧的点击边距
+  final EdgeInsets padding;
   final VoidCallback onInteraction;
 
   @override
@@ -917,7 +943,6 @@ class _LinkedCalibrateButton extends StatelessWidget {
       return Tooltip(
         message: unavailable ?? '一键声学校准',
         child: _textButton(
-          width,
           _calibrateLabel,
           () {
             onInteraction();
@@ -927,6 +952,8 @@ class _LinkedCalibrateButton extends StatelessWidget {
               SmartDialog.showToast(unavailable);
             }
           },
+          padding: padding,
+          metrics: metrics,
           enabled: unavailable == null,
         ),
       );
