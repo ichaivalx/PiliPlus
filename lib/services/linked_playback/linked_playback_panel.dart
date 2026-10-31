@@ -218,15 +218,44 @@ class LinkedPlaybackPanel extends StatelessWidget {
     ];
   }
 
+  /// 延迟偏移：跟随端调节本机的，主控调节当前跟随端的（与底栏共用所选的跟随端）
   List<Widget> _offset(ThemeData theme) {
-    final offset = linkedPlayback.offsetUs.value;
+    final follower = linkedPlayback.role.value == LinkedRole.follower;
+    final peers = follower
+        ? const <LinkedPeerInfo>[]
+        : linkedPlayback.adjustablePeers;
+    final peer = follower ? null : linkedPlayback.selectedPeer;
+    if (!follower && peer == null) return const [];
+    final offset = linkedPlayback.currentOffsetUs ?? 0;
     return [
       ListTile(
-        title: Text('跟随端延迟偏移 ${formatLinkedOffset(offset)}'),
-        subtitle: const Text(
-          '左右拖动拨轮，每格 0.5 ms；跟随端声音偏早时调大，偏晚时调小。两端共用，偏差为正表示跟随端超前',
+        title: Text(
+          follower
+              ? '本机延迟偏移 ${formatLinkedOffset(offset)}'
+              : '${peer!.name} 的延迟偏移 ${formatLinkedOffset(offset)}',
+        ),
+        subtitle: Text(
+          follower
+              ? '左右拖动拨轮，每格 0.5 ms；本机声音偏早时调大，偏晚时调小。各跟随端分别设置，偏差为正表示本机超前'
+              : '左右拖动拨轮，每格 0.5 ms；该跟随端声音偏早时调大，偏晚时调小。各跟随端分别设置，偏差为正表示跟随端超前',
         ),
       ),
+      if (peers.length > 1)
+        Padding(
+          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
+          child: Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              for (final item in peers)
+                ActionRowLineItem(
+                  selectStatus: item.id == peer!.id,
+                  text: item.name,
+                  onTap: () => linkedPlayback.selectPeer(item.id),
+                ),
+            ],
+          ),
+        ),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: LayoutBuilder(
@@ -249,7 +278,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
         children: [
           for (final step in _offsetSteps)
             TextButton(
-              onPressed: () => linkedPlayback.setOffset(offset + step * 1000),
+              onPressed: () => linkedPlayback.adjustOffset(step * 1000),
               child: Text(step > 0 ? '+$step ms' : '$step ms'),
             ),
           TextButton(
@@ -285,6 +314,8 @@ class LinkedPlaybackPanel extends StatelessWidget {
                   text:
                       '　偏差 ${_signedMs(peer.driftMs)}　往返 ${_ms(peer.rttMs)}',
                 ),
+              if (peer.offsetUs case final offset? when !offline)
+                TextSpan(text: '　延迟偏移 ${formatLinkedOffset(offset)}'),
             ],
           ),
         ),

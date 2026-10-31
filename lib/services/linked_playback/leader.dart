@@ -85,6 +85,13 @@ class _PeerState {
   double? rttMs;
   LinkedVolume? volume;
 
+  /// 跟随端的延迟偏移，以其回报为准
+  int? offsetUs;
+
+  /// 本机最近设置的偏移及时刻：连续调节时跟随端依次回报的旧值不覆盖
+  int? setOffsetUs;
+  int setOffsetAt = 0;
+
   LinkedPeerInfo info({LinkedPeerState? state}) => LinkedPeerInfo(
     id: id ?? address,
     name: name ?? address,
@@ -94,14 +101,13 @@ class _PeerState {
     driftMs: driftMs,
     rttMs: rttMs,
     volume: volume,
+    offsetUs: offsetUs,
   );
 }
 
 /// 主控：本机播放的内容与播放操作同步给所有跟随端
 class LeaderSession {
   LeaderSession({
-    required this.offsetUs,
-    required this.onOffsetRequest,
     required this.syncOn,
     required this.onSyncRequest,
     required this.onPeersChanged,
@@ -131,8 +137,9 @@ class LeaderSession {
   /// 恢复后自行跳转加入
   static const _freshUs = 2500000;
 
-  final int Function() offsetUs;
-  final void Function(int) onOffsetRequest;
+  /// 设置跟随端的偏移后在此时间内忽略其回报的其他值
+  static const _offsetEchoUs = 1000000;
+
   final bool Function() syncOn;
   final void Function(bool) onSyncRequest;
   final void Function(List<LinkedPeerInfo>) onPeersChanged;
@@ -223,13 +230,6 @@ class LeaderSession {
   }
 
   void refresh() => _transport.refresh();
-
-  void updateOffset() => _transport.broadcast(_config);
-
-  Map<String, Object?> get _config => {
-    't': LinkMessageType.config,
-    'us': offsetUs(),
-  };
 
   Map<String, Object?> get _syncMessage => {
     't': LinkMessageType.sync,
@@ -446,6 +446,20 @@ class LeaderSession {
       if (state.id == id) {
         state.volume = volume;
         peer.send({'t': LinkMessageType.volumeSet, ...volume.toJson()});
+      }
+    }
+    _notifyPeers();
+  }
+
+  /// 设置设备标识为 [id] 的跟随端的延迟偏移
+  void setOffset(String id, int offsetUs) {
+    for (final MapEntry(key: peer, value: state) in _peers.entries) {
+      if (state.id == id) {
+        state
+          ..offsetUs = offsetUs
+          ..setOffsetUs = offsetUs
+          ..setOffsetAt = LinkClock.nowUs;
+        peer.send({'t': LinkMessageType.offset, 'us': offsetUs});
       }
     }
     _notifyPeers();
@@ -1052,7 +1066,6 @@ class LeaderSession {
       );
     }
     peer
-      ..send(_config)
       ..send(_syncMessage)
       ..send(_volumeMessage);
     if (message['sync'] case final bool on when on != syncOn()) {
@@ -1085,10 +1098,6 @@ class LeaderSession {
       case LinkMessageType.sync:
         if (message['on'] case final bool on) {
           onSyncRequest(on);
-        }
-      case LinkMessageType.offset:
-        if (message['us'] case final int us) {
-          onOffsetRequest(us);
         }
       case LinkMessageType.stopAll:
         if (syncOn()) pauseAll();
@@ -1123,6 +1132,16 @@ class LeaderSession {
         final rtt = message['rtt'];
         final volume = message['volume'];
         final reason = message['reason'];
+        if (message['offset'] case final int offset) {
+          final requested = state.setOffsetUs;
+          if (requested == null ||
+              offset == requested ||
+              LinkClock.nowUs - state.setOffsetAt >= _offsetEchoUs) {
+            state
+              ..offsetUs = offset
+              ..setOffsetUs = null;
+          }
+        }
         state
           ..state =
               LinkedPeerState.values.asNameMap()[message['state']] ??

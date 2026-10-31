@@ -24,6 +24,7 @@ class FollowerSession {
     required this.deviceName,
     required this.syncOn,
     required this.onSyncChanged,
+    required int offsetUs,
     required this.onOffsetChanged,
     required this.startBiasUs,
     required this.onStartBias,
@@ -40,7 +41,7 @@ class FollowerSession {
     required RxnDouble leaderVolume,
     required Future<double?> Function(double) setSystemVolume,
     required void Function(LinkedVolume) onVolumeSaved,
-  }) {
+  }) : _offsetUs = offsetUs {
     _volume = FollowerVolume(
       state: volume,
       leaderVolume: leaderVolume,
@@ -123,13 +124,12 @@ class FollowerSession {
   static const _lostUs = 6000000;
   static const _wantIntervalUs = 10000000;
 
-  /// 请求偏移后在此时间内忽略主控回传的其他值
-  static const _offsetEchoUs = 1000000;
-
   final String deviceId;
   final String deviceName;
   final bool Function() syncOn;
   final void Function(bool) onSyncChanged;
+
+  /// 主控调节了本机的延迟偏移，保存
   final void Function(int) onOffsetChanged;
   int startBiasUs;
   final void Function(int) onStartBias;
@@ -175,11 +175,9 @@ class FollowerSession {
   int _generation = 0;
   bool _shouldPlay = false;
   Timer? _startTimer;
-  int _offsetUs = 0;
 
-  /// 本机最近请求的偏移；连续调节时主控依次回传的旧值不覆盖本机
-  int? _requestedOffsetUs;
-  int _requestedAt = 0;
+  /// 本机的延迟偏移，各跟随端分别设置
+  int _offsetUs;
   int? _pausePos;
 
   /// 主控的播放进度模型：位置 = 截距 + 倍速 × 主控时刻
@@ -299,14 +297,11 @@ class FollowerSession {
     }
   }
 
-  /// 用户在本机调节延迟偏移，由主控同步给所有跟随端
-  void requestOffset(int offsetUs) {
+  /// 用户在本机调节本机的延迟偏移，回报主控
+  void updateOffset(int offsetUs) {
+    if (offsetUs == _offsetUs) return;
     _setOffset(offsetUs);
-    if (isConnected) {
-      _requestedOffsetUs = offsetUs;
-      _requestedAt = LinkClock.nowUs;
-      _transport.send({'t': LinkMessageType.offset, 'us': offsetUs});
-    }
+    _reportNow();
   }
 
   /// 用户在本机调整音量设置
@@ -617,18 +612,11 @@ class FollowerSession {
 
   void _onMessage(LinkMessage message) {
     switch (message['t']) {
-      case LinkMessageType.config:
-        if (message['us'] case final int us) {
-          final requested = _requestedOffsetUs;
-          if (requested != null) {
-            if (us == requested) {
-              _requestedOffsetUs = null;
-            } else if (LinkClock.nowUs - _requestedAt < _offsetEchoUs) {
-              break;
-            }
-          }
+      case LinkMessageType.offset:
+        if (message['us'] case final int us when us != _offsetUs) {
           _setOffset(us);
           onOffsetChanged(us);
+          _reportNow();
         }
       case LinkMessageType.sync:
         if (message['on'] case final bool on) {
@@ -1511,6 +1499,7 @@ class FollowerSession {
       'drift': drift,
       'rtt': rttMs.value,
       'volume': _volume.state.value.toJson(),
+      'offset': _offsetUs,
     });
   }
 }

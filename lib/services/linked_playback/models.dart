@@ -221,6 +221,7 @@ class LinkedPeerInfo {
     this.driftMs,
     this.rttMs,
     this.volume,
+    this.offsetUs,
   });
 
   final String id;
@@ -238,4 +239,7 @@ class LinkedPeerInfo {
 
   /// 跟随端的音量设置与当前音量
   final LinkedVolume? volume;
+
+  /// 跟随端的延迟偏移（微秒）
+  final int? offsetUs;
 }

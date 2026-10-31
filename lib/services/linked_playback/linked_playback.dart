@@ -30,7 +30,7 @@ class LinkedPlayback {
 
   static const _enabledKey = 'linkedPlaybackEnabled';
   static const _roleKey = 'linkedPlaybackRole';
-  static const _offsetKey = 'linkedPlaybackOffsetUs';
+  static const _offsetKey = 'linkedPlaybackFollowerOffsetUs';
   static const _syncKey = 'linkedPlaybackSync';
   static const _deviceIdKey = 'linkedPlaybackDeviceId';
   static const _startBiasKey = 'linkedPlaybackStartBias';
@@ -71,10 +71,40 @@ class LinkedPlayback {
   /// 延迟偏移的最小调节单位（微秒）
   static const offsetStepUs = 500;
 
-  /// 跟随端的延迟偏移（微秒），正值使跟随端相对主控延后；两端共享，以主控为准
+  /// 跟随端：本机的延迟偏移（微秒），正值使本机相对主控延后；各跟随端分别
+  /// 设置，主控可调节各跟随端的
   final RxInt offsetUs = RxInt(
     GStorage.setting.get(_offsetKey, defaultValue: 0) as int,
   );
+
+  /// 主控：底栏与设置页当前调节的跟随端，音量与延迟偏移共用
+  final RxnString _selectedPeerId = RxnString();
+
+  /// 主控：可调节音量与延迟偏移的在线跟随端
+  List<LinkedPeerInfo> get adjustablePeers => [
+    for (final peer in peers)
+      if (peer.state != LinkedPeerState.offline &&
+          peer.volume != null &&
+          peer.offsetUs != null)
+        peer,
+  ];
+
+  /// 主控：当前调节的跟随端，未选择或所选已离线时为第一台
+  LinkedPeerInfo? get selectedPeer {
+    final list = adjustablePeers;
+    final id = _selectedPeerId.value;
+    for (final peer in list) {
+      if (peer.id == id) return peer;
+    }
+    return list.firstOrNull;
+  }
+
+  void selectPeer(String id) => _selectedPeerId.value = id;
+
+  /// 当前调节的延迟偏移：跟随端为本机的，主控为当前跟随端的
+  int? get currentOffsetUs => role.value == LinkedRole.follower
+      ? offsetUs.value
+      : selectedPeer?.offsetUs;
 
   /// 跟随端：本机的音量设置与当前音量
   final Rx<LinkedVolume> volume = Rx<LinkedVolume>(
@@ -290,13 +320,20 @@ class LinkedPlayback {
     await _restart();
   }
 
-  /// 设置延迟偏移，取整到 [offsetStepUs]
+  /// 设置当前调节的延迟偏移（跟随端为本机，主控为当前跟随端），取整到
+  /// [offsetStepUs]
   void setOffset(int value) {
     final us = (value / offsetStepUs).round() * offsetStepUs;
-    if (_saveOffset(us)) {
-      _leader?.updateOffset();
-      _follower?.requestOffset(us);
+    if (role.value == LinkedRole.leader) {
+      if (selectedPeer case final peer?) _leader?.setOffset(peer.id, us);
+    } else if (_saveOffset(us)) {
+      _follower?.updateOffset(us);
     }
+  }
+
+  /// 在当前调节的延迟偏移上增减 [deltaUs]
+  void adjustOffset(int deltaUs) {
+    if (currentOffsetUs case final current?) setOffset(current + deltaUs);
   }
 
   bool _saveOffset(int us) {
@@ -471,11 +508,6 @@ class LinkedPlayback {
       }
       if (role.value == LinkedRole.leader) {
         final session = _leader = LeaderSession(
-          offsetUs: () => offsetUs.value,
-          onOffsetRequest: (us) {
-            _saveOffset(us);
-            _leader?.updateOffset();
-          },
           syncOn: () => syncOn.value,
           onSyncRequest: (on) {
             _setSync(on);
@@ -501,6 +533,7 @@ class LinkedPlayback {
             _setSync(on);
             _follower?.applySync();
           },
+          offsetUs: offsetUs.value,
           onOffsetChanged: _saveOffset,
           startBiasUs:
               GStorage.setting.get(_startBiasKey, defaultValue: 0) as int,

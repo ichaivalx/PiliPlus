@@ -10,6 +10,7 @@ const _textStyle = TextStyle(color: Colors.white, fontSize: 12);
 const _dimTextStyle = TextStyle(color: Colors.white70, fontSize: 11);
 
 /// 播放器底栏中的联动控件，从右到左为同步开关、延迟偏移拨轮、跟随端音量；
+/// 主控有多台跟随端时偏移左侧为当前调节的跟随端，偏移与音量都作用于它。
 /// 宽度不足时依次把音量、偏移收进按钮弹出，最窄时整体收为一个按钮
 class LinkedBarControls extends StatelessWidget {
   const LinkedBarControls({
@@ -46,37 +47,38 @@ class LinkedBarControls extends StatelessWidget {
   static bool showsFor(PlPlayerController controller) =>
       linkedPlayback.enabled.value && _state(controller).linkable;
 
-  /// 是否联动的内容、是否显示偏移与音量、可调音量的跟随端数量；在 Obx 中调用
-  static ({bool linkable, bool adjust, int volumePeers}) _state(
-    PlPlayerController controller,
-  ) {
+  /// 是否联动的内容、可调节偏移与音量的跟随端数量（同步关闭时为 0，跟随端为
+  /// 本机）；在 Obx 中调用
+  static ({bool linkable, int peers}) _state(PlPlayerController controller) {
     final current = linkedPlayback.current.value;
     // 登记内容先于播放器更新分P，加载完成后再按分P核对
     controller.dataStatus.value;
     final linkable =
         current?.kind == LinkedKind.video && current?.cid == controller.cid;
-    final adjust = linkable && linkedPlayback.syncOn.value;
-    return (
-      linkable: linkable,
-      adjust: adjust,
-      volumePeers: adjust ? _LinkedVolumeControl.peerCount : 0,
-    );
+    final int peers;
+    if (!linkable || !linkedPlayback.syncOn.value) {
+      peers = 0;
+    } else if (linkedPlayback.role.value == LinkedRole.follower) {
+      peers = 1;
+    } else {
+      peers = linkedPlayback.adjustablePeers.length;
+    }
+    return (linkable: linkable, peers: peers);
   }
 
   @override
   Widget build(BuildContext context) {
     final widths = _Widths.of(context);
     return Obx(() {
-      final (:linkable, :adjust, :volumePeers) = _state(controller);
+      final (:linkable, :peers) = _state(controller);
       if (!linkable) return const SizedBox.shrink();
-      final volume = volumePeers > 0;
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
-          final volumeWidth =
-              widths.volume + (volumePeers > 1 ? _peerWidth + _gap : 0);
+          final offsetWidth =
+              widths.offset + (peers > 1 ? _peerWidth + _gap : 0);
           final List<Widget> children;
-          if (!adjust) {
+          if (peers == 0) {
             children = [
               if (width >= widths.sync)
                 _LinkedSyncSwitch(widths: widths)
@@ -84,17 +86,14 @@ class LinkedBarControls extends StatelessWidget {
                 _panelButton(widths, sync: true, offset: true),
             ];
           } else if (width >=
-              widths.sync +
-                  _gap +
-                  widths.offset +
-                  (volume ? _gap + volumeWidth : 0)) {
+              widths.sync + _gap + offsetWidth + _gap + widths.volume) {
             children = [
-              if (volume)
-                _LinkedVolumeControl(
-                  widths: widths,
-                  onInteraction: onInteraction,
-                  onDragging: _onDragging,
-                ),
+              _LinkedVolumeControl(
+                widths: widths,
+                onInteraction: onInteraction,
+                onDragging: _onDragging,
+              ),
+              if (peers > 1) _LinkedPeerChip(onInteraction: onInteraction),
               _LinkedOffsetControl(
                 widths: widths,
                 onInteraction: onInteraction,
@@ -102,11 +101,11 @@ class LinkedBarControls extends StatelessWidget {
               ),
               _LinkedSyncSwitch(widths: widths),
             ];
-          } else if (volume &&
-              width >=
-                  widths.sync + _gap + widths.offset + _gap + _buttonWidth) {
+          } else if (width >=
+              widths.sync + _gap + offsetWidth + _gap + _buttonWidth) {
             children = [
               _panelButton(widths, sync: false, offset: false),
+              if (peers > 1) _LinkedPeerChip(onInteraction: onInteraction),
               _LinkedOffsetControl(
                 widths: widths,
                 onInteraction: onInteraction,
@@ -135,8 +134,9 @@ class LinkedBarControls extends StatelessWidget {
     });
   }
 
-  /// 收起的控件：点击后在弹出层中显示；[sync] 含同步开关，[offset] 含偏移，
-  /// 音量总在其中；偏移、音量按实时的联动状态显示（如弹出层内开启同步后出现）
+  /// 收起的控件：点击后在弹出层中显示；[sync] 含同步开关，[offset] 含偏移（及
+  /// 多台跟随端时的切换），音量总在其中；偏移、音量按实时的联动状态显示（如
+  /// 弹出层内开启同步后出现）
   Widget _panelButton(
     _Widths widths, {
     required bool sync,
@@ -335,23 +335,22 @@ class _PanelEntryState extends State<_PanelEntry> {
         _close(route);
         return const SizedBox.shrink();
       }
-      final (:linkable, :adjust, :volumePeers) = LinkedBarControls._state(
-        widget.controller,
-      );
+      final (:linkable, :peers) = LinkedBarControls._state(widget.controller);
       final children = [
         if (widget.sync && linkable) _LinkedSyncSwitch(widths: widths),
-        if (widget.offset && adjust)
+        if (widget.offset && peers > 1)
+          _LinkedPeerChip(onInteraction: widget.onInteraction),
+        if (widget.offset && peers > 0)
           _LinkedOffsetControl(
             widths: widths,
             onInteraction: widget.onInteraction,
             onDragging: widget.onDragging,
           ),
-        if (volumePeers > 0)
+        if (peers > 0)
           _LinkedVolumeControl(
             widths: widths,
             onInteraction: widget.onInteraction,
             onDragging: widget.onDragging,
-            stacked: true,
           ),
       ];
       if (children.isEmpty) {
@@ -476,7 +475,7 @@ class _LinkedOffsetControl extends StatelessWidget {
               alignment: Alignment.centerRight,
               child: Obx(
                 () => Text(
-                  formatLinkedOffset(linkedPlayback.offsetUs.value),
+                  formatLinkedOffset(linkedPlayback.currentOffsetUs ?? 0),
                   maxLines: 1,
                   style: _textStyle,
                 ),
@@ -512,41 +511,69 @@ class _LinkedOffsetControl extends StatelessWidget {
   }
 }
 
-/// 跟随端音量：模式切换（跟随主控 / 独立）与对应的调节；主控端调节在线的
-/// 跟随端，多台时点击设备名依次切换
+/// 主控有多台跟随端时当前调节的跟随端（偏移与音量共用），点击依次切换
+class _LinkedPeerChip extends StatelessWidget {
+  const _LinkedPeerChip({required this.onInteraction});
+
+  final VoidCallback onInteraction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      final peers = linkedPlayback.adjustablePeers;
+      final peer = linkedPlayback.selectedPeer;
+      if (peers.length < 2 || peer == null) return const SizedBox.shrink();
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          onInteraction();
+          final index = peers.indexWhere((e) => e.id == peer.id);
+          linkedPlayback.selectPeer(peers[(index + 1) % peers.length].id);
+        },
+        child: SizedBox(
+          width: LinkedBarControls._peerWidth,
+          height: LinkedBarControls._height,
+          child: Row(
+            children: [
+              const Icon(
+                Icons.swap_horiz_rounded,
+                size: 14,
+                color: Colors.white70,
+              ),
+              Expanded(
+                child: Text(
+                  peer.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _dimTextStyle,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+}
+
+/// 跟随端音量：模式切换（跟随主控 / 独立）与对应的调节；主控端调节当前的
+/// 跟随端
 class _LinkedVolumeControl extends StatefulWidget {
   const _LinkedVolumeControl({
     required this.widths,
     required this.onInteraction,
     required this.onDragging,
-    this.stacked = false,
   });
 
   final _Widths widths;
   final VoidCallback onInteraction;
   final ValueChanged<bool> onDragging;
 
-  /// 在弹出层中：设备名单独一行
-  final bool stacked;
-
-  /// 可调节音量的跟随端数量：跟随端为本机
-  static int get peerCount => linkedPlayback.role.value == LinkedRole.follower
-      ? 1
-      : _peers.length;
-
-  static List<LinkedPeerInfo> get _peers => [
-    for (final peer in linkedPlayback.peers)
-      if (peer.state != LinkedPeerState.offline && peer.volume != null) peer,
-  ];
-
   @override
   State<_LinkedVolumeControl> createState() => _LinkedVolumeControlState();
 }
 
 class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
-  /// 主控端当前调节的跟随端
-  static String? _selectedId;
-
   static String _signed(int value) => '${value > 0 ? '+' : ''}$value';
 
   /// 拖动或连续滚动滚轮期间已提交给设备 [id] 的音量：重建前连续多次更新也在其上
@@ -672,59 +699,18 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
     return Obx(() {
       final LinkedVolume volume;
       final ValueChanged<LinkedVolume> onChanged;
-      LinkedPeerInfo? peer;
       String? id;
-      List<LinkedPeerInfo> peers = const [];
       if (linkedPlayback.role.value == LinkedRole.follower) {
         volume = linkedPlayback.volume.value;
         onChanged = (value) => linkedPlayback.setVolume(null, value);
       } else {
-        peers = _LinkedVolumeControl._peers;
-        if (peers.isEmpty) return const SizedBox.shrink();
-        var selected = peers.first;
-        for (final item in peers) {
-          if (item.id == _selectedId) selected = item;
-        }
-        peer = selected;
-        final selectedId = id = selected.id;
-        volume = selected.volume!;
+        final peer = linkedPlayback.selectedPeer;
+        if (peer == null) return const SizedBox.shrink();
+        final selectedId = id = peer.id;
+        volume = peer.volume!;
         onChanged = (value) => linkedPlayback.setVolume(selectedId, value);
       }
-      final peerChip = peers.length > 1
-          ? GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                widget.onInteraction();
-                final next = (peers.indexOf(peer!) + 1) % peers.length;
-                setState(() {
-                  _selectedId = peers[next].id;
-                  _dragVolume = null;
-                });
-              },
-              child: SizedBox(
-                width: LinkedBarControls._peerWidth,
-                height: LinkedBarControls._height,
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.swap_horiz_rounded,
-                      size: 14,
-                      color: Colors.white70,
-                    ),
-                    Expanded(
-                      child: Text(
-                        peer!.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: _dimTextStyle,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : null;
-      final controls = SizedBox(
+      return SizedBox(
         width: widget.widths.volume,
         height: LinkedBarControls._height,
         child: Row(
@@ -746,18 +732,6 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
           ],
         ),
       );
-      if (peerChip == null) return controls;
-      return widget.stacked
-          ? Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [peerChip, controls],
-            )
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              spacing: LinkedBarControls._gap,
-              children: [peerChip, controls],
-            );
     });
   }
 }

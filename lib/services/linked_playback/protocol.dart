@@ -45,10 +45,7 @@ abstract final class LinkMessageType {
   /// 跟随端 → 主控：连接后的第一条消息，带设备标识
   static const hello = 'hello';
 
-  /// 主控 → 跟随端：延迟偏移（微秒）
-  static const config = 'config';
-
-  /// 跟随端 → 主控：请求设置延迟偏移（微秒）
+  /// 主控 → 跟随端：设置该跟随端的延迟偏移（微秒）
   static const offset = 'offset';
 
   /// 主控 → 跟随端：是否一起播放；跟随端 → 主控：请求切换
@@ -90,7 +87,7 @@ abstract final class LinkMessageType {
   /// 跟随端 → 主控：定时关闭到期，请求一起停止
   static const stopAll = 'stopAll';
 
-  /// 跟随端 → 主控：状态、实测偏差、往返时间与音量
+  /// 跟随端 → 主控：状态、实测偏差、往返时间、音量与延迟偏移
   static const report = 'report';
 
   /// 主控 → 跟随端：主控的系统媒体音量

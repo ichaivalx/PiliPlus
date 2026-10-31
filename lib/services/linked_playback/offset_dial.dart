@@ -149,7 +149,8 @@ class _LinkedDialState extends State<LinkedDial> {
   }
 }
 
-/// 延迟偏移的拨轮，每格 [LinkedPlayback.offsetStepUs]
+/// 当前调节的延迟偏移（跟随端为本机，主控为当前跟随端）的拨轮，每格
+/// [LinkedPlayback.offsetStepUs]；调节的跟随端变化时拨轮随之重建，当前拖动结束
 class LinkedOffsetDial extends StatelessWidget {
   const LinkedOffsetDial({
     super.key,
@@ -174,10 +175,12 @@ class LinkedOffsetDial extends StatelessWidget {
   Widget build(BuildContext context) {
     return Obx(
       () => LinkedDial(
-        index: linkedPlayback.offsetUs.value ~/ LinkedPlayback.offsetStepUs,
-        onSteps: (steps) => linkedPlayback.setOffset(
-          linkedPlayback.offsetUs.value + steps * LinkedPlayback.offsetStepUs,
-        ),
+        key: ValueKey<String?>(linkedPlayback.selectedPeer?.id),
+        index:
+            (linkedPlayback.currentOffsetUs ?? 0) ~/
+            LinkedPlayback.offsetStepUs,
+        onSteps: (steps) =>
+            linkedPlayback.adjustOffset(steps * LinkedPlayback.offsetStepUs),
         axis: axis,
         length: length,
         thickness: thickness,
