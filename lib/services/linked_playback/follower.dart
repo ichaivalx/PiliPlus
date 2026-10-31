@@ -589,15 +589,17 @@ class FollowerSession {
     leader.value = _transport.connection?.address;
     SmartDialog.showToast('联动播放：已连接主控 ${leader.value}');
     final on = sync['on'];
-    if (on is bool) onSyncChanged(on);
-    if (_pendingSync case final pending? when pending != on) {
+    final pending = _pendingSync;
+    _pendingSync = null;
+    // 本机尚未发出的同步开关优先：据此处理之后的内容消息，主控随后按请求切换
+    if (pending ?? on case final bool effective) onSyncChanged(effective);
+    if (pending != null && pending != on) {
       _transport.send({'t': LinkMessageType.sync, 'on': pending});
     }
-    // 主控的同步已关闭时随同步开关的变化作废
+    // 本机的同步已关闭时随同步开关的变化作废
     if (_pendingStopAll) {
       _transport.send(const {'t': LinkMessageType.stopAll});
     }
-    _pendingSync = null;
     _pendingStopAll = false;
   }
 
