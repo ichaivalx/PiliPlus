@@ -5,9 +5,11 @@ import 'package:PiliPlus/grpc/bilibili/app/listener/v1.pbenum.dart'
     show PlaylistSource;
 import 'package:PiliPlus/services/linked_playback/background_frames.dart';
 import 'package:PiliPlus/services/linked_playback/clock.dart';
+import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
 import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
+import 'package:PiliPlus/services/linked_playback/speed_control.dart';
 import 'package:PiliPlus/services/linked_playback/target.dart';
 import 'package:PiliPlus/services/linked_playback/transport.dart';
 import 'package:PiliPlus/services/linked_playback/volume.dart';
@@ -72,16 +74,9 @@ class FollowerSession {
   static const _learnMaxRttMs = 50.0;
 
   static const _interceptWindow = 8;
-  static const _driftWindow = 4;
 
-  /// 偏差超过 [_enterMs] 开始微调倍速，回到 [_exitMs] 以内停止
-  static const _enterMs = 15.0;
-  static const _exitMs = 4.0;
-
-  /// 微调倍速按偏差在约此时长内追平，且不超过 [_maxAdjust]
-  static const _tauSeconds = 2.0;
-  static const _maxAdjust = 0.04;
-  static const _adjustStep = 0.0025;
+  /// 偏差取最近几次读数的中位数
+  static const _driftWindow = 5;
 
   /// 偏差超过此值时不用倍速追赶，本机直接跳转到主控的位置，主控不受影响
   static const _jumpMs = 100.0;
@@ -183,12 +178,15 @@ class FollowerSession {
   /// 主控的播放进度模型：位置 = 截距 + 倍速 × 主控时刻
   double _rate = 1.0;
   final List<int> _intercepts = [];
-  final List<double> _drifts = [];
-  bool _correcting = false;
 
-  /// 延迟偏移变化后追到新目标前不受进入阈值限制
-  bool _tracking = false;
-  double _factor = 1.0;
+  /// 主控最近的进度采样可用于精细对齐
+  bool _leaderFine = false;
+
+  /// 最近的偏差读数（毫秒）及其能否用于精细对齐
+  final List<({double value, bool fine})> _drifts = [];
+
+  /// 倍速微调
+  final _speed = LinkedSpeedControl();
   Player? _speedPlayer;
   double? _appliedSpeed;
   Player? _syncedPlayer;
@@ -472,9 +470,7 @@ class FollowerSession {
     _jumping = false;
     _awaitingSeek = false;
     _localPaused = true;
-    _correcting = false;
-    _tracking = false;
-    _factor = 1.0;
+    _speed.stop();
     _drifts.clear();
     final player = _loadedPlayer;
     if (player != null) {
@@ -552,6 +548,8 @@ class FollowerSession {
 
   void _onConnected() {
     _restored = false;
+    // 主控可能已换，两端的频差需重新学习
+    _speed.reset();
     _transport.send({
       't': LinkMessageType.hello,
       'id': deviceId,
@@ -562,6 +560,10 @@ class FollowerSession {
     _pendingSync = null;
     _pendingStopAll = false;
     _lastProgress = LinkClock.nowUs;
+    linkedDiagnostics.log(
+      'connected leader=${_transport.connection?.address} '
+      'offset=$_offsetUs bias=$startBiasUs',
+    );
     _volume.connect();
     leader.value = _transport.connection?.address;
     SmartDialog.showToast('联动播放：已连接主控 ${leader.value}');
@@ -569,6 +571,7 @@ class FollowerSession {
 
   /// 断开期间按当前内容与倍速继续自行播放，播完即停；进行中的定位、起播作废
   void _onDisconnected() {
+    linkedDiagnostics.log('disconnected');
     _volume.disconnect();
     _restored = false;
     _generation++;
@@ -726,12 +729,15 @@ class FollowerSession {
 
   void _setOffset(int offsetUs) {
     if (offsetUs == _offsetUs) return;
+    final previous = _offsetUs;
     _offsetUs = offsetUs;
+    linkedDiagnostics.log('offset us=$offsetUs from=$previous');
     // 起播后的测量包含旧偏移，不再用于补偿
     _learnAt = null;
     if (_shouldPlay) {
+      // 按改变量开环移动到新位置，很小的改变同样生效
+      _speed.shift(offsetUs - previous);
       _drifts.clear();
-      _tracking = true;
       // 调节偏移引起的跳转不计入对齐失败
       _jumps = 0;
       return;
@@ -862,17 +868,24 @@ class FollowerSession {
 
   void _onStarted() {
     final now = LinkClock.nowUs;
+    linkedDiagnostics.log(
+      'started offset=$_offsetUs positioned=$_positionedOffsetUs '
+      'bias=$startBiasUs',
+    );
     _endStartLoad();
     _settleUntil = now + _settleUs;
     _judgeAfter = now + _judgeUs;
     _localPaused = false;
     _stall = 0;
-    // 定位后延迟偏移又有变化：不用于起播补偿的学习，并立即追到新目标
-    if (_positionedOffsetUs == _offsetUs) {
+    // 定位后延迟偏移又有变化：不用于起播补偿的学习，按定位以来的改变量移动到
+    // 新目标
+    _speed.stop();
+    final positioned = _positionedOffsetUs;
+    if (positioned == _offsetUs) {
       _learnAt = now + _learnUs;
     } else {
       _learnAt = null;
-      _tracking = true;
+      if (positioned != null) _speed.shift(_offsetUs - positioned);
     }
   }
 
@@ -930,6 +943,7 @@ class FollowerSession {
 
   /// 跳转对齐；多次跳转仍未对齐时请主控共同暂停后重新共同起播
   void _realign(LinkedTarget target, Player player, int now) {
+    linkedDiagnostics.log('realign jumps=$_jumps');
     if (!_startPermitted) {
       _shouldPlay = true;
       _deferToLocal();
@@ -952,9 +966,7 @@ class FollowerSession {
     _jumping = true;
     _shouldPlay = true;
     _awaitStart();
-    _correcting = false;
-    _tracking = false;
-    _factor = 1.0;
+    _speed.stop();
     _drifts.clear();
     _learnAt = null;
     _applySpeed(player);
@@ -1092,6 +1104,7 @@ class FollowerSession {
     _leaderPosAt = LinkClock.nowUs;
     _leaderCid = message['cid'] as int?;
     if (_leaderCid != _content?.cid) return;
+    _leaderFine = message['fine'] == true;
     final target = _target;
     if (target != null && rate.toDouble() != _rate) {
       _setRate(target, rate.toDouble());
@@ -1169,9 +1182,7 @@ class FollowerSession {
 
   void _markLocalPaused(Player player) {
     _localPaused = true;
-    _correcting = false;
-    _tracking = false;
-    _factor = 1.0;
+    _speed.stop();
     _drifts.clear();
     _applySpeed(player);
   }
@@ -1199,9 +1210,7 @@ class FollowerSession {
     _readyRound = null;
     _shouldPlay = true;
     _localPaused = false;
-    _correcting = false;
-    _tracking = false;
-    _factor = 1.0;
+    _speed.stop();
     _awaitingSeek = true;
     if (_loadedPlayer case final player?) {
       final target = _target!;
@@ -1223,26 +1232,26 @@ class FollowerSession {
     _awaitingSeek = false;
     _intercepts.clear();
     _drifts.clear();
-    _correcting = false;
-    _tracking = false;
-    _factor = 1.0;
+    _speed.stop();
     if (_loadedPlayer case final player?) {
       _applySpeed(player);
     }
   }
 
   void _applySpeed(Player player, {bool force = false}) {
-    final speed = _rate * _factor;
+    final speed = _rate * _speed.factor;
     final applied = _appliedSpeed;
-    if (!force &&
-        identical(player, _speedPlayer) &&
-        applied != null &&
-        (speed - applied).abs() < 0.0002) {
+    final same = identical(player, _speedPlayer) && applied != null;
+    if (!force && same && (speed - applied).abs() < 1e-7) {
       return;
+    }
+    if (same) {
+      _speed.onApplied(applied / _rate, speed / _rate, LinkClock.nowUs);
     }
     _speedPlayer = player;
     _appliedSpeed = speed;
     LinkedPlayer.setSpeed(player, speed);
+    linkedDiagnostics.log('speed set=${speed.toStringAsFixed(6)}');
   }
 
   static double _median(List<num> values) {
@@ -1259,17 +1268,42 @@ class FollowerSession {
     return (_median(_intercepts) + _rate * _clock.toRemote(localUs)).round();
   }
 
-  /// 本机相对主控（已扣除延迟偏移）的偏差，正值表示本机超前（毫秒）
-  double? _measure(Player player) {
+  /// 本机相对主控（已扣除延迟偏移）的偏差，正值表示本机超前（毫秒），取最近
+  /// 读数的中位数；[fine] 表示参与的读数都可用于精细对齐。倍速变化的瞬态期间
+  /// 的读数不计入，此时返回之前的结果（尚无时为本次读数）
+  ({double drift, bool fine})? _measure(Player player, int now) {
     final sample = LinkedPlayer.sample(player);
     if (sample == null) return null;
     final leaderPos = _leaderPosition(sample.at);
     if (leaderPos == null) return null;
-    _drifts.add((sample.pos - leaderPos + _offsetUs) / 1000);
-    if (_drifts.length > _driftWindow) {
-      _drifts.removeAt(0);
+    final raw = (sample.pos - leaderPos + _offsetUs) / 1000;
+    final holding = _speed.isHolding(now);
+    if (!holding) {
+      _drifts.add((value: raw, fine: sample.fine && _leaderFine));
+      if (_drifts.length > _driftWindow) {
+        _drifts.removeAt(0);
+      }
     }
-    return _median(_drifts);
+    final result = _drifts.isEmpty
+        ? (drift: raw, fine: false)
+        : (
+            drift: _median([for (final item in _drifts) item.value]),
+            fine: _drifts.length >= 3 && _drifts.every((item) => item.fine),
+          );
+    if (linkedDiagnostics.isOn) {
+      final timePos = sample.audio ? LinkedPlayer.timePos(player) : sample.pos;
+      linkedDiagnostics.log(
+        'tick src=${sample.audio ? 'apts' : 'tpos'} cost=${sample.cost} '
+        'pos=${sample.pos} tpos=$timePos lead=$leaderPos '
+        'leadFine=$_leaderFine raw=${raw.toStringAsFixed(2)} '
+        'filt=${result.drift.toStringAsFixed(2)} fine=${result.fine} '
+        'hold=$holding p=${_speed.proportional.toStringAsFixed(6)} '
+        'i=${_speed.integral.toStringAsFixed(6)} '
+        'shift=${_speed.pendingUs.round()} speed=$_appliedSpeed '
+        'off=$_offsetUs bias=$startBiasUs',
+      );
+    }
+    return result;
   }
 
   bool _requestResync(int now) {
@@ -1297,6 +1331,9 @@ class FollowerSession {
         .round()
         .clamp(-_maxStartBiasUs, _maxStartBiasUs)
         .toInt();
+    linkedDiagnostics.log(
+      'bias drift=${drift.toStringAsFixed(2)} rtt=$rtt from=$startBiasUs to=$bias',
+    );
     if (bias != startBiasUs) {
       startBiasUs = bias;
       onStartBias(bias);
@@ -1312,8 +1349,9 @@ class FollowerSession {
       return null;
     }
     _stall = 0;
-    final drift = _measure(player);
-    if (drift == null) return null;
+    final measured = _measure(player, now);
+    if (measured == null) return null;
+    final drift = measured.drift;
     final learnAt = _learnAt;
     if (learnAt != null && now >= learnAt && _drifts.length >= 3) {
       _learnStartBias(drift);
@@ -1322,9 +1360,7 @@ class FollowerSession {
     final magnitude = drift.abs();
     if (magnitude > _jumpMs) {
       // 大偏差不用倍速追赶
-      _correcting = false;
-      _tracking = false;
-      _factor = 1.0;
+      _speed.stop();
       _applySpeed(player);
       if (now >= _judgeAfter && _drifts.length >= _driftWindow) {
         _realign(target, player, now);
@@ -1334,22 +1370,12 @@ class FollowerSession {
     if (now >= _judgeAfter) {
       _jumps = 0;
     }
-    if (_tracking) {
-      _correcting = magnitude >= _exitMs;
-      _tracking = _correcting;
-    } else if (_correcting) {
-      _correcting = magnitude >= _exitMs;
-    } else {
-      _correcting = magnitude > _enterMs;
-    }
-    // 按步长取整，减少倍速变化的次数
-    _factor = _correcting
-        ? 1 -
-              ((drift / 1000 / _tauSeconds).clamp(-_maxAdjust, _maxAdjust) /
-                          _adjustStep)
-                      .round() *
-                  _adjustStep
-        : 1.0;
+    _speed.update(
+      errorMs: drift,
+      fine: measured.fine,
+      rate: _rate,
+      now: now,
+    );
     _applySpeed(player);
     return drift;
   }
@@ -1385,6 +1411,7 @@ class FollowerSession {
     final player = _loadedPlayer;
     if (player != null) {
       _observe(player);
+      linkedDiagnostics.observe(player, 'follower');
       if (LinkedPlayer.isOpened(player)) {
         _openCheckedAt = now;
       }

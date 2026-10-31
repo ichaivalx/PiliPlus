@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:PiliPlus/services/linked_playback/clock.dart';
+import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
 
 /// 超过此时间未收到对方任何消息即视为断开；双方每秒至少互发一次
@@ -513,11 +514,15 @@ class FollowerTransport {
       final sentAt = message['t0'];
       final remoteAt = message['t1'];
       if (sentAt is int && remoteAt is int) {
-        clock.add(
-          sentAt: sentAt,
-          remoteAt: remoteAt,
-          receivedAt: LinkClock.nowUs,
-        );
+        final receivedAt = LinkClock.nowUs;
+        clock.add(sentAt: sentAt, remoteAt: remoteAt, receivedAt: receivedAt);
+        if (linkedDiagnostics.isOn) {
+          linkedDiagnostics.log(
+            'clock rtt=${receivedAt - sentAt} '
+            'offset=${(remoteAt - (sentAt + receivedAt) / 2).round()} '
+            'estimate=${clock.offsetUs?.round()} minRtt=${clock.rttUs}',
+          );
+        }
       }
       return;
     }

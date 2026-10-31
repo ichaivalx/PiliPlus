@@ -23,6 +23,9 @@ class ClockSync {
   /// 窗口内最短的往返时间（微秒）
   int? get rttUs => _minRtt;
 
+  /// 当前估计的主控时钟与本机时钟之差（微秒）
+  double? get offsetUs => _offset;
+
   void reset() {
     _samples.clear();
     _offset = null;

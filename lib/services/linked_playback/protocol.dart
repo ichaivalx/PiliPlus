@@ -69,7 +69,7 @@ abstract final class LinkMessageType {
   /// 主控 → 跟随端：暂停在指定位置
   static const pause = 'pause';
 
-  /// 主控 → 跟随端：播放中主控的播放位置采样
+  /// 主控 → 跟随端：播放中主控的播放位置采样，`fine` 表示可用于精细对齐
   static const position = 'pos';
 
   /// 主控 → 跟随端：主控不再播放可跟随的内容

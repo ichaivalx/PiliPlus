@@ -42,19 +42,33 @@ abstract final class LinkedPlayer {
     return seconds == null ? null : (seconds * 1e6).round();
   }
 
+  /// 采样耗时超过此值时采样时刻不够准确，不用于精细对齐
+  static const _maxSampleCostUs = 4000;
+
   /// 当前听到的位置及采样时刻（微秒）：audio-pts 已计入音频输出的延迟，
-  /// 比按帧更新的 time-pos 更细；没有音频时退回 time-pos
-  static ({int at, int pos})? sample(Player player) {
+  /// 比按帧更新的 time-pos 更细；没有音频时退回 time-pos。[audio] 表示取自
+  /// audio-pts，[cost] 为读取耗时，[fine] 表示可用于精细对齐
+  static ({int at, int pos, bool audio, int cost, bool fine})? sample(
+    Player player,
+  ) {
     if (player.disposed) return null;
     final start = LinkClock.nowUs;
     var value = player.getProperty('audio-pts');
-    if (value.isEmpty) {
+    final audio = value.isNotEmpty;
+    if (!audio) {
       value = player.getProperty('time-pos');
     }
     final end = LinkClock.nowUs;
     final seconds = double.tryParse(value);
     if (seconds == null) return null;
-    return (at: (start + end) ~/ 2, pos: (seconds * 1e6).round());
+    final cost = end - start;
+    return (
+      at: (start + end) ~/ 2,
+      pos: (seconds * 1e6).round(),
+      audio: audio,
+      cost: cost,
+      fine: audio && cost <= _maxSampleCostUs,
+    );
   }
 
   /// 等待文件打开且起始定位完成，返回当前画面位置；[isCurrent] 为 false 时

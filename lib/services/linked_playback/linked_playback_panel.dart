@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:PiliPlus/common/widgets/scaffold/simple_scaffold.dart';
 import 'package:PiliPlus/common/widgets/view_safe_area.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/menu_row.dart';
+import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
@@ -28,15 +29,19 @@ class LinkedPlaybackPanel extends StatelessWidget {
 
   final EdgeInsetsGeometry? padding;
 
-  /// 步进按钮（毫秒）
-  static const _offsetSteps = [-10, 10];
+  /// 步进按钮（毫秒），正值为出声更晚
+  static const _offsetSteps = [10, -10];
 
   /// 跟随端选择项的标签宽度扣除的选择项内边距与边框
   static const _peerChipInset = 48.0;
 
-  static String _signedMs(double? value) => value == null
-      ? '—'
-      : '${value > 0 ? '+' : ''}${value.toStringAsFixed(1)} ms';
+  /// 跟随端相对主控的偏差：为正时跟随端超前（快）
+  static String _drift(double? value) {
+    if (value == null) return '—';
+    final text = value.abs().toStringAsFixed(1);
+    if (text == '0.0') return '0 ms';
+    return '${value > 0 ? '快' : '慢'} $text ms';
+  }
 
   static String _ms(double? value) =>
       value == null ? '—' : '${value.toStringAsFixed(1)} ms';
@@ -54,6 +59,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
       final enabled = linkedPlayback.enabled.value;
       final role = linkedPlayback.role.value;
       final error = linkedPlayback.error.value;
+      final diagnostics = linkedDiagnostics.enabled.value;
       return ListView(
         padding: padding,
         children: [
@@ -115,6 +121,29 @@ class LinkedPlaybackPanel extends StatelessWidget {
             },
             ..._offset(theme),
           ],
+          ListTile(
+            onTap: () => linkedDiagnostics.setEnabled(!diagnostics),
+            title: const Text('联动诊断记录'),
+            subtitle: Text(
+              '记录同步偏差、倍速、对时与音频输出信息，供排查不同步；'
+              '播放器的音频输出日志在之后新打开的视频中开始记录'
+              '${PlatformUtils.isDesktop ? '\n${linkedDiagnostics.filePath}' : ''}',
+            ),
+            trailing: Switch(
+              value: diagnostics,
+              onChanged: linkedDiagnostics.setEnabled,
+            ),
+          ),
+          if (PlatformUtils.isDesktop)
+            ListTile(
+              onTap: linkedDiagnostics.openDirectory,
+              title: const Text('打开诊断日志所在文件夹'),
+            )
+          else
+            ListTile(
+              onTap: linkedDiagnostics.share,
+              title: const Text('分享诊断日志'),
+            ),
         ],
       );
     });
@@ -241,8 +270,8 @@ class LinkedPlaybackPanel extends StatelessWidget {
         ),
         subtitle: Text(
           follower
-              ? '左右拖动拨轮，每格 0.5 ms；本机声音偏早时调大，偏晚时调小。各跟随端分别设置，偏差为正表示本机超前'
-              : '左右拖动拨轮，每格 0.5 ms；该跟随端声音偏早时调大，偏晚时调小。各跟随端分别设置，偏差为正表示跟随端超前',
+              ? '拖动拨轮，每格 0.5 ms；听起来本机比主控快时往「$linkedSlowerLabel」调，慢时往「$linkedFasterLabel」调'
+              : '拖动拨轮，每格 0.5 ms；听起来该跟随端比主控快时往「$linkedSlowerLabel」调，慢时往「$linkedFasterLabel」调。各跟随端分别设置',
         ),
       ),
       // 名称过长时省略，悬停或长按查看完整名称
@@ -280,19 +309,28 @@ class LinkedPlaybackPanel extends StatelessWidget {
         ),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: LayoutBuilder(
-          builder: (context, constraints) => DecoratedBox(
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest,
-              borderRadius: const BorderRadius.all(Radius.circular(8)),
+        child: Row(
+          spacing: 8,
+          children: [
+            Text(linkedSlowerLabel, style: theme.textTheme.bodySmall),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) => DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: const BorderRadius.all(Radius.circular(8)),
+                  ),
+                  child: LinkedOffsetDial(
+                    axis: Axis.horizontal,
+                    length: constraints.maxWidth,
+                    thickness: 48,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+              ),
             ),
-            child: LinkedOffsetDial(
-              axis: Axis.horizontal,
-              length: constraints.maxWidth,
-              thickness: 48,
-              color: theme.colorScheme.onSurface,
-            ),
-          ),
+            Text(linkedFasterLabel, style: theme.textTheme.bodySmall),
+          ],
         ),
       ),
       Wrap(
@@ -301,7 +339,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
           for (final step in _offsetSteps)
             TextButton(
               onPressed: () => linkedPlayback.adjustOffset(step * 1000),
-              child: Text(step > 0 ? '+$step ms' : '$step ms'),
+              child: Text(formatLinkedOffset(step * 1000)),
             ),
           TextButton(
             onPressed: () => linkedPlayback.setOffset(0),
@@ -334,7 +372,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
               if (!offline)
                 TextSpan(
                   text:
-                      '　偏差 ${_signedMs(peer.driftMs)}　往返 ${_ms(peer.rttMs)}',
+                      '　偏差 ${_drift(peer.driftMs)}　往返 ${_ms(peer.rttMs)}',
                 ),
               if (peer.offsetUs case final offset? when !offline)
                 TextSpan(text: '　延迟偏移 ${formatLinkedOffset(offset)}'),
@@ -360,7 +398,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
         subtitle: Text(
           leader == null
               ? '需与主控连接同一局域网，主控开启联动播放并选择「主控」；点击立即重试$_desktopHint'
-              : '偏差 ${_signedMs(linkedPlayback.driftMs.value)}'
+              : '偏差 ${_drift(linkedPlayback.driftMs.value)}'
                     '　往返 ${_ms(linkedPlayback.rttMs.value)}',
         ),
       ),

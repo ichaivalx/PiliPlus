@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:PiliPlus/services/linked_playback/clock.dart';
+import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
 import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
@@ -1004,6 +1005,7 @@ class LeaderSession {
       return;
     }
     _attach(player);
+    linkedDiagnostics.observe(player, 'leader');
     final state = player.state;
     if (_expectPlaying && state.playing) {
       _pausedPos = null;
@@ -1023,7 +1025,15 @@ class LeaderSession {
           'pos': sample.pos,
           'at': sample.at,
           'rate': state.rate,
+          'fine': sample.fine,
         });
+        if (linkedDiagnostics.isOn) {
+          linkedDiagnostics.log(
+            'tick src=${sample.audio ? 'apts' : 'tpos'} cost=${sample.cost} '
+            'pos=${sample.pos} at=${sample.at} rate=${state.rate} '
+            'peers=${_peers.length}',
+          );
+        }
       }
     } else if (!_expectPlaying && !state.playing && !state.completed) {
       final pos = LinkedPlayer.timePos(player);

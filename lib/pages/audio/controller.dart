@@ -29,6 +29,7 @@ import 'package:PiliPlus/pages/video/introduction/ugc/widgets/triple_mixin.dart'
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/services/playback_focus.dart';
@@ -655,6 +656,7 @@ class AudioController extends GetxController
     final initialVolume = desktopVolume.value;
     player = await Player.create(
       configuration: PlayerConfiguration(
+        logLevel: linkedDiagnostics.mpvLogLevel ?? .error,
         options: {
           if (Platform.isAndroid) 'ao': Pref.audioOutput,
           'volume': PlatformUtils.isDesktop

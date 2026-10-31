@@ -9,9 +9,11 @@ import 'package:material_ui/material_ui.dart';
 const _textStyle = TextStyle(color: Colors.white, fontSize: 12);
 const _dimTextStyle = TextStyle(color: Colors.white70, fontSize: 11);
 
-/// 播放器底栏中的联动控件，从右到左为同步开关、延迟偏移拨轮、跟随端音量；
-/// 主控有多台跟随端时偏移左侧为当前调节的跟随端，偏移与音量都作用于它。
-/// 宽度不足时依次把音量、偏移收进按钮弹出，最窄时整体收为一个按钮
+/// 播放器底栏中的联动控件，从左到右为当前调节的跟随端（主控有多台跟随端时）、
+/// 跟随端音量（模式切换与竖向拨轮）、延迟偏移（拨轮与归零）、同步开关；偏移与
+/// 音量都作用于当前调节的跟随端。放得下时全部展开，多出的宽度加长偏移拨轮；
+/// 放不下时依次把音量、调节部分（含跟随端切换）收进按钮弹出，最窄时整体收为
+/// 一个按钮
 class LinkedBarControls extends StatelessWidget {
   const LinkedBarControls({
     super.key,
@@ -75,8 +77,12 @@ class LinkedBarControls extends StatelessWidget {
       return LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
-          final offsetWidth =
-              widths.offset + (peers > 1 ? _peerWidth + _gap : 0);
+          final peer = peers > 1 ? _peerWidth + _gap : 0.0;
+          // 偏移拨轮取最短时，偏移及其右侧所需的宽度
+          final offset =
+              widths.offsetFor(_Widths._minOffsetDial) + _gap + widths.sync;
+          final full = peer + widths.volume + _gap + offset;
+          final volumeCollapsed = peer + _buttonWidth + _gap + offset;
           final List<Widget> children;
           if (peers == 0) {
             children = [
@@ -85,35 +91,33 @@ class LinkedBarControls extends StatelessWidget {
               else
                 _panelButton(widths, sync: true, offset: true),
             ];
-          } else if (width >=
-              widths.sync + _gap + offsetWidth + _gap + widths.volume) {
+          } else if (width >= volumeCollapsed) {
+            final expanded = width >= full;
+            final dial = math.min(
+              _Widths._maxOffsetDial,
+              _Widths._minOffsetDial +
+                  width -
+                  (expanded ? full : volumeCollapsed),
+            );
             children = [
-              _LinkedVolumeControl(
-                widths: widths,
-                onInteraction: onInteraction,
-                onDragging: _onDragging,
-              ),
               if (peers > 1) _LinkedPeerChip(onInteraction: onInteraction),
+              if (expanded)
+                _LinkedVolumeControl(
+                  widths: widths,
+                  onInteraction: onInteraction,
+                  onDragging: _onDragging,
+                )
+              else
+                _panelButton(widths, sync: false, offset: false),
               _LinkedOffsetControl(
                 widths: widths,
+                dial: dial,
                 onInteraction: onInteraction,
                 onDragging: _onDragging,
               ),
               _LinkedSyncSwitch(widths: widths),
             ];
-          } else if (width >=
-              widths.sync + _gap + offsetWidth + _gap + _buttonWidth) {
-            children = [
-              _panelButton(widths, sync: false, offset: false),
-              if (peers > 1) _LinkedPeerChip(onInteraction: onInteraction),
-              _LinkedOffsetControl(
-                widths: widths,
-                onInteraction: onInteraction,
-                onDragging: _onDragging,
-              ),
-              _LinkedSyncSwitch(widths: widths),
-            ];
-          } else if (width >= widths.sync + _gap + _buttonWidth) {
+          } else if (width >= _buttonWidth + _gap + widths.sync) {
             children = [
               _panelButton(widths, sync: false, offset: true),
               _LinkedSyncSwitch(widths: widths),
@@ -190,6 +194,8 @@ class LinkedBarControls extends StatelessWidget {
 class _Widths {
   const _Widths({
     required this.sync,
+    required this.slower,
+    required this.faster,
     required this.offsetValue,
     required this.offsetZero,
     required this.toggle,
@@ -223,12 +229,20 @@ class _Widths {
           _switchWidth +
           _spacing +
           math.max(measure('同步', _textStyle), measure('未连接', _textStyle)),
-      offsetValue: math.max(60.0, measure('-88.8 ms', _textStyle)),
+      slower: measure(linkedSlowerLabel, _dimTextStyle),
+      faster: measure(linkedFasterLabel, _dimTextStyle),
+      offsetValue: math.max(
+        56.0,
+        math.max(
+          measure(formatLinkedOffset(88500), _textStyle),
+          measure(formatLinkedOffset(-88500), _textStyle),
+        ),
+      ),
       offsetZero: math.max(36.0, measure('归零', _dimTextStyle) + 12),
       toggle: toggle,
       volumeValue: math.max(
-        40.0,
-        math.max(measure('-100', _textStyle), measure('100%', _textStyle)),
+        32.0,
+        math.max(measure('100%', _textStyle), measure('+100', _textStyle)),
       ),
     );
   }
@@ -236,13 +250,20 @@ class _Widths {
   static const double _switchWidth = 38;
   static const double _spacing = 4;
   static const double _modePadding = 7;
-  static const double _offsetDial = 104;
-  static const double _volumeDial = 84;
-  static const double _volumeIcon = 18;
+
+  /// 偏移拨轮的长度范围：底栏中在放得下的前提下尽量长，弹出层中取最长
+  static const double _minOffsetDial = 72;
+  static const double _maxOffsetDial = 120;
+
+  /// 竖向音量拨轮的粗细，长度为底栏高度
+  static const double _volumeDial = 22;
+  static const double _volumeIcon = 16;
 
   final double sync;
 
-  /// 偏移值文本与归零按钮
+  /// 偏移拨轮两端的文本、偏移值文本与归零按钮
+  final double slower;
+  final double faster;
   final double offsetValue;
   final double offsetZero;
 
@@ -252,7 +273,17 @@ class _Widths {
   /// 音量值文本
   final double volumeValue;
 
-  double get offset => offsetValue + _spacing + _offsetDial + offsetZero;
+  /// 偏移拨轮长为 [dial] 时偏移部分的宽度
+  double offsetFor(double dial) =>
+      slower +
+      _spacing +
+      dial +
+      _spacing +
+      faster +
+      _spacing +
+      offsetValue +
+      _spacing +
+      offsetZero;
 
   double get volume =>
       _volumeIcon +
@@ -264,7 +295,10 @@ class _Widths {
       _volumeDial;
 
   /// 弹出层内容
-  double get panel => math.max(sync, math.max(offset, volume));
+  double get panel => math.max(
+    math.max(sync, LinkedBarControls._peerWidth),
+    math.max(offsetFor(_maxOffsetDial), volume),
+  );
 }
 
 /// 弹出层中不可选的整块内容：打开期间保持播放器控件显示；内容随联动状态
@@ -337,21 +371,22 @@ class _PanelEntryState extends State<_PanelEntry> {
       }
       final (:linkable, :peers) = LinkedBarControls._state(widget.controller);
       final children = [
-        if (widget.sync && linkable) _LinkedSyncSwitch(widths: widths),
         if (widget.offset && peers > 1)
           _LinkedPeerChip(onInteraction: widget.onInteraction),
-        if (widget.offset && peers > 0)
-          _LinkedOffsetControl(
-            widths: widths,
-            onInteraction: widget.onInteraction,
-            onDragging: widget.onDragging,
-          ),
         if (peers > 0)
           _LinkedVolumeControl(
             widths: widths,
             onInteraction: widget.onInteraction,
             onDragging: widget.onDragging,
           ),
+        if (widget.offset && peers > 0)
+          _LinkedOffsetControl(
+            widths: widths,
+            dial: _Widths._maxOffsetDial,
+            onInteraction: widget.onInteraction,
+            onDragging: widget.onDragging,
+          ),
+        if (widget.sync && linkable) _LinkedSyncSwitch(widths: widths),
       ];
       if (children.isEmpty) {
         _close(route);
@@ -449,46 +484,53 @@ class _LinkedSyncSwitch extends StatelessWidget {
   }
 }
 
-/// 延迟偏移：当前值、横向拨轮（每格 0.5ms）、归零
+/// 延迟偏移：两端标注快慢的横向拨轮（每格 0.5ms）、当前值、归零
 class _LinkedOffsetControl extends StatelessWidget {
   const _LinkedOffsetControl({
     required this.widths,
+    required this.dial,
     required this.onInteraction,
     required this.onDragging,
   });
 
   final _Widths widths;
+
+  /// 拨轮长度
+  final double dial;
   final VoidCallback onInteraction;
   final ValueChanged<bool> onDragging;
+
+  static Widget _label(double width, String text, TextStyle style) => SizedBox(
+    width: width,
+    child: FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Text(text, maxLines: 1, style: style),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: widths.offset,
+      width: widths.offsetFor(dial),
       height: LinkedBarControls._height,
       child: Row(
+        spacing: _Widths._spacing,
         children: [
-          SizedBox(
-            width: widths.offsetValue,
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerRight,
-              child: Obx(
-                () => Text(
-                  formatLinkedOffset(linkedPlayback.currentOffsetUs ?? 0),
-                  maxLines: 1,
-                  style: _textStyle,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: _Widths._spacing),
+          _label(widths.slower, linkedSlowerLabel, _dimTextStyle),
           LinkedOffsetDial(
             axis: Axis.horizontal,
-            length: _Widths._offsetDial,
+            length: dial,
             thickness: 26,
             onInteraction: onInteraction,
             onDragging: onDragging,
+          ),
+          _label(widths.faster, linkedFasterLabel, _dimTextStyle),
+          Obx(
+            () => _label(
+              widths.offsetValue,
+              formatLinkedOffset(linkedPlayback.currentOffsetUs ?? 0),
+              _textStyle,
+            ),
           ),
           Expanded(
             child: GestureDetector(
@@ -643,10 +685,13 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
     LinkedVolume volume,
     ValueChanged<LinkedVolume> onChanged,
   ) {
-    final follow = volume.mode == LinkedVolumeMode.follow;
-    final index = follow ? volume.offset : (volume.level * 100).round();
+    final leader = linkedPlayback.leaderVolume.value;
+    // 跟随主控时显示实际生效的音量，主控音量未知时只能显示偏移
+    final target = volume.targetFor(leader);
+    final index = target == null ? volume.offset : (target * 100).round();
     return Row(
       mainAxisSize: MainAxisSize.min,
+      spacing: _Widths._spacing,
       children: [
         SizedBox(
           width: widget.widths.volumeValue,
@@ -654,19 +699,18 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerRight,
             child: Text(
-              follow ? _signed(volume.offset) : '$index%',
+              target == null ? _signed(volume.offset) : '$index%',
               maxLines: 1,
               style: _textStyle,
             ),
           ),
         ),
-        const SizedBox(width: _Widths._spacing),
         LinkedDial(
           key: ValueKey<String?>(id),
           index: index,
-          axis: Axis.horizontal,
-          length: _Widths._volumeDial,
-          thickness: 26,
+          axis: Axis.vertical,
+          length: LinkedBarControls._height,
+          thickness: _Widths._volumeDial,
           onInteraction: widget.onInteraction,
           onDragging: _onDragging,
           onSteps: (steps) {
@@ -677,15 +721,20 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
                     pending.volume.mode == volume.mode
                 ? pending.volume
                 : volume;
-            final next = base.mode == LinkedVolumeMode.follow
-                ? base.copyWith(
-                    offset: (base.offset + steps).clamp(-100, 100),
-                  )
-                : base.copyWith(
-                    level:
-                        ((base.level * 100).round() + steps).clamp(0, 100) /
-                        100,
-                  );
+            final LinkedVolume next;
+            if (base.mode == LinkedVolumeMode.follow) {
+              // 主控音量已知时偏移只在生效音量 0~100% 内调节，每格都有变化
+              final percent = leader == null ? 0 : (leader * 100).round();
+              final low = leader == null ? -100 : math.max(-100, -percent);
+              final high = leader == null ? 100 : math.min(100, 100 - percent);
+              next = base.copyWith(
+                offset: (base.offset + steps).clamp(low, high),
+              );
+            } else {
+              next = base.copyWith(
+                level: ((base.level * 100).round() + steps).clamp(0, 100) / 100,
+              );
+            }
             _dragVolume = (id: id, volume: next);
             onChanged(next);
           },

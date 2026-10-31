@@ -150,7 +150,9 @@ class _LinkedDialState extends State<LinkedDial> {
 }
 
 /// 当前调节的延迟偏移（跟随端为本机，主控为当前跟随端）的拨轮，每格
-/// [LinkedPlayback.offsetStepUs]；调节的跟随端变化时拨轮随之重建，当前拖动结束
+/// [LinkedPlayback.offsetStepUs]：向 [linkedSlowerLabel] 一端（左或下）该设备
+/// 出声更晚，向 [linkedFasterLabel] 一端更早；调节的跟随端变化时拨轮随之重建，
+/// 当前拖动结束
 class LinkedOffsetDial extends StatelessWidget {
   const LinkedOffsetDial({
     super.key,
@@ -176,11 +178,12 @@ class LinkedOffsetDial extends StatelessWidget {
     return Obx(
       () => LinkedDial(
         key: ValueKey<String?>(linkedPlayback.selectedPeer?.id),
+        // 偏移为正时出声更晚，拨轮的增大方向为更早
         index:
-            (linkedPlayback.currentOffsetUs ?? 0) ~/
+            -(linkedPlayback.currentOffsetUs ?? 0) ~/
             LinkedPlayback.offsetStepUs,
         onSteps: (steps) =>
-            linkedPlayback.adjustOffset(steps * LinkedPlayback.offsetStepUs),
+            linkedPlayback.adjustOffset(-steps * LinkedPlayback.offsetStepUs),
         axis: axis,
         length: length,
         thickness: thickness,
@@ -266,8 +269,17 @@ class _DialPainter extends CustomPainter {
       indicatorColor != oldDelegate.indicatorColor;
 }
 
-/// 偏移值的文本，精确到 0.1ms
+/// 偏移拨轮两端的文本
+const linkedSlowerLabel = '慢一点';
+const linkedFasterLabel = '快一点';
+
+/// 偏移值的文本：偏移为正（出声更晚）为「慢」，为负为「快」；整毫秒不带小数，
+/// 否则精确到 0.1ms
 String formatLinkedOffset(int us) {
-  final text = (us / 1000).toStringAsFixed(1);
-  return '${us > 0 ? '+' : ''}$text ms';
+  if (us == 0) return '0 ms';
+  final ms = us.abs() / 1000;
+  final text = ms == ms.roundToDouble()
+      ? ms.round().toString()
+      : ms.toStringAsFixed(1);
+  return '${us > 0 ? '慢' : '快'} $text ms';
 }
