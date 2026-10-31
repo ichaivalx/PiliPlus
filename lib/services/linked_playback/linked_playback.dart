@@ -219,6 +219,10 @@ class LinkedPlayback {
   /// 调用方不再播放；返回是否已接管
   bool takePlay(LinkedTarget target) => _leader?.takePlay(target) ?? false;
 
+  /// 页面发起定位（拖动进度、快进快退等）时、定位开始前调用：主控据此区分页面的
+  /// 再次定位与联动自身的定位
+  void noteSeek(LinkedTarget target) => _leader?.noteSeek(target);
+
   /// 页面加载内容前调用，[content] 为空表示该内容不支持联动；[autoplay]
   /// 为页面当前是否许可自动播放，共同起播前复核。返回非空时本次加载由联动播放接管
   LinkedLoad? gateLoad(

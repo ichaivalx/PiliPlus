@@ -291,6 +291,7 @@ class AudioController extends GetxController
   }
 
   Future<void>? onSeek(Duration duration) {
+    linkedPlayback.noteSeek(_linkedTarget);
     _updatePlaybackState(position: duration);
     return player?.seek(duration);
   }

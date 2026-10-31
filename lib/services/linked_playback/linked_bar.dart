@@ -76,7 +76,7 @@ class LinkedBarControls extends StatelessWidget {
               if (width >= widths.sync)
                 _LinkedSyncSwitch(widths: widths)
               else
-                _panelButton(widths, sync: true, offset: false),
+                _panelButton(widths, sync: true, offset: true),
             ];
           } else if (width >=
               widths.sync +
@@ -131,7 +131,7 @@ class LinkedBarControls extends StatelessWidget {
   }
 
   /// 收起的控件：点击后在弹出层中显示；[sync] 含同步开关，[offset] 含偏移，
-  /// 音量总在其中，内容随联动状态更新
+  /// 音量总在其中；偏移、音量按实时的联动状态显示（如弹出层内开启同步后出现）
   Widget _panelButton(
     _Widths widths, {
     required bool sync,
@@ -325,6 +325,11 @@ class _PanelEntryState extends State<_PanelEntry> {
     final widths = _Widths.of(context);
     final route = ModalRoute.of(context);
     return Obx(() {
+      // 锁定播放器后不再可操作
+      if (widget.controller.controlsLock.value) {
+        _close(route);
+        return const SizedBox.shrink();
+      }
       final (:adjust, :volumePeers) = LinkedBarControls._state(
         widget.controller,
       );
@@ -539,6 +544,14 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
 
   static String _signed(int value) => '${value > 0 ? '+' : ''}$value';
 
+  /// 拖动中已提交的音量：重建前连续多次更新也在其上逐格累加，拖动结束后清除
+  LinkedVolume? _dragVolume;
+
+  void _onDragging(bool dragging) {
+    if (!dragging) _dragVolume = null;
+    widget.onDragging(dragging);
+  }
+
   Widget _modeToggle(LinkedVolume volume, ValueChanged<LinkedVolume> onChanged) {
     // 字体放大时随文本增高，再由外层整体缩小到底栏高度内
     return Container(
@@ -615,16 +628,21 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
           length: _Widths._volumeDial,
           thickness: 26,
           onInteraction: widget.onInteraction,
-          onDragging: widget.onDragging,
-          onSteps: (steps) => onChanged(
-            follow
-                ? volume.copyWith(
-                    offset: (volume.offset + steps).clamp(-100, 100),
+          onDragging: _onDragging,
+          onSteps: (steps) {
+            final base = _dragVolume ?? volume;
+            final next = base.mode == LinkedVolumeMode.follow
+                ? base.copyWith(
+                    offset: (base.offset + steps).clamp(-100, 100),
                   )
-                : volume.copyWith(
-                    level: ((index + steps).clamp(0, 100)) / 100,
-                  ),
-          ),
+                : base.copyWith(
+                    level:
+                        ((base.level * 100).round() + steps).clamp(0, 100) /
+                        100,
+                  );
+            _dragVolume = next;
+            onChanged(next);
+          },
         ),
       ],
     );
@@ -658,7 +676,10 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
               onTap: () {
                 widget.onInteraction();
                 final next = (peers.indexOf(peer!) + 1) % peers.length;
-                setState(() => _selectedId = peers[next].id);
+                setState(() {
+                  _selectedId = peers[next].id;
+                  _dragVolume = null;
+                });
               },
               child: SizedBox(
                 width: LinkedBarControls._peerWidth,

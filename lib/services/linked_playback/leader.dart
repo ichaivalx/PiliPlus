@@ -48,9 +48,8 @@ class _Round {
   bool selfLoaded;
   bool selfReady = false;
 
-  /// 本机就绪时本轮自身的定位已完成；就绪等待超时时可能仍在定位，此后的定位中
-  /// 状态不能当作用户再次拖动
-  bool seekSettled = false;
+  /// 开始定位就绪时页面已发起的定位次数，之后再有定位即为再次拖动
+  int seeks = 0;
 
   _Phase phase = _Phase.loading;
   int? position;
@@ -176,6 +175,15 @@ class LeaderSession {
 
   /// 会话已结束：仅剩归还给本机的自行起播
   bool _closed = false;
+
+  /// 页面对当前播放器发起的定位次数，不含联动自身的定位
+  int _userSeeks = 0;
+  bool _ownSeek = false;
+
+  /// 页面发起定位（拖动进度、快进快退等）时调用，在定位开始前同步调用
+  void noteSeek(LinkedTarget target) {
+    if (!_ownSeek && identical(target, _target)) _userSeeks++;
+  }
 
   /// 正在与跟随端一起播放
   bool get _active => !_closed && hasPeers && syncOn();
@@ -582,6 +590,7 @@ class LeaderSession {
   Future<void> _prepare(_Round round, {int? hint}) async {
     round
       ..phase = _Phase.preparing
+      ..seeks = _userSeeks
       ..timer?.cancel();
     bool isCurrent() => identical(_round, round);
     final target = _target;
@@ -614,11 +623,13 @@ class LeaderSession {
     for (final peer in round.participants) {
       peer.send(prepare);
     }
-    await target.seek(Duration(microseconds: pos));
+    // 页面在发起定位时同步登记，本轮自身的定位不计为拖动
+    _ownSeek = true;
+    final seeking = target.seek(Duration(microseconds: pos));
+    _ownSeek = false;
+    await seeking;
     if (!await LinkedPlayer.waitReady(player, pos, isCurrent)) return;
-    round
-      ..selfReady = true
-      ..seekSettled = player.getProperty('seeking') != 'yes';
+    round.selfReady = true;
     _advance(round);
   }
 
@@ -652,10 +663,7 @@ class LeaderSession {
       if (!identical(_round, round)) return;
       if (round.intendsPlay && seekTogether()) {
         if (_loadedPlayer case final player?
-            when identical(player, _player) &&
-                ((round.seekSettled &&
-                        player.getProperty('seeking') == 'yes') ||
-                    _movedFrom(round, player))) {
+            when identical(player, _player) && _movedFrom(round, player)) {
           // 约定起播期间拖动了进度：作废本次起播，按最新位置重新共同就绪
           _reprepare(round, hint: LinkedPlayer.timePos(player));
           return;
@@ -688,8 +696,10 @@ class LeaderSession {
     });
   }
 
-  /// 本机已离开本轮的就绪位置（定位就绪、约定起播期间拖动了进度）
+  /// 本机已离开本轮的就绪位置（定位就绪、约定起播期间拖动了进度）：本轮开始定位
+  /// 后页面又发起了定位（含尚未完成的），或位置已偏离
   bool _movedFrom(_Round round, Player player) {
+    if (round.seeks != _userSeeks) return true;
     final position = round.position;
     if (position == null || player.getProperty('seeking') == 'yes') {
       return false;

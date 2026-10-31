@@ -913,11 +913,28 @@ class FollowerSession {
   /// 跳转的目标位置距结尾还有余量，跳转加入后来得及播放
   bool _leaderAhead(Player? player, int now) {
     if (player == null) return false;
-    final leaderPos = _leaderPosition(now + _jumpLeadUs(cold: true));
+    final plan = _jumpPlan(player, now, _offsetUs);
     final durationUs = player.state.duration.inMicroseconds;
-    return leaderPos != null &&
+    return plan != null &&
         durationUs > 0 &&
-        leaderPos - _offsetUs + _endMarginUs < durationUs;
+        plan.destination + _endMarginUs < durationUs;
+  }
+
+  /// 在 [begin] 开始跳转时的预留与目标：目标已在缓冲范围内（如主控拖动后已预先
+  /// 定位）时按普通跳转预留，否则按冷定位预留，宁可多等也要一次对齐；[at] 为预计
+  /// 主控到达 [destination] 对应位置的时刻
+  ({int at, int destination, bool cold})? _jumpPlan(
+    Player player,
+    int begin,
+    int offset,
+  ) {
+    final near = _leaderPosition(begin + _jumpLeadUs(cold: false));
+    if (near == null) return null;
+    final cold = !LinkedPlayer.isBuffered(player, max(0, near - offset));
+    final at = begin + _jumpLeadUs(cold: cold);
+    final leaderPos = _leaderPosition(at);
+    if (leaderPos == null) return null;
+    return (at: at, destination: max(0, leaderPos - offset), cold: cold);
   }
 
   /// 跳转对齐；多次跳转仍未对齐时请主控共同暂停后重新共同起播
@@ -964,15 +981,9 @@ class FollowerSession {
       if (!isCurrent()) return;
       final begin = LinkClock.nowUs;
       final offset = _offsetUs;
-      // 目标已在缓冲范围内（如主控拖动后已预先定位）时按普通跳转预留，否则按
-      // 冷定位预留，宁可多等也要一次对齐
-      final near = _leaderPosition(begin + _jumpLeadUs(cold: false));
-      if (near == null) break;
-      final cold = !LinkedPlayer.isBuffered(player, max(0, near - offset));
-      final at = begin + _jumpLeadUs(cold: cold);
-      final leaderPos = _leaderPosition(at);
-      if (leaderPos == null) break;
-      final destination = max(0, leaderPos - offset);
+      final plan = _jumpPlan(player, begin, offset);
+      if (plan == null) break;
+      final (:at, :destination, :cold) = plan;
       await target.seek(Duration(microseconds: destination));
       if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) return;
       _learnSeekCost(LinkClock.nowUs - begin, cold: cold);
