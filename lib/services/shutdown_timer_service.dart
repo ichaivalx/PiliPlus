@@ -117,6 +117,9 @@ class ShutdownTimerService {
 
   bool canAutoplay(ShutdownLoad load) => !load._blocked && !load._held;
 
+  /// 只被暂缓（如音频打断），未被停止播放作废：暂缓解除后可自动播放
+  bool isHeld(ShutdownLoad load) => load._held && !load._blocked;
+
   /// 存在完成后会自动播放的加载
   bool get hasPendingAutoplay => _loads.any(canAutoplay);
 

@@ -3,6 +3,7 @@ import 'package:PiliPlus/common/widgets/view_safe_area.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/menu_row.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
+import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -35,6 +36,13 @@ class LinkedPlaybackPanel extends StatelessWidget {
   static String _ms(double? value) =>
       value == null ? '—' : '${value.toStringAsFixed(1)} ms';
 
+  /// 桌面端未连接时的提示：防火墙未放行时其他设备找不到本机
+  static final String _desktopHint = PlatformUtils.isDesktop
+      ? '
+若一直无法连接：确认本机当前网络为「专用网络」，并在系统防火墙中允许'
+            ' PiliPlus 通过专用网络（首次开启时弹出的防火墙提示请选择允许）'
+      : '';
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -48,8 +56,10 @@ class LinkedPlaybackPanel extends StatelessWidget {
           ListTile(
             onTap: () => linkedPlayback.setEnabled(!enabled),
             title: const Text('联动播放'),
-            subtitle: const Text(
-              '同一 WiFi 下，跟随端自动打开并同步播放主控正在播放的普通视频；开启期间常驻通知以保持熄屏后的连接',
+            subtitle: Text(
+              PlatformUtils.isDesktop
+                  ? '同一局域网下，跟随端自动打开并同步播放主控正在播放的普通视频；桌面端调节的是本机播放器音量'
+                  : '同一 WiFi 下，跟随端自动打开并同步播放主控正在播放的普通视频；开启期间常驻通知以保持熄屏后的连接',
             ),
             trailing: Switch(
               value: enabled,
@@ -115,7 +125,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
           online.isEmpty ? '等待跟随端连接' : '已连接 ${online.length} 台跟随端',
         ),
         subtitle: peers.isEmpty
-            ? const Text('跟随端开启联动播放并选择「跟随」，打开应用后自动连接')
+            ? Text('跟随端开启联动播放并选择「跟随」，打开应用后自动连接$_desktopHint')
             : null,
       ),
       for (final peer in peers) ..._peer(theme, peer),
@@ -297,7 +307,7 @@ class LinkedPlaybackPanel extends StatelessWidget {
         title: Text(leader == null ? '正在查找主控' : '已连接主控 $leader'),
         subtitle: Text(
           leader == null
-              ? '需与主控连接同一 WiFi，主控开启联动播放并选择「主控」；点击立即重试'
+              ? '需与主控连接同一局域网，主控开启联动播放并选择「主控」；点击立即重试$_desktopHint'
               : '偏差 ${_signedMs(linkedPlayback.driftMs.value)}'
                     '　往返 ${_ms(linkedPlayback.rttMs.value)}',
         ),

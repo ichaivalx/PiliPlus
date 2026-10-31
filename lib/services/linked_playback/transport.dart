@@ -81,10 +81,23 @@ class _Discovery {
 
   static const _refreshUs = 10000000;
 
-  final void Function(LinkMessage message, InternetAddress from) _onMessage;
+  static final _limited = InternetAddress('255.255.255.255');
+
+  /// 桌面端常有多块网卡（虚拟机、WSL、VPN 等），系统只从其中一块发出受限广播：
+  /// 另从绑定各网卡地址的套接字分别广播
+  static final _perInterface =
+      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
+  /// 收到的消息及来源地址、端口
+  final void Function(LinkMessage message, InternetAddress from, int port)
+  _onMessage;
   RawDatagramSocket? _socket;
-  List<InternetAddress> _targets = [InternetAddress('255.255.255.255')];
+  List<InternetAddress> _targets = [_limited];
   int _targetsAt = -_refreshUs;
+
+  /// 各网卡地址上的发送套接字；对方回应到其端口的单播也经此收到（防火墙放行
+  /// 对广播的回应，未放行入站时仍能发现主控）
+  final Map<String, RawDatagramSocket> _senders = {};
 
   Future<void> bind() async {
     close();
@@ -107,6 +120,10 @@ class _Discovery {
   void close() {
     _socket?.close();
     _socket = null;
+    for (final sender in _senders.values) {
+      sender.close();
+    }
+    _senders.clear();
   }
 
   void _receive(RawDatagramSocket socket) {
@@ -118,53 +135,101 @@ class _Discovery {
       try {
         final message = LinkProtocol.decode(utf8.decode(datagram.data));
         if (message != null && message['app'] == LinkProtocol.app) {
-          _onMessage(message, datagram.address);
+          _onMessage(message, datagram.address, datagram.port);
         }
       } catch (_) {}
     }
   }
 
-  void send(Map<String, Object?> message, InternetAddress address) {
+  static List<int> _encode(Map<String, Object?> message) =>
+      utf8.encode(LinkProtocol.encode({'app': LinkProtocol.app, ...message}));
+
+  void send(
+    Map<String, Object?> message,
+    InternetAddress address, {
+    int port = LinkProtocol.discoveryPort,
+  }) {
     final socket = _socket;
     if (socket == null) return;
     try {
-      socket.send(
-        utf8.encode(
-          LinkProtocol.encode({'app': LinkProtocol.app, ...message}),
-        ),
-        address,
-        LinkProtocol.discoveryPort,
-      );
+      socket.send(_encode(message), address, port);
     } catch (_) {}
   }
 
-  /// 广播到受限广播地址及各 IPv4 网卡按 /24 推算的子网广播地址
+  /// 广播到受限广播地址及各 IPv4 网卡按 /24 推算的子网广播地址；桌面端另从
+  /// 各网卡分别广播
   Future<void> broadcast(Map<String, Object?> message) async {
     final now = LinkClock.nowUs;
     if (now - _targetsAt >= _refreshUs) {
       _targetsAt = now;
-      final targets = <String, InternetAddress>{
-        '255.255.255.255': InternetAddress('255.255.255.255'),
-      };
+      final targets = <String, InternetAddress>{_limited.address: _limited};
+      final locals = <InternetAddress>[];
       try {
         final interfaces = await NetworkInterface.list(
           type: InternetAddressType.IPv4,
         );
         for (final item in interfaces) {
           for (final address in item.addresses) {
-            if (address.isLoopback) continue;
-            final raw = address.rawAddress;
-            final target = InternetAddress.fromRawAddress(
-              Uint8List.fromList([raw[0], raw[1], raw[2], 255]),
-            );
+            if (address.isLoopback || address.isLinkLocal) continue;
+            locals.add(address);
+            final target = _subnetBroadcast(address);
             targets[target.address] = target;
           }
         }
       } catch (_) {}
       _targets = targets.values.toList();
+      if (_perInterface) await _bindSenders(locals);
     }
     for (final target in _targets) {
       send(message, target);
+    }
+    final data = _encode(message);
+    for (final MapEntry(key: local, value: sender) in _senders.entries) {
+      for (final target in [
+        _limited,
+        _subnetBroadcast(InternetAddress(local)),
+      ]) {
+        try {
+          sender.send(data, target, LinkProtocol.discoveryPort);
+        } catch (_) {}
+      }
+    }
+  }
+
+  static InternetAddress _subnetBroadcast(InternetAddress address) {
+    final raw = address.rawAddress;
+    return InternetAddress.fromRawAddress(
+      Uint8List.fromList([raw[0], raw[1], raw[2], 255]),
+    );
+  }
+
+  /// 按当前的网卡地址增减发送套接字
+  Future<void> _bindSenders(List<InternetAddress> locals) async {
+    final keep = {for (final address in locals) address.address};
+    _senders.removeWhere((local, sender) {
+      if (keep.contains(local)) return false;
+      sender.close();
+      return true;
+    });
+    for (final address in locals) {
+      if (_senders.containsKey(address.address)) continue;
+      try {
+        final sender = await RawDatagramSocket.bind(address, 0);
+        if (_socket == null) {
+          // 等待期间已关闭
+          sender.close();
+          return;
+        }
+        sender
+          ..broadcastEnabled = true
+          ..listen(
+            (event) {
+              if (event == RawSocketEvent.read) _receive(sender);
+            },
+            onError: (_) {},
+          );
+        _senders[address.address] = sender;
+      } catch (_) {}
     }
   }
 }
@@ -266,9 +331,13 @@ class LeaderTransport {
     _beacon();
   }
 
-  void _onDatagram(LinkMessage message, InternetAddress from) {
+  /// 回应寻找：发到发现端口，以及来源端口（对方未放行入站时经其发送套接字收到）
+  void _onDatagram(LinkMessage message, InternetAddress from, int port) {
     if (message['k'] == LinkDatagram.probe) {
       _discovery.send(_beaconMessage, from);
+      if (port != LinkProtocol.discoveryPort) {
+        _discovery.send(_beaconMessage, from, port: port);
+      }
     }
   }
 
@@ -396,7 +465,7 @@ class FollowerTransport {
     }
   }
 
-  void _onDatagram(LinkMessage message, InternetAddress from) {
+  void _onDatagram(LinkMessage message, InternetAddress from, int _) {
     if (message['k'] == LinkDatagram.beacon &&
         _connection == null &&
         !_connecting) {

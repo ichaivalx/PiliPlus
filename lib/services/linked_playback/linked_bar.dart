@@ -41,19 +41,23 @@ class LinkedBarControls extends StatelessWidget {
     }
   }
 
-  /// 是否显示偏移与音量、可调音量的跟随端数量；在 Obx 中调用
-  static ({bool adjust, int volumePeers}) _state(
+  /// 联动已开启且本播放器的内容是联动的内容（番剧、直播、互动视频等不联动的
+  /// 内容不显示）；在 Obx 中调用
+  static bool showsFor(PlPlayerController controller) =>
+      linkedPlayback.enabled.value && _state(controller).linkable;
+
+  /// 是否联动的内容、是否显示偏移与音量、可调音量的跟随端数量；在 Obx 中调用
+  static ({bool linkable, bool adjust, int volumePeers}) _state(
     PlPlayerController controller,
   ) {
     final current = linkedPlayback.current.value;
     // 登记内容先于播放器更新分P，加载完成后再按分P核对
     controller.dataStatus.value;
-    final cid = controller.cid;
-    final adjust =
-        linkedPlayback.syncOn.value &&
-        current?.kind == LinkedKind.video &&
-        current?.cid == cid;
+    final linkable =
+        current?.kind == LinkedKind.video && current?.cid == controller.cid;
+    final adjust = linkable && linkedPlayback.syncOn.value;
     return (
+      linkable: linkable,
       adjust: adjust,
       volumePeers: adjust ? _LinkedVolumeControl.peerCount : 0,
     );
@@ -63,7 +67,8 @@ class LinkedBarControls extends StatelessWidget {
   Widget build(BuildContext context) {
     final widths = _Widths.of(context);
     return Obx(() {
-      final (:adjust, :volumePeers) = _state(controller);
+      final (:linkable, :adjust, :volumePeers) = _state(controller);
+      if (!linkable) return const SizedBox.shrink();
       final volume = volumePeers > 0;
       return LayoutBuilder(
         builder: (context, constraints) {
@@ -330,11 +335,11 @@ class _PanelEntryState extends State<_PanelEntry> {
         _close(route);
         return const SizedBox.shrink();
       }
-      final (:adjust, :volumePeers) = LinkedBarControls._state(
+      final (:linkable, :adjust, :volumePeers) = LinkedBarControls._state(
         widget.controller,
       );
       final children = [
-        if (widget.sync) _LinkedSyncSwitch(widths: widths),
+        if (widget.sync && linkable) _LinkedSyncSwitch(widths: widths),
         if (widget.offset && adjust)
           _LinkedOffsetControl(
             widths: widths,

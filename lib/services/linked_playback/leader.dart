@@ -45,6 +45,9 @@ class _Round {
   /// 重新就绪时连同许可转交给新一轮
   ShutdownLoad? load;
 
+  /// 页面加载时的自动播放许可，用户手动播放后不再适用
+  bool Function()? autoplay;
+
   bool selfLoaded;
   bool selfReady = false;
 
@@ -406,6 +409,7 @@ class LeaderSession {
   }
 
   void _clearStandalone() {
+    _dropDeferred();
     final round = _standaloneRound;
     _standaloneRound = null;
     if (round != null) _endLoad(round);
@@ -485,6 +489,7 @@ class LeaderSession {
     final inherited = inherit?.load;
     inherit?.load = null;
     _cancelRound();
+    _dropDeferred();
     final now = LinkClock.nowUs;
     final participants = {
       for (final MapEntry(key: peer, value: state) in _peers.entries)
@@ -503,12 +508,16 @@ class LeaderSession {
     if (inherit != null && inherited != null) {
       round
         ..load = inherited
-        ..permits = inherit.permits;
+        ..permits = inherit.permits
+        ..autoplay = inherit.autoplay;
     } else {
       // 沿用页面加载已有的停止、暂缓状态，此后的事件由本轮的登记承接
       final load = round.load = shutdownTimerService.beginLoad(from: from);
-      round.permits = () =>
-          shutdownTimerService.canAutoplay(load) && (autoplay?.call() ?? true);
+      round
+        ..autoplay = autoplay
+        ..permits = () =>
+            shutdownTimerService.canAutoplay(load) &&
+            (autoplay?.call() ?? true);
     }
     round.timer = Timer(_loadTimeout, () => _onLoadTimeout(round));
     return round;
@@ -542,7 +551,50 @@ class LeaderSession {
   void _allowPlay(_Round round) {
     _endLoad(round);
     final load = round.load = shutdownTimerService.beginLoad();
-    round.permits = () => shutdownTimerService.canAutoplay(load);
+    round
+      ..autoplay = null
+      ..permits = () => shutdownTimerService.canAutoplay(load);
+  }
+
+  /// 共同起播只因暂缓（音频打断等）未能起播时登记的待恢复：暂缓解除后自动继续，
+  /// 停止播放（拔出耳机、定时关闭）、新的轮次或页面变化时作废
+  ShutdownLoad? _deferred;
+
+  /// 本轮仍要播放、只因暂缓不能起播时转为等待暂缓解除，在结束本轮前调用；返回
+  /// 是否已转为等待
+  bool _defer(_Round round) {
+    final load = round.load;
+    if (_closed ||
+        !round.intendsPlay ||
+        load == null ||
+        !shutdownTimerService.isHeld(load) ||
+        !(round.autoplay?.call() ?? true)) {
+      return false;
+    }
+    _dropDeferred();
+    _deferred = shutdownTimerService.beginLoad(from: load);
+    return true;
+  }
+
+  void _dropDeferred() {
+    final load = _deferred;
+    _deferred = null;
+    if (load != null) shutdownTimerService.endLoad(load);
+  }
+
+  /// 暂缓解除后按页面原有方式继续播放，经播放前接管重新共同起播
+  void _resumeDeferred() {
+    final load = _deferred;
+    if (load == null) return;
+    if (shutdownTimerService.canAutoplay(load)) {
+      _dropDeferred();
+      if (!(_loadedPlayer?.state.playing ?? true)) {
+        _target?.resume();
+      }
+    } else if (!shutdownTimerService.isHeld(load)) {
+      // 已被停止播放作废
+      _dropDeferred();
+    }
   }
 
   void _advance(_Round round) {
@@ -636,6 +688,8 @@ class LeaderSession {
   void _start(_Round round) {
     round.timer?.cancel();
     if (!round.intendsPlay || !(round.permits?.call() ?? true)) {
+      // 只因打断等暂缓时，暂缓解除后自动继续
+      _defer(round);
       _finishRound(round);
       // 未参与本轮的跟随端也定位到暂停位置
       if (_loadedPlayer case final player?) {
@@ -670,6 +724,7 @@ class LeaderSession {
         }
       }
       final permitted = round.permits?.call() ?? true;
+      if (!permitted) _defer(round);
       _finishRound(round);
       if (!round.intendsPlay) return;
       final target = _target;
@@ -906,6 +961,7 @@ class LeaderSession {
   }
 
   void _tick(Timer _) {
+    _resumeDeferred();
     if (!_active || _content == null) return;
     final target = _target;
     if (target == null || !target.isActive) {

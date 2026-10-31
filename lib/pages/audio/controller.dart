@@ -1221,6 +1221,9 @@ final class _AudioLinkedTarget implements LinkedTarget {
   }
 
   @override
+  void setPlayerVolume(double volume) => _controller.setVolume(volume);
+
+  @override
   bool open(LinkedContent content) {
     if (_controller.isClosed) return false;
     _controller._openLinked(content);

@@ -1,9 +1,11 @@
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
+import 'package:flutter/gestures.dart'
+    show GestureBinding, PointerScrollEvent, PointerSignalEvent;
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
-/// 拨轮式的逐格调节：沿拨轮拖动逐格滚动，逐格震动
+/// 拨轮式的逐格调节：沿拨轮拖动逐格滚动，逐格震动；鼠标滚轮每次滚动一格
 class LinkedDial extends StatefulWidget {
   const LinkedDial({
     super.key,
@@ -83,10 +85,22 @@ class _LinkedDialState extends State<LinkedDial> {
     super.dispose();
   }
 
+  /// 滚轮向上或向右增大；优先于播放器的滚轮调音量
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (event) {
+      final delta = (event as PointerScrollEvent).scrollDelta;
+      final amount = delta.dy != 0 ? -delta.dy : delta.dx;
+      if (amount == 0) return;
+      widget.onInteraction?.call();
+      widget.onSteps(amount > 0 ? 1 : -1);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final vertical = widget.axis == Axis.vertical;
-    return GestureDetector(
+    final dial = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onVerticalDragStart: vertical ? _onStart : null,
       onVerticalDragUpdate: vertical ? _onUpdate : null,
@@ -112,6 +126,7 @@ class _LinkedDialState extends State<LinkedDial> {
         ),
       ),
     );
+    return Listener(onPointerSignal: _onPointerSignal, child: dial);
   }
 }
 

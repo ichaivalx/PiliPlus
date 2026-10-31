@@ -4,7 +4,6 @@ import 'package:PiliPlus/common/widgets/disabled_icon.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/widgets/common_btn.dart';
 import 'package:PiliPlus/services/linked_playback/linked_bar.dart';
-import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
@@ -95,7 +94,7 @@ class PlayerBottomBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) => Obx(() {
-        final showLinked = linkedPlayback.enabled.value && !controller.isLive;
+        final showLinked = LinkedBarControls.showsFor(controller);
         return Row(
           children: [
             ConstrainedBox(

@@ -2,6 +2,7 @@ import 'dart:async' show Timer;
 import 'dart:io' show Platform;
 
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
+import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/utils/desktop/tray_controller.dart';
 import 'package:PiliPlus/utils/device_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
@@ -124,7 +125,8 @@ class WindowController {
   }
 
   void _pauseIfNeeded() {
-    if (pauseOnMinimize) {
+    // 联动播放期间与对端一起播放，隐藏窗口时不暂停
+    if (pauseOnMinimize && !linkedPlayback.holdsPlayback) {
       if (PlPlayerController.instance case final player?) {
         if (isPlaying = player.playerStatus.isPlaying) {
           player.pause();
@@ -136,6 +138,8 @@ class WindowController {
   }
 
   Future<void> onClose() async {
+    // 先通知联动的对端停止
+    await linkedPlayback.close();
     await GStorage.compact();
     await GStorage.close();
     TrayController.instance.dispose();

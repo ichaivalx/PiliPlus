@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 
+import 'package:PiliPlus/services/linked_playback/desktop_volume.dart';
 import 'package:PiliPlus/services/linked_playback/follower.dart';
 import 'package:PiliPlus/services/linked_playback/leader.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
@@ -7,6 +8,7 @@ import 'package:PiliPlus/services/linked_playback/target.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/device_utils.dart';
 import 'package:PiliPlus/utils/permission_handler.dart';
+import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -188,6 +190,9 @@ class LinkedPlayback {
           }
       }
     });
+    if (PlatformUtils.isDesktop) {
+      LinkedDesktopVolume.listen((value) => _onSystemVolume(value, self: false));
+    }
     AppLifecycleListener(onResume: wake, onShow: wake);
     Connectivity().onConnectivityChanged.skip(1).listen((_) => _refresh());
     shutdownTimerService.addExpiredListener(_onShutdown);
@@ -322,7 +327,9 @@ class LinkedPlayback {
     }
   }
 
+  /// 本机媒体音量：安卓为系统媒体音量，桌面端为播放器音量
   Future<double?> _getSystemVolume() async {
+    if (PlatformUtils.isDesktop) return LinkedDesktopVolume.value;
     if (!Platform.isAndroid) return null;
     try {
       return await _channel.invokeMethod<double>('getVolume');
@@ -331,8 +338,11 @@ class LinkedPlayback {
     }
   }
 
-  /// 设置系统媒体音量，不显示系统音量界面；返回设置后的实际音量
+  /// 设置本机媒体音量，不显示音量界面；返回设置后的实际音量
   Future<double?> _setSystemVolume(double value) async {
+    if (PlatformUtils.isDesktop) {
+      return LinkedDesktopVolume.set(value, _currentTarget);
+    }
     if (!Platform.isAndroid) return null;
     try {
       return await _channel.invokeMethod<double>('setVolume', {'v': value});
@@ -385,6 +395,20 @@ class LinkedPlayback {
       if (leader != null) leader.dispose(),
       if (follower != null) follower.dispose(),
     ]);
+  }
+
+  /// 应用退出前调用（桌面端关闭窗口、托盘退出）：结束会话，等停止消息发出，
+  /// 主控的跟随端随之停止跟随
+  Future<void> close() {
+    final leader = _leader;
+    final follower = _follower;
+    _leader = null;
+    _follower = null;
+    _abandonHandedBack();
+    return Future.wait<void>([
+      if (leader != null) leader.dispose(),
+      if (follower != null) follower.dispose(),
+    ]).timeout(const Duration(seconds: 2), onTimeout: () => const <void>[]);
   }
 
   Future<bool> _requestPermissions() async {

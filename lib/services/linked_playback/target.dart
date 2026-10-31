@@ -37,6 +37,9 @@ abstract class LinkedTarget {
 
   Future<void> seek(Duration position);
 
+  /// 桌面端：把页面播放器的音量设为 [volume]（0~1），不显示音量提示
+  void setPlayerVolume(double volume);
+
   /// 在当前页面内切换到 [content]，不能切换时返回 false
   bool open(LinkedContent content);
 }
@@ -109,6 +112,11 @@ final class VideoLinkedTarget implements LinkedTarget {
   @override
   Future<void> seek(Duration position) async {
     await _controller?.seek(position);
+  }
+
+  @override
+  void setPlayerVolume(double volume) {
+    _controller?.setVolume(volume, showIndicator: false);
   }
 
   /// 持有播放器的是普通视频详情页（非播放全部）且已在播放时在页内切换
