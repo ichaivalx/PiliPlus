@@ -42,6 +42,17 @@ class FollowerVolume {
     }
   }
 
+  /// 本机换了播放器（桌面端切换播放目标），[actual] 为其当前音量：已连接时重新
+  /// 应用当前模式下的目标音量，否则只记录实际音量
+  void reapply(double actual) {
+    state.value = state.value.copyWith(actual: actual);
+    if (_connected && state.value.targetFor(leaderVolume.value) != null) {
+      _apply();
+    } else {
+      onChanged();
+    }
+  }
+
   /// 主控或本机调整设置
   void update(LinkedVolume value) {
     _save(value.copyWith(actual: state.value.actual));

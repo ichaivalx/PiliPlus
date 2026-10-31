@@ -46,6 +46,8 @@ List<SettingsModel> get playSettings => [
     title: '联动播放',
     getSubtitle: () => linkedPlayback.enabled.value
         ? '已开启，本机为${linkedPlayback.role.value.label}'
+        : PlatformUtils.isDesktop
+        ? '同一局域网下多台设备同步播放同一视频'
         : '同一 WiFi 下多台设备同步播放同一视频',
   ),
   if (kDebugMode || Platform.isAndroid)

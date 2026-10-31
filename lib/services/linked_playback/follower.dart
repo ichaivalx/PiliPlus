@@ -307,6 +307,9 @@ class FollowerSession {
   /// 用户在本机调整音量设置
   void updateVolume(LinkedVolume value) => _volume.update(value);
 
+  /// 本机换了播放器（桌面端），[actual] 为其当前音量
+  void reapplyVolume(double actual) => _volume.reapply(actual);
+
   /// 本机系统媒体音量变化，[self] 为本机设置所致
   void onSystemVolume(double volume, {required bool self}) =>
       _volume.onSystemVolume(volume, self: self);

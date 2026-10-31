@@ -669,9 +669,12 @@ class AudioController extends GetxController
       player = null;
       return;
     }
-    // 创建期间音量有变化（如联动设置跟随端音量）时补上
-    if (PlatformUtils.isDesktop && desktopVolume.value != initialVolume) {
-      player!.setVolume(desktopVolume.value * 100);
+    if (PlatformUtils.isDesktop) {
+      // 创建期间音量有变化（如联动设置跟随端音量）时补上
+      if (desktopVolume.value != initialVolume) {
+        player!.setVolume(desktopVolume.value * 100);
+      }
+      linkedPlayback.onPlayerCreated(_linkedTarget);
     }
     final stream = player!.stream;
     _subscriptions = [

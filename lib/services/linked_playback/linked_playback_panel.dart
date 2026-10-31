@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:PiliPlus/common/widgets/scaffold/simple_scaffold.dart';
 import 'package:PiliPlus/common/widgets/view_safe_area.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/widgets/menu_row.dart';
@@ -28,6 +30,9 @@ class LinkedPlaybackPanel extends StatelessWidget {
 
   /// 步进按钮（毫秒）
   static const _offsetSteps = [-10, 10];
+
+  /// 跟随端选择项的标签宽度扣除的选择项内边距与边框
+  static const _peerChipInset = 48.0;
 
   static String _signedMs(double? value) => value == null
       ? '—'
@@ -240,20 +245,37 @@ class LinkedPlaybackPanel extends StatelessWidget {
               : '左右拖动拨轮，每格 0.5 ms；该跟随端声音偏早时调大，偏晚时调小。各跟随端分别设置，偏差为正表示跟随端超前',
         ),
       ),
+      // 名称过长时省略，悬停或长按查看完整名称
       if (peers.length > 1)
         Padding(
           padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
-          child: Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            children: [
-              for (final item in peers)
-                ActionRowLineItem(
-                  selectStatus: item.id == peer!.id,
-                  text: item.name,
-                  onTap: () => linkedPlayback.selectPeer(item.id),
-                ),
-            ],
+          child: LayoutBuilder(
+            builder: (context, constraints) => Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                for (final item in peers)
+                  ChoiceChip(
+                    tooltip: item.name,
+                    showCheckmark: false,
+                    selected: item.id == peer!.id,
+                    onSelected: (_) => linkedPlayback.selectPeer(item.id),
+                    label: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: math.max(
+                          0.0,
+                          constraints.maxWidth - _peerChipInset,
+                        ),
+                      ),
+                      child: Text(
+                        item.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       Padding(

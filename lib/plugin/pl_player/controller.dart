@@ -1026,6 +1026,9 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
         return;
       }
       _videoPlayerController = player;
+      if (PlatformUtils.isDesktop) {
+        linkedPlayback.onPlayerCreated(const VideoLinkedTarget());
+      }
       if (isAnim && superResolutionType.value != .disable) {
         await setShader();
       }
@@ -1477,11 +1480,12 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
     }
   }
 
-  /// 用户在本机调节音量（手势、滚轮、快捷键）：联动播放随之同步
-  Future<void> adjustVolume(double volume) {
-    final done = setVolume(volume);
-    linkedPlayback.onUserVolume(volume);
-    return done;
+  /// 用户在本机调节音量（手势、滚轮、快捷键）：写入后联动播放随之同步。与缓存
+  /// 相同时不写入底层（静音时保持静音，与未开联动时一致），不通知
+  Future<void> adjustVolume(double volume) async {
+    final changed = this.volume.value != volume;
+    await setVolume(volume);
+    if (changed) linkedPlayback.onUserVolume(volume);
   }
 
   /// Toggle Change the videofit accordingly

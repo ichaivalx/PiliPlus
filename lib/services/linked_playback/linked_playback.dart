@@ -162,6 +162,7 @@ class LinkedPlayback {
       _leader?.supersede(previous);
     }
     _abandonHandedBack();
+    _syncDesktopVolume();
   }
 
   /// 页面继续播放已加载的内容（未经加载流程，如返回听视频页继续播放）：
@@ -171,12 +172,14 @@ class LinkedPlayback {
         (current.value?.isSame(content) ?? content == null)) {
       return;
     }
+    final switched = !identical(_currentTarget, target);
     current.value = content;
     _currentTarget = target;
     _epoch++;
     _abandonHandedBack();
     _leader?.takeOver(content, target);
     _follower?.adopt(target);
+    if (switched) _syncDesktopVolume();
   }
 
   /// 页面交出播放器（未交给小窗，小窗接管时归属不变）：其进行中的共同起播
@@ -263,14 +266,37 @@ class LinkedPlayback {
     required bool Function() autoplay,
     required ShutdownLoad load,
   }) {
+    final switched = !identical(_currentTarget, target);
     current.value = content;
     _currentTarget = target;
     _epoch++;
     _abandonHandedBack();
+    if (switched) _syncDesktopVolume();
     if (_leader case final leader?) {
       return leader.gateLoad(content, target, autoplay: autoplay, load: load);
     }
     return _follower?.gateLoad(content, target, load: load);
+  }
+
+  /// 桌面端：页面的播放器创建完成后调用（新播放器按保存的音量初始化）
+  void onPlayerCreated(LinkedTarget target) {
+    if (identical(target, _currentTarget)) _syncDesktopVolume();
+  }
+
+  /// 桌面端：播放目标切换或其播放器创建后，本机音量与联动状态重新一致：跟随端
+  /// 重新应用当前音量模式下的目标音量，主控重新采样有效音量并发布
+  void _syncDesktopVolume() {
+    if (!PlatformUtils.isDesktop) return;
+    final target = _currentTarget;
+    if (target == null || !target.isActive) return;
+    final volume = LinkedDesktopVolume.current(target);
+    if (_leader case final leader?) {
+      if (leaderVolume.value == volume) return;
+      leaderVolume.value = volume;
+      leader.onLocalVolume(volume);
+    } else {
+      _follower?.reapplyVolume(volume);
+    }
   }
 
   /// 页面关闭时调用
