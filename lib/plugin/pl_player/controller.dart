@@ -966,13 +966,14 @@ class PlPlayerController with BlockConfigMixin, AudioNormalizationMixin {
       opt['autosync'] = autosync;
     }
 
+    const logLevel = kDebugMode ? MPVLogLevel.warn : MPVLogLevel.error;
     final player = await Player.create(
       configuration: PlayerConfiguration(
-        logLevel:
-            linkedDiagnostics.mpvLogLevel ?? (kDebugMode ? .warn : .error),
+        logLevel: linkedDiagnostics.logLevel(logLevel),
         options: opt,
       ),
     );
+    linkedDiagnostics.attach(player, logLevel);
 
     assert(_videoController == null);
 

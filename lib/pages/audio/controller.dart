@@ -656,7 +656,7 @@ class AudioController extends GetxController
     final initialVolume = desktopVolume.value;
     player = await Player.create(
       configuration: PlayerConfiguration(
-        logLevel: linkedDiagnostics.mpvLogLevel ?? .error,
+        logLevel: linkedDiagnostics.logLevel(.error),
         options: {
           if (Platform.isAndroid) 'ao': Pref.audioOutput,
           'volume': PlatformUtils.isDesktop
@@ -666,6 +666,7 @@ class AudioController extends GetxController
         },
       ),
     );
+    linkedDiagnostics.attach(player!, .error);
     if (isClosed) {
       player!.dispose();
       player = null;

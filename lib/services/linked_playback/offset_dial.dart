@@ -273,13 +273,11 @@ class _DialPainter extends CustomPainter {
 const linkedSlowerLabel = '慢一点';
 const linkedFasterLabel = '快一点';
 
-/// 偏移值的文本：偏移为正（出声更晚）为「慢」，为负为「快」；整毫秒不带小数，
-/// 否则精确到 0.1ms
+/// 偏移值的文本，按 0.5ms 取整：偏移为正（出声更晚）为「慢」，为负为「快」，
+/// 整毫秒不带小数，半毫秒带 .5，零为「0 ms」
 String formatLinkedOffset(int us) {
-  if (us == 0) return '0 ms';
-  final ms = us.abs() / 1000;
-  final text = ms == ms.roundToDouble()
-      ? ms.round().toString()
-      : ms.toStringAsFixed(1);
+  final halves = (us.abs() / 500).round();
+  if (halves == 0) return '0 ms';
+  final text = '${halves ~/ 2}${halves.isOdd ? '.5' : ''}';
   return '${us > 0 ? '慢' : '快'} $text ms';
 }

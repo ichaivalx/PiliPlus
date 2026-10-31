@@ -1,6 +1,7 @@
 import 'dart:io' show Platform;
 
 import 'package:PiliPlus/services/linked_playback/desktop_volume.dart';
+import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/follower.dart';
 import 'package:PiliPlus/services/linked_playback/leader.dart';
 import 'package:PiliPlus/services/linked_playback/models.dart';
@@ -454,20 +455,14 @@ class LinkedPlayback {
     _leader?.pauseAll();
     _follower?.stopAll();
     if (!exit) return;
-    // 退出应用：结束会话，等停止消息发出
-    final leader = _leader;
-    final follower = _follower;
-    _exitingAsFollower = follower?.isFollowing ?? false;
-    _leader = null;
-    _follower = null;
-    await Future.wait<void>([
-      if (leader != null) leader.dispose(),
-      if (follower != null) follower.dispose(),
-    ]);
+    // 退出应用：与其他退出方式共用同一次结束
+    _exitingAsFollower = _follower?.isFollowing ?? false;
+    await close();
   }
 
-  /// 应用退出前调用（桌面端关闭窗口、托盘退出）：结束会话，等停止消息发出，
-  /// 主控的跟随端随之停止跟随；重复调用等待同一次结束
+  /// 应用退出前调用（桌面端关闭窗口、托盘退出、定时关闭退出）：结束会话，等
+  /// 停止消息发出，主控的跟随端随之停止跟随，再等诊断记录写完；重复调用等待
+  /// 同一次结束
   Future<void> close() => _closing ??= _close();
 
   Future<void>? _closing;
@@ -479,9 +474,11 @@ class LinkedPlayback {
     _follower = null;
     _abandonHandedBack();
     return Future.wait<void>([
-      if (leader != null) leader.dispose(),
-      if (follower != null) follower.dispose(),
-    ]).timeout(const Duration(seconds: 2), onTimeout: () => const <void>[]);
+          if (leader != null) leader.dispose(),
+          if (follower != null) follower.dispose(),
+        ])
+        .timeout(const Duration(seconds: 2), onTimeout: () => const <void>[])
+        .whenComplete(linkedDiagnostics.close);
   }
 
   Future<bool> _requestPermissions() async {

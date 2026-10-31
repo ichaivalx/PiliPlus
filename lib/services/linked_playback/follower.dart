@@ -1342,6 +1342,7 @@ class FollowerSession {
 
   double? _follow(LinkedTarget target, Player player, int now) {
     if (player.state.buffering) {
+      _speed.suspend();
       if (++_stall >= _stallTicks) {
         _stall = 0;
         _requestResync(now);
@@ -1464,6 +1465,7 @@ class FollowerSession {
             _realign(target, player, now);
           }
         } else if (!player.state.playing) {
+          _speed.suspend();
           // 未收到暂停事件时的兜底：起播后稳定期过后仍未播放
           if (_startTimer == null && now >= _settleUntil) {
             _markLocalPaused(player);

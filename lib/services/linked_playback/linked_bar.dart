@@ -686,9 +686,17 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
     ValueChanged<LinkedVolume> onChanged,
   ) {
     final leader = linkedPlayback.leaderVolume.value;
-    // 跟随主控时显示实际生效的音量，主控音量未知时只能显示偏移
+    final follow = volume.mode == LinkedVolumeMode.follow;
+    // 拨轮按调节的目标逐格滚动；主控音量未知时只能按偏移
     final target = volume.targetFor(leader);
     final index = target == null ? volume.offset : (target * 100).round();
+    // 跟随主控时显示设备回报的实际音量（系统音量有档位，与目标可能不同），
+    // 主控音量未知时显示偏移
+    final shown = !follow
+        ? volume.level
+        : leader == null
+        ? null
+        : volume.actual ?? target;
     return Row(
       mainAxisSize: MainAxisSize.min,
       spacing: _Widths._spacing,
@@ -699,7 +707,9 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerRight,
             child: Text(
-              target == null ? _signed(volume.offset) : '$index%',
+              shown == null
+                  ? _signed(volume.offset)
+                  : '${(shown * 100).round()}%',
               maxLines: 1,
               style: _textStyle,
             ),
@@ -723,12 +733,13 @@ class _LinkedVolumeControlState extends State<_LinkedVolumeControl> {
                 : volume;
             final LinkedVolume next;
             if (base.mode == LinkedVolumeMode.follow) {
-              // 主控音量已知时偏移只在生效音量 0~100% 内调节，每格都有变化
+              // 主控音量已知时偏移只在生效音量 0~100% 内调节：先把超出范围的
+              // 偏移收回范围内再调节，每格都有变化
               final percent = leader == null ? 0 : (leader * 100).round();
               final low = leader == null ? -100 : math.max(-100, -percent);
               final high = leader == null ? 100 : math.min(100, 100 - percent);
               next = base.copyWith(
-                offset: (base.offset + steps).clamp(low, high),
+                offset: (base.offset.clamp(low, high) + steps).clamp(low, high),
               );
             } else {
               next = base.copyWith(

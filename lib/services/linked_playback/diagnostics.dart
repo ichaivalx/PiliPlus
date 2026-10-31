@@ -1,3 +1,5 @@
+// ignore_for_file: implementation_imports
+
 import 'dart:async';
 import 'dart:io';
 
@@ -6,6 +8,8 @@ import 'package:PiliPlus/utils/path_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
+import 'package:media_kit/ffi/src/allocation.dart';
+import 'package:media_kit/ffi/src/utf8.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart';
@@ -48,8 +52,9 @@ class LinkedDiagnostics {
   /// 开启时为 true，记录前先判断，关闭时不产生任何开销
   bool get isOn => enabled.value;
 
-  /// 开启后新创建的播放器输出音频相关的详细日志
-  MPVLogLevel? get mpvLogLevel => isOn ? MPVLogLevel.v : null;
+  /// 新创建的播放器的 mpv 日志级别：开启时输出音频相关的详细日志，否则为平时
+  /// 的 [normal]；创建后在打开媒体前交给 [attach]
+  MPVLogLevel logLevel(MPVLogLevel normal) => isOn ? MPVLogLevel.v : normal;
 
   String get directory => p.join(appSupportDirPath, 'linked_playback_logs');
   String get filePath => p.join(directory, 'linked.log');
@@ -60,8 +65,17 @@ class LinkedDiagnostics {
   Future<void> _writing = Future.value();
   int? _size;
 
+  /// 退出应用时停止记录
+  bool _closed = false;
+
+  /// 以详细日志级别创建、仍在接收其音频日志的播放器及其平时的日志级别
+  final Map<
+    Player,
+    ({MPVLogLevel normal, StreamSubscription<PlayerLog> logs})
+  >
+  _verbose = {};
+
   Player? _player;
-  StreamSubscription<PlayerLog>? _logSubscription;
   String? _lastProperties;
   int _propertiesAt = 0;
 
@@ -69,7 +83,14 @@ class LinkedDiagnostics {
     if (value == enabled.value) return;
     if (!value) {
       log('diagnostics off');
-      _detach();
+      _player = null;
+      _lastProperties = null;
+      // 原生端仍会按详细级别产生日志，恢复为平时的级别
+      for (final MapEntry(key: player, value: entry) in _verbose.entries) {
+        entry.logs.cancel();
+        _requestLogLevel(player, entry.normal);
+      }
+      _verbose.clear();
     }
     enabled.value = value;
     GStorage.setting.put(_enabledKey, value);
@@ -82,7 +103,7 @@ class LinkedDiagnostics {
 
   /// 记录一行：本地时间、本机单调时钟（微秒）与内容
   void log(String text) {
-    if (!isOn) return;
+    if (!isOn || _closed) return;
     _buffer
       ..write(DateTime.now().toIso8601String())
       ..write(' ')
@@ -92,20 +113,48 @@ class LinkedDiagnostics {
     _flushTimer ??= Timer(_flushInterval, flush);
   }
 
+  /// 以 [logLevel] 创建的播放器（[normal] 为平时的级别），在打开媒体前调用，
+  /// 以免漏掉起播时音频输出初始化的日志：接收其音频相关日志（标注播放器），
+  /// 关闭记录时恢复平时的级别
+  void attach(Player player, MPVLogLevel normal) {
+    if (player.configuration.logLevel == normal) return;
+    if (!isOn || _closed) {
+      // 创建期间已关闭
+      _requestLogLevel(player, normal);
+      return;
+    }
+    _verbose.removeWhere((key, entry) {
+      if (!key.disposed) return false;
+      entry.logs.cancel();
+      return true;
+    });
+    final tag = player.hashCode;
+    _verbose[player] = (
+      normal: normal,
+      logs: player.stream.log.listen((entry) {
+        if (_isAudioLog(entry)) {
+          log('mpv #$tag ${entry.prefix} ${entry.level} ${entry.text.trim()}');
+        }
+      }),
+    );
+  }
+
+  static void _requestLogLevel(Player player, MPVLogLevel level) {
+    if (player.disposed) return;
+    final name = level.name.toNativeUtf8(allocator: calloc);
+    NativePlayer.mpv.mpv_request_log_messages(player.ctx, name);
+    calloc.free(name);
+  }
+
   /// 本端正在使用的播放器（[role] 为主控或跟随），每次采样时调用：换了播放器时
-  /// 记录其音频属性并接收其音频相关日志，之后定期复查属性的变化
+  /// 记录其音频属性，之后定期复查属性的变化
   void observe(Player player, String role) {
-    if (!isOn || player.disposed) return;
+    if (!isOn || _closed || player.disposed) return;
     final now = LinkClock.nowUs;
     if (!identical(player, _player)) {
-      _detach();
       _player = player;
-      log('player $role ${player.hashCode}');
-      _logSubscription = player.stream.log.listen((entry) {
-        if (_isAudioLog(entry)) {
-          log('mpv ${entry.prefix} ${entry.level} ${entry.text.trim()}');
-        }
-      });
+      _lastProperties = null;
+      log('player $role #${player.hashCode}');
     } else if (now - _propertiesAt < _propertyIntervalUs) {
       return;
     }
@@ -127,11 +176,17 @@ class LinkedDiagnostics {
       entry.prefix == 'audio' ||
       (entry.prefix == 'cplayer' && entry.text.contains('AO'));
 
-  void _detach() {
-    _logSubscription?.cancel();
-    _logSubscription = null;
+  /// 退出应用前调用：停止记录并等待已有内容写入完成
+  Future<void> close() {
+    if (_closed) return _writing;
+    log('exit');
+    _closed = true;
+    for (final entry in _verbose.values) {
+      entry.logs.cancel();
+    }
+    _verbose.clear();
     _player = null;
-    _lastProperties = null;
+    return flush();
   }
 
   /// 把累积的内容追加写入文件

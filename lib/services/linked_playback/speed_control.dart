@@ -37,11 +37,11 @@ class LinkedSpeedControl {
   static const _minShift = 0.002;
   static const _maxShift = 0.04;
 
-  /// 倍速改变达到此值时等待管线瞬态过去
-  static const holdThreshold = 0.001;
+  /// 倍速改变达到此值（按 [step] 计的步数）时等待管线瞬态过去
+  static const _holdSteps = 10;
   static const holdUs = 750000;
 
-  /// 两次更新间隔的上限，超过时按此计（如暂停、卡顿后恢复）
+  /// 频差积分时两次更新间隔的上限，超过时按此计（如采样中断后恢复）
   static const _maxDtUs = 500000;
 
   double _integral = 0;
@@ -70,11 +70,16 @@ class LinkedSpeedControl {
     _pendingUs += deltaUs;
   }
 
-  /// 已按 [previous] → [current] 改变倍速
+  /// 已按 [previous] → [current] 改变倍速；按步数比较，避免浮点误差漏判
   void onApplied(double previous, double current, int now) {
-    if ((current - previous).abs() >= holdThreshold) {
+    if (((current - previous).abs() / step).round() >= _holdSteps) {
       _holdUntil = now + holdUs;
     }
+  }
+
+  /// 播放未推进（缓冲）：其间开环移动不计入，恢复后从下次更新起重新计时
+  void suspend() {
+    _lastAt = null;
   }
 
   /// 停止修正（定位、跳转、暂停等），保留已学到的频差；[keepShift] 为 false 时
@@ -106,10 +111,11 @@ class LinkedSpeedControl {
   }) {
     final last = _lastAt;
     _lastAt = now;
-    final dt = last == null ? 0 : min(now - last, _maxDtUs);
-    // 上次更新以来开环移动的量
-    if (_shift != 0 && dt > 0) {
-      final moved = -_shift * rate * dt;
+    final elapsed = last == null ? 0 : now - last;
+    final dt = min(elapsed, _maxDtUs);
+    // 上次更新以来开环移动的量，按实际播放的时长结算
+    if (_shift != 0 && elapsed > 0) {
+      final moved = -_shift * rate * elapsed;
       _pendingUs = _pendingUs > 0
           ? max(0.0, _pendingUs - moved)
           : min(0.0, _pendingUs - moved);
