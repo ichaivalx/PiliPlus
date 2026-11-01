@@ -6,10 +6,24 @@ import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/utils/desktop/window_controller.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:ffi/ffi.dart';
+import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart'
+    show isDesktopFullScreen;
 import 'package:flutter/gestures.dart'
-    show kPrimaryButton, kSecondaryButton;
+    show
+        GestureBinding,
+        PointerCancelEvent,
+        PointerDownEvent,
+        PointerEvent,
+        PointerUpEvent,
+        kPrimaryButton,
+        kSecondaryButton;
 import 'package:flutter/services.dart'
-    show KeyDownEvent, KeyEvent, KeyUpEvent, LogicalKeyboardKey;
+    show
+        HardwareKeyboard,
+        KeyDownEvent,
+        KeyEvent,
+        KeyUpEvent,
+        LogicalKeyboardKey;
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -17,7 +31,11 @@ import 'package:material_ui/material_ui.dart';
 /// 期间阻止系统关闭显示器或睡眠（显示器的扬声器随之断电）。按 Esc 或鼠标左、
 /// 右键点击退出，移动鼠标与滚轮不退出；退出时恢复进入前的窗口状态
 class Blackout {
-  Blackout._();
+  Blackout._() {
+    if (isSupported) {
+      GestureBinding.instance.pointerRouter.addGlobalRoute(_trackPointer);
+    }
+  }
 
   static final instance = Blackout._();
 
@@ -26,29 +44,73 @@ class Blackout {
   /// 进入时窗口不是全屏，退出时恢复
   bool _enteredFullScreen = false;
 
+  /// 因最小化或隐藏而结束，窗口重新显示时再恢复为非全屏
+  bool _restoreOnShow = false;
+
   _PowerRequest? _power;
 
   /// 用于退出的这次点击：按下后抬起时退出，整个手势由黑屏层接住
   int? _exitPointer;
 
-  /// 按 Esc 退出后，其抬起也不再交给其他控件
-  bool _swallowEscapeUp = false;
+  /// 按下中的指针：要进入时有指针按下（如正在拖动进度条），等全部抬起、这次
+  /// 操作照常结束后再进入
+  final Set<int> _pressed = {};
+  bool _pending = false;
+
+  /// 由黑屏接住的按键：其重复与抬起在退出后也不再交给其他控件，直到松开
+  final Set<LogicalKeyboardKey> _swallowed = {};
 
   static bool get isSupported => PlatformUtils.isDesktop;
 
+  void _trackPointer(PointerEvent event) {
+    if (event is PointerDownEvent) {
+      _pressed.add(event.pointer);
+    } else if (event is PointerUpEvent || event is PointerCancelEvent) {
+      _pressed.remove(event.pointer);
+      if (_pending && _pressed.isEmpty) {
+        _pending = false;
+        _activate();
+      }
+    }
+  }
+
   void enter() {
     if (!isSupported || active.value) return;
+    if (_pressed.isNotEmpty) {
+      _pending = true;
+      return;
+    }
+    _activate();
+  }
+
+  void _activate() {
+    if (active.value) return;
+    final player = PlPlayerController.instance;
     // 桌面小窗时不进入
-    if (PlPlayerController.instance?.isDesktopPip ?? false) return;
+    if (player?.isDesktopPip ?? false) return;
     final window = WindowController.instance.window;
     if (window == null || !window.isVisible) return;
+    _restoreOnShow = false;
     _enteredFullScreen = !window.isFullScreen;
     if (_enteredFullScreen) window.isFullScreen = true;
     if (Platform.isWindows) _power = _PowerRequest.create();
+    // 按住中的键的抬起将由黑屏接住，其长按效果（连调音量、临时倍速、连续快退）
+    // 在此结束
+    final pressed = HardwareKeyboard.instance.logicalKeysPressed;
+    _swallowed.addAll(pressed);
+    if (player != null) {
+      player.cancelLongPressTimer();
+      if (player.longPressStatus.value) player.setLongPressStatus(false);
+      if (pressed.contains(LogicalKeyboardKey.arrowLeft)) {
+        player.isSeeking.value = false;
+      }
+    }
     active.value = true;
   }
 
-  void exit() {
+  /// [restoreWindow] 为 false 时（最小化、隐藏）窗口等重新显示时再恢复
+  void exit({bool restoreWindow = true}) {
+    _pending = false;
     if (!active.value) return;
     active.value = false;
     _exitPointer = null;
@@ -56,9 +118,26 @@ class Blackout {
     _power = null;
     if (_enteredFullScreen) {
       _enteredFullScreen = false;
-      WindowController.instance.window?.isFullScreen = false;
+      if (restoreWindow) {
+        _restoreWindow();
+      } else {
+        _restoreOnShow = true;
+      }
     }
     PlPlayerController.instance?.controls = true;
+  }
+
+  /// 恢复为非全屏；播放器此时处于窗口全屏（如期间打开了自动全屏的视频）则保持
+  void _restoreWindow() {
+    if (isDesktopFullScreen) return;
+    WindowController.instance.window?.isFullScreen = false;
+  }
+
+  /// 窗口在最小化或隐藏后重新显示
+  void onWindowShown() {
+    if (!_restoreOnShow || active.value) return;
+    _restoreOnShow = false;
+    _restoreWindow();
   }
 
   /// 黑屏期间窗口被其他操作退出全屏（如播放结束后自动退出全屏）：重新全屏，
@@ -69,21 +148,25 @@ class Blackout {
     WindowController.instance.window?.isFullScreen = true;
   }
 
-  /// 最先处理的按键：黑屏期间全部由黑屏接住，Esc 退出
+  /// 最先处理的按键：黑屏期间全部由黑屏接住，Esc 退出；接住的键在退出后松开前
+  /// 的重复与抬起也接住
   bool handleKey(KeyEvent event) {
-    if (event.logicalKey == LogicalKeyboardKey.escape &&
-        event is KeyUpEvent &&
-        _swallowEscapeUp) {
-      _swallowEscapeUp = false;
+    final key = event.logicalKey;
+    if (active.value) {
+      if (event is KeyDownEvent) {
+        _swallowed.add(key);
+        if (key == LogicalKeyboardKey.escape) exit();
+      } else if (event is KeyUpEvent) {
+        _swallowed.remove(key);
+      }
       return true;
     }
-    if (!active.value) return false;
-    if (event.logicalKey == LogicalKeyboardKey.escape &&
-        event is KeyDownEvent) {
-      _swallowEscapeUp = true;
-      exit();
+    if (event is KeyDownEvent) {
+      _swallowed.remove(key);
+      return false;
     }
-    return true;
+    if (event is KeyUpEvent) return _swallowed.remove(key);
+    return _swallowed.contains(key);
   }
 }
 

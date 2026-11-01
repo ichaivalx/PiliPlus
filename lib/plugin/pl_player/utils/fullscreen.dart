@@ -8,6 +8,9 @@ import 'package:flutter/services.dart'
 
 bool _isDesktopFullScreen = false;
 
+/// 播放器处于窗口全屏（非应用内全屏）
+bool get isDesktopFullScreen => _isDesktopFullScreen;
+
 void enterDesktopFullScreen({bool inAppFullScreen = false}) {
   if (!inAppFullScreen && !_isDesktopFullScreen) {
     WindowController.instance.window?.isFullScreen = _isDesktopFullScreen =

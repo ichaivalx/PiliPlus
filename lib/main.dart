@@ -392,14 +392,13 @@ class MyApp extends StatelessWidget {
         child: child,
       );
     }
-    // 性能浮层位于最上方且不响应操作；结构不随开关变化，页面与小窗层不被
-    // 重新挂载（GetMaterialApp 的 showPerformanceOverlay 会改变结构）
+    // 性能浮层位于页面之上（仅次于黑屏）且不响应操作；结构不随开关变化，页面
+    // 与小窗层不被重新挂载（GetMaterialApp 的 showPerformanceOverlay 会改变结构）
     return Stack(
       alignment: Alignment.topLeft,
       fit: StackFit.expand,
       children: [
         child,
-        if (PlatformUtils.isDesktop) const BlackoutLayer(),
         Positioned(
           top: 0,
           left: 0,
@@ -413,6 +412,8 @@ class MyApp extends StatelessWidget {
             ),
           ),
         ),
+        // 黑屏位于最上方，盖住性能浮层
+        if (PlatformUtils.isDesktop) const BlackoutLayer(),
       ],
     );
   }

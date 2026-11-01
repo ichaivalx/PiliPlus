@@ -52,11 +52,13 @@ class WindowController {
       case WindowFocusedEvent():
         // https://github.com/leanflutter/window_manager/issues/571
         _setOpacityOnWindows(1.0);
+        Blackout.instance.onWindowShown();
         break;
       case WindowBlurredEvent():
         break;
       case WindowMinimizedEvent():
-        Blackout.instance.exit();
+        // 保持最小化，重新显示时再恢复窗口
+        Blackout.instance.exit(restoreWindow: false);
         break;
       case WindowMaximizedEvent():
         windowMaximizedPref = _isMaximized = true;
@@ -65,6 +67,7 @@ class WindowController {
         if (_isMaximized) {
           windowMaximizedPref = _isMaximized = false;
         }
+        Blackout.instance.onWindowShown();
         break;
       case WindowMovedEvent():
         _moveTimer?.cancel();
@@ -165,7 +168,7 @@ class WindowController {
   }
 
   void _hide() {
-    Blackout.instance.exit();
+    Blackout.instance.exit(restoreWindow: false);
     _pauseIfNeeded();
     // https://github.com/leanflutter/window_manager/issues/571
     _setOpacityOnWindows(0.0);
@@ -176,6 +179,7 @@ class WindowController {
     _window
       ?..focus()
       ..show();
+    Blackout.instance.onWindowShown();
     _playIfNeeded();
   }
 
