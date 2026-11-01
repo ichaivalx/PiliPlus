@@ -14,6 +14,8 @@ import 'package:flutter/gestures.dart'
         PointerCancelEvent,
         PointerDownEvent,
         PointerEvent,
+        PointerPanZoomEndEvent,
+        PointerPanZoomStartEvent,
         PointerUpEvent,
         kPrimaryButton,
         kSecondaryButton;
@@ -52,8 +54,8 @@ class Blackout {
   /// 用于退出的这次点击：按下后抬起时退出，整个手势由黑屏层接住
   int? _exitPointer;
 
-  /// 按下中的指针：要进入时有指针按下（如正在拖动进度条），等全部抬起、这次
-  /// 操作照常结束后再进入
+  /// 按下中的指针与进行中的触摸板手势：要进入时有（如正在拖动进度条、双指
+  /// 滑动），等全部结束、这次操作照常完成后再进入
   final Set<int> _pressed = {};
   bool _pending = false;
 
@@ -63,9 +65,11 @@ class Blackout {
   static bool get isSupported => PlatformUtils.isDesktop;
 
   void _trackPointer(PointerEvent event) {
-    if (event is PointerDownEvent) {
+    if (event is PointerDownEvent || event is PointerPanZoomStartEvent) {
       _pressed.add(event.pointer);
-    } else if (event is PointerUpEvent || event is PointerCancelEvent) {
+    } else if (event is PointerUpEvent ||
+        event is PointerCancelEvent ||
+        event is PointerPanZoomEndEvent) {
       _pressed.remove(event.pointer);
       if (_pending && _pressed.isEmpty) {
         _pending = false;
