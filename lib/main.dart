@@ -20,6 +20,7 @@ import 'package:PiliPlus/services/mini_player/mini_player_observer.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/date_utils.dart';
+import 'package:PiliPlus/utils/desktop/blackout.dart';
 import 'package:PiliPlus/utils/desktop/calc_window_position.dart';
 import 'package:PiliPlus/utils/device_utils.dart';
 import 'package:PiliPlus/utils/extension/core_palettes_ext.dart';
@@ -239,6 +240,8 @@ void _configureImageCache() {
 }
 
 KeyEventResult _onKeyEvent(KeyEvent event) {
+  // 黑屏期间的按键（含退出用的 Esc）不再交给页面
+  if (Blackout.instance.handleKey(event)) return .handled;
   if (event is KeyDownEvent && event.logicalKey == .escape) {
     _onBack();
     return .handled;
@@ -396,6 +399,7 @@ class MyApp extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         child,
+        if (PlatformUtils.isDesktop) const BlackoutLayer(),
         Positioned(
           top: 0,
           left: 0,

@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'package:PiliPlus/pages/common/common_intro_controller.dart';
 import 'package:PiliPlus/pages/video/introduction/ugc/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
+import 'package:PiliPlus/utils/desktop/blackout.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
@@ -227,6 +228,10 @@ class PlayerFocus extends StatelessWidget {
               ..controlsLock.value = false
               ..showControls.value = false;
           }
+          return true;
+
+        case LogicalKeyboardKey.keyB when Blackout.isSupported:
+          Blackout.instance.enter();
           return true;
 
         case LogicalKeyboardKey.keyM:

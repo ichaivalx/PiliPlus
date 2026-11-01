@@ -49,6 +49,7 @@ import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show shutdownTimerService, ShutdownPanel;
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/accounts/account.dart';
+import 'package:PiliPlus/utils/desktop/blackout.dart';
 import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
@@ -360,6 +361,9 @@ class HeaderControlState extends State<HeaderControl>
   /// 移到顶部栏但放不下的倍速、字幕等，改在设置面板中提供
   Set<BottomControlType> _hiddenExtras = const {};
 
+  /// 黑屏按钮放不下，改在设置面板中提供
+  bool _blackoutHidden = false;
+
   List<Widget> _hiddenExtraTiles(ThemeData theme) => [
     for (final type in _extraPriority)
       if (_hiddenExtras.contains(type))
@@ -551,6 +555,16 @@ class HeaderControlState extends State<HeaderControl>
               padding: const EdgeInsets.symmetric(vertical: 14),
               children: [
                 ..._hiddenExtraTiles(theme),
+                if (_blackoutHidden)
+                  ListTile(
+                    dense: true,
+                    onTap: () {
+                      Get.back();
+                      Blackout.instance.enter();
+                    },
+                    leading: const Icon(Icons.dark_mode_outlined, size: 20),
+                    title: const Text('黑屏', style: titleStyle),
+                  ),
                 ListTile(
                   dense: true,
                   onTap: () {
@@ -1967,25 +1981,34 @@ class HeaderControlState extends State<HeaderControl>
                     ),
                 ],
               ),
-              // 底栏显示联动控件时倍速、字幕等移到这里，放不下的改在设置面板中
+              // 底栏显示联动控件时倍速、字幕等移到这里；与桌面端的黑屏按钮一起
+              // 放不下时改在设置面板中
               right: Obx(() {
                 final extras = LinkedBarControls.showsFor(plPlayerController)
                     ? PlayerExtraItem.typesFor(plPlayerController)
                     : const <BottomControlType>[];
+                final blackout = Blackout.isSupported;
                 return PriorityRow(
                   maxWidth:
                       constraints.maxWidth -
                       btnWidth * (showHome ? 2 : 1) -
                       (title == null ? 0 : _minTitleWidth),
-                  optional: extras.length,
+                  optional: extras.length + (blackout ? 1 : 0),
                   priorities: [
                     for (final type in _extraPriority)
                       if (extras.indexOf(type) case final index
                           when index >= 0)
                         index,
+                    if (blackout) extras.length,
                   ],
-                  onHidden: (hidden) =>
-                      _hiddenExtras = {for (final i in hidden) extras[i]},
+                  onHidden: (hidden) {
+                    _hiddenExtras = {
+                      for (final i in hidden)
+                        if (i < extras.length) extras[i],
+                    };
+                    _blackoutHidden =
+                        blackout && hidden.contains(extras.length);
+                  },
                   children: [
                     for (final type in extras)
                       PlayerExtraItem(
@@ -1995,6 +2018,21 @@ class HeaderControlState extends State<HeaderControl>
                         width: btnWidth,
                         height: btnHeight,
                         showViewPoints: widget.showViewPoints,
+                      ),
+                    if (blackout)
+                      SizedBox(
+                        width: btnWidth,
+                        height: btnHeight,
+                        child: IconButton(
+                          tooltip: '黑屏（B）',
+                          style: btnStyle,
+                          onPressed: Blackout.instance.enter,
+                          icon: const Icon(
+                            Icons.dark_mode_outlined,
+                            size: 19,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
                     // show current datetime
                     ...?timeBatteryWidgets,

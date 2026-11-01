@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
+import 'package:PiliPlus/utils/desktop/blackout.dart';
 import 'package:PiliPlus/utils/desktop/tray_controller.dart';
 import 'package:PiliPlus/utils/device_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
@@ -55,6 +56,7 @@ class WindowController {
       case WindowBlurredEvent():
         break;
       case WindowMinimizedEvent():
+        Blackout.instance.exit();
         break;
       case WindowMaximizedEvent():
         windowMaximizedPref = _isMaximized = true;
@@ -79,6 +81,7 @@ class WindowController {
       case WindowEnteredFullScreenEvent():
         break;
       case WindowExitedFullScreenEvent():
+        Blackout.instance.onWindowExitedFullScreen();
         break;
       case WindowCloseRequestedEvent():
         event.request.cancel();
@@ -162,6 +165,7 @@ class WindowController {
   }
 
   void _hide() {
+    Blackout.instance.exit();
     _pauseIfNeeded();
     // https://github.com/leanflutter/window_manager/issues/571
     _setOpacityOnWindows(0.0);

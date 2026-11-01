@@ -27,6 +27,7 @@ import 'package:PiliPlus/pages/video/widgets/header_control.dart'
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/date_utils.dart';
+import 'package:PiliPlus/utils/desktop/blackout.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
@@ -137,6 +138,12 @@ class _AudioPageState extends State<AudioPage>
               );
             },
           ),
+          if (Blackout.isSupported)
+            IconButton(
+              tooltip: '黑屏',
+              onPressed: Blackout.instance.enter,
+              icon: const Icon(Icons.dark_mode_outlined, size: 22),
+            ),
           IconButton(
             tooltip: '定时关闭',
             onPressed: () => shutdownTimerService.showScheduleExitDialog(
