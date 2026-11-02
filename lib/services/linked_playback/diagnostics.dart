@@ -43,6 +43,7 @@ class LinkedDiagnostics {
     'audio-pitch-correction',
     'audio-delay',
     'speed',
+    'pitch',
   ];
 
   final RxBool enabled = RxBool(

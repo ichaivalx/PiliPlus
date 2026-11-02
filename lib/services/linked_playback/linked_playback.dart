@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 
+import 'package:PiliPlus/services/linked_playback/band.dart';
 import 'package:PiliPlus/services/linked_playback/calibration.dart';
 import 'package:PiliPlus/services/linked_playback/calibration_recorder.dart';
 import 'package:PiliPlus/services/linked_playback/desktop_volume.dart';
@@ -121,6 +122,9 @@ class LinkedPlayback {
     linkedCalibration.start(leader);
     return true;
   }
+
+  /// 主控：设置按频段对齐的位置（0 中高频 ~ 1 低频），在线跟随端的偏移随之平移
+  void setBandWeight(double value) => linkedBand.setWeight(value, _leader);
 
   /// 当前调节的延迟偏移：跟随端为本机的，主控为当前跟随端的
   int? get currentOffsetUs => role.value == LinkedRole.follower
@@ -249,7 +253,11 @@ class LinkedPlayback {
     shutdownTimerService
       ..addExpiredListener(_onShutdown)
       ..addExitTask(linkedDiagnostics.close);
-    peers.listen((_) => _updateService());
+    peers.listen((_) {
+      _updateService();
+      // 跟随端回报偏移（含重新连接）后确认已发出的频段平移，按当前位置补齐
+      if (_leader case final leader?) linkedBand.apply(leader);
+    });
     leader.listen((_) => _updateService());
     syncOn.listen((_) => _updateService());
     if (enabled.value) {
@@ -374,7 +382,9 @@ class LinkedPlayback {
   void setOffset(int value) {
     final us = (value / offsetStepUs).round() * offsetStepUs;
     if (role.value == LinkedRole.leader) {
-      if (selectedPeer case final peer?) _leader?.setOffset(peer.id, us);
+      if ((selectedPeer, _leader) case (final peer?, final leader?)) {
+        linkedBand.setManualOffset(leader, peer.id, us);
+      }
     } else if (_saveOffset(us)) {
       _follower?.updateOffset(us);
     }
@@ -409,12 +419,73 @@ class LinkedPlayback {
   }
 
   void _onSystemVolume(double value, {required bool self}) {
+    if (_calibrationVolumeHeld) {
+      // 校准临时提高、恢复音量引起的变化不同步、不保存；用户自己调整时以其为准，
+      // 结束后不再恢复
+      if (self) return;
+      _calibrationVolume = null;
+    }
     if (_leader case final leader?) {
       leaderVolume.value = value;
       leader.onLocalVolume(value);
     } else {
       _follower?.onSystemVolume(value, self: self);
     }
+  }
+
+  /// 校准期间临时提高前的系统媒体音量（安卓），未提高时为空
+  double? _calibrationVolume;
+
+  /// 校准临时调整音量期间（含恢复后等待系统回报的一小段时间）：本机设置引起
+  /// 的音量变化不同步给对端、不回报、不保存
+  bool _calibrationVolumeHeld = false;
+  int _calibrationVolumeToken = 0;
+
+  /// 恢复音量后继续忽略本机设置引起的音量回报的时间
+  static const _calibrationVolumeSettle = Duration(seconds: 1);
+
+  /// 校准期间把本机音量临时提高到 [target]（原音量更低时）。安卓提高系统媒体
+  /// 音量；桌面端的本机音量即播放器音量，由测试音播放器直接按目标音量播放，
+  /// 不改动页面的播放器
+  Future<void> raiseCalibrationVolume(double target) async {
+    if (!Platform.isAndroid) return;
+    final token = ++_calibrationVolumeToken;
+    _calibrationVolumeHeld = true;
+    final current = await _getSystemVolume();
+    if (token != _calibrationVolumeToken ||
+        current == null ||
+        current >= target) {
+      return;
+    }
+    _calibrationVolume = current;
+    await _setSystemVolume(target);
+  }
+
+  /// 校准结束：恢复临时提高前的音量，完成于音量设置之后；稍后重新按实际
+  /// 音量同步
+  Future<void> restoreCalibrationVolume() async {
+    if (!_calibrationVolumeHeld) return;
+    final token = ++_calibrationVolumeToken;
+    final original = _calibrationVolume;
+    _calibrationVolume = null;
+    if (original != null) await _setSystemVolume(original);
+    _settleCalibrationVolume(token);
+  }
+
+  Future<void> _settleCalibrationVolume(int token) async {
+    await Future<void>.delayed(_calibrationVolumeSettle);
+    if (token != _calibrationVolumeToken) return;
+    _calibrationVolumeHeld = false;
+    if (await _getSystemVolume() case final value?) {
+      _onSystemVolume(value, self: true);
+    }
+  }
+
+  /// 联动同步、设置页等正常的音量设置：发生在校准临时提高期间时以其为准，
+  /// 结束后不再恢复
+  Future<double?> _setLinkedVolume(double value) {
+    _calibrationVolume = null;
+    return _setSystemVolume(value);
   }
 
   /// 本机媒体音量：安卓为系统媒体音量，桌面端为播放器音量
@@ -497,6 +568,8 @@ class LinkedPlayback {
     _follower = null;
     _abandonHandedBack();
     return Future.wait<void>([
+          // 先结束进行中的校准：通知跟随端停止，并等本机音量恢复
+          if (leader != null) linkedCalibration.endWithSession(),
           if (leader != null) leader.dispose(),
           if (follower != null) follower.dispose(),
         ])
@@ -599,8 +672,10 @@ class LinkedPlayback {
           rttMs: rttMs,
           volume: volume,
           leaderVolume: leaderVolume,
-          setSystemVolume: _setSystemVolume,
+          setSystemVolume: _setLinkedVolume,
           onVolumeSaved: _saveVolume,
+          raiseCalibrationVolume: raiseCalibrationVolume,
+          restoreCalibrationVolume: restoreCalibrationVolume,
         );
         if (await _getSystemVolume() case final value?) {
           volume.value = volume.value.copyWith(actual: value);
@@ -621,6 +696,7 @@ class LinkedPlayback {
     error.value = null;
     _abandonHandedBack();
     if (_leader case final leader?) {
+      linkedCalibration.endWithSession();
       leader.dispose(handBack: handBack);
       if (handBack) _handedBack = leader;
     }

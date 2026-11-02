@@ -167,18 +167,16 @@ class LinkedPlaybackPanel extends StatelessWidget {
     ];
   }
 
-  /// 主控的一键声学校准，不能校准时置灰并说明原因
+  /// 主控的校准面板：按频段对齐、校准时临时提高音量与一键声学校准
   Widget _calibration() {
-    final unavailable = linkedPlayback.calibrationUnavailable;
     return ListTile(
-      enabled: unavailable == null,
       onTap: openLinkedCalibration,
       leading: const Icon(Icons.graphic_eq_rounded),
-      title: const Text('一键声学校准'),
+      title: const Text('声学校准与按频段对齐'),
       subtitle: Text(
-        unavailable ??
+        linkedPlayback.calibrationUnavailable ??
             '主控用麦克风录下各设备依次发出的提示音，自动设置各跟随端的延迟偏移；'
-                '约需数秒，期间暂停播放，结束后恢复',
+                '可在中高频与低频之间选择按哪一段对齐',
       ),
     );
   }

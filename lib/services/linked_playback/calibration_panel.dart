@@ -1,3 +1,4 @@
+import 'package:PiliPlus/services/linked_playback/band.dart';
 import 'package:PiliPlus/services/linked_playback/calibration.dart';
 import 'package:PiliPlus/services/linked_playback/calibration_signal.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
@@ -6,10 +7,11 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
-/// 开始声学校准并显示进度与结果；不能开始时提示原因
+/// 主控的校准面板：按频段对齐、校准时临时提高音量的设置，开始声学校准并显示
+/// 进度与结果
 Future<void> openLinkedCalibration() async {
-  if (!linkedPlayback.calibrate()) {
-    SmartDialog.showToast(linkedPlayback.calibrationUnavailable ?? '暂时不能校准');
+  if (linkedPlayback.role.value != LinkedRole.leader) {
+    SmartDialog.showToast('只有主控可以校准');
     return;
   }
   final context = Get.context;
@@ -29,8 +31,6 @@ class _CalibrationDialog extends StatefulWidget {
 }
 
 class _CalibrationDialogState extends State<_CalibrationDialog> {
-  bool _closing = false;
-
   /// 面板被关闭（含未经按钮的返回）时，仍在进行的校准随之取消
   @override
   void dispose() {
@@ -38,13 +38,10 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
     super.dispose();
   }
 
-  /// 校准已取消、撤销或关闭结果时关闭对话框
+  /// 关闭面板，校准结果随之关闭
   void _close() {
-    if (_closing) return;
-    _closing = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) Navigator.of(context).pop();
-    });
+    linkedCalibration.close();
+    Navigator.of(context).pop();
   }
 
   static String _step(CalibrationStage stage) => switch (stage) {
@@ -55,10 +52,88 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
     _ => '',
   };
 
-  void _retry() {
+  void _start() {
     if (!linkedPlayback.calibrate()) {
       SmartDialog.showToast(linkedPlayback.calibrationUnavailable ?? '暂时不能校准');
     }
+  }
+
+  static String _gap(int? gap) {
+    if (gap == null) return '未实测，按 0 计';
+    final ms = (gap.abs() / 1000).toStringAsFixed(1);
+    return '低频${gap < 0 ? '早' : '晚'} $ms ms';
+  }
+
+  /// 按频段对齐：在线跟随端的偏移随滑块实时平移
+  List<Widget> _band(TextStyle? hint) {
+    final available = linkedBand.available;
+    final weight = linkedBand.weight.value;
+    final position = switch (weight) {
+      0.0 => '中高频',
+      1.0 => '低频',
+      _ => '低频 ${(weight * 100).round()}%',
+    };
+    return [
+      Text('对齐频段：$position'),
+      Text(
+        available
+            ? '低频重的内容听起来低音没对齐时往「低频」调，人声、高音没对齐时往「中高频」调；'
+                  '各跟随端的延迟偏移随之平移，手动微调的部分保留'
+            : '尚无低频的实测数据，校准后可用',
+        style: hint,
+      ),
+      Row(
+        children: [
+          Text('中高频', style: hint),
+          Expanded(
+            child: Slider(
+              divisions: 20,
+              value: weight,
+              label: '${(weight * 100).round()}%',
+              onChanged: available ? linkedPlayback.setBandWeight : null,
+            ),
+          ),
+          Text('低频', style: hint),
+        ],
+      ),
+      if (available)
+        Text(
+          [
+            '本机 ${_gap(linkedBand.leaderGap.value)}',
+            for (final peer in linkedPlayback.adjustablePeers)
+              '${peer.name} ${_gap(linkedBand.gaps[peer.id])}',
+          ].join('；'),
+          style: hint,
+        ),
+    ];
+  }
+
+  /// 校准时临时提高各设备的音量
+  List<Widget> _boost(TextStyle? hint) {
+    final on = linkedCalibration.boost.value;
+    final level = linkedCalibration.boostLevel.value;
+    return [
+      Row(
+        children: [
+          const Expanded(child: Text('校准时临时提高音量')),
+          Switch(value: on, onChanged: linkedCalibration.setBoost),
+        ],
+      ),
+      Text(
+        on
+            ? '音量低于 ${(level * 100).round()}% 的设备校准期间临时提高到此值，结束后恢复'
+            : '按各设备当前的音量播放测试音',
+        style: hint,
+      ),
+      if (on)
+        Slider(
+          min: 0.3,
+          divisions: 7,
+          value: level.clamp(0.3, 1.0).toDouble(),
+          label: '${(level * 100).round()}%',
+          onChanged: linkedCalibration.setBoostLevel,
+        ),
+    ];
   }
 
   @override
@@ -66,26 +141,21 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
     final theme = Theme.of(context);
     return Obx(() {
       final stage = linkedCalibration.stage.value;
-      if (stage == null) {
-        _close();
-        return const SizedBox.shrink();
-      }
       final running = linkedCalibration.isRunning;
       final done = stage == CalibrationStage.done;
       final devices = linkedCalibration.devices;
       final hint = theme.textTheme.bodySmall?.copyWith(
         color: theme.colorScheme.outline,
       );
+      final unavailable = linkedPlayback.calibrationUnavailable;
       return PopScope(
         canPop: !running,
         onPopInvokedWithResult: (didPop, _) {
-          if (didPop) {
-            _closing = true;
-            linkedCalibration.close();
-          }
+          if (didPop) linkedCalibration.close();
         },
         child: AlertDialog(
           title: Text(switch (stage) {
+            null => '声学校准',
             CalibrationStage.done => '校准完成',
             CalibrationStage.failed => '校准未完成',
             _ => '正在校准',
@@ -99,14 +169,22 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
                 spacing: 8,
                 children: [
                   if (running) ...[
-                    Text(_step(stage)),
+                    Text(_step(stage!)),
                     LinearProgressIndicator(
                       value: linkedCalibration.progress.value,
                     ),
                   ],
-                  if (linkedCalibration.message.value case final message?)
+                  if (stage == null)
+                    Text(
+                      unavailable ??
+                          '主控用麦克风录下各设备依次发出的提示音，自动设置各跟随端的'
+                              '延迟偏移；约需十几秒，期间暂停播放，结束后恢复',
+                      style: hint,
+                    ),
+                  if (linkedCalibration.message.value case final message?
+                      when stage == CalibrationStage.failed)
                     Text(message),
-                  if (stage != CalibrationStage.failed)
+                  if (running || done)
                     for (final device in devices)
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -121,16 +199,34 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
                           ),
                           Flexible(
                             flex: done ? 2 : 1,
-                            child: Text(
-                              done ? device.result : device.status,
-                              textAlign: TextAlign.end,
-                              style: device.isReference ? hint : null,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  done ? device.result : device.status,
+                                  textAlign: TextAlign.end,
+                                  style: device.isReference ? hint : null,
+                                ),
+                                if (done)
+                                  if (device.lowResult case final low?)
+                                    Text(
+                                      low,
+                                      textAlign: TextAlign.end,
+                                      style: hint,
+                                    ),
+                              ],
                             ),
                           ),
                         ],
                       ),
                   if (running)
-                    Text('请保持安静，各设备会依次发出提示音', style: hint),
+                    Text('请保持安静，各设备会依次发出提示音', style: hint)
+                  else ...[
+                    const Divider(height: 8),
+                    ..._band(hint),
+                    const Divider(height: 8),
+                    ..._boost(hint),
+                  ],
                 ],
               ),
             ),
@@ -146,22 +242,19 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
                 onPressed: linkedCalibration.undo,
                 child: const Text('撤销'),
               ),
-              TextButton(onPressed: _retry, child: const Text('重新校准')),
-              TextButton(
-                onPressed: linkedCalibration.close,
-                child: const Text('完成'),
-              ),
+              TextButton(onPressed: _start, child: const Text('重新校准')),
+              TextButton(onPressed: _close, child: const Text('完成')),
             ] else ...[
               if (linkedCalibration.needsSettings.value)
                 TextButton(
                   onPressed: openAppSettings,
                   child: const Text('打开设置'),
                 ),
+              TextButton(onPressed: _close, child: const Text('关闭')),
               TextButton(
-                onPressed: linkedCalibration.close,
-                child: const Text('关闭'),
+                onPressed: unavailable == null ? _start : null,
+                child: Text(stage == null ? '开始校准' : '重试'),
               ),
-              TextButton(onPressed: _retry, child: const Text('重试')),
             ],
           ],
         ),

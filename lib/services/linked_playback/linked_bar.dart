@@ -5,7 +5,6 @@ import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/services/linked_playback/calibration_panel.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart';
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
-import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -95,7 +94,7 @@ class LinkedBarControls extends StatelessWidget {
       final (:linkable, :peers) = _state(controller);
       if (!linkable) return const SizedBox.shrink();
       final groups = _groups(metrics);
-      // 主控有跟随端但同步关闭：调节控件不显示，校准按钮置灰说明原因
+      // 主控有跟随端但同步关闭：调节控件不显示，校准按钮仍可打开校准面板
       final idleCalibrate =
           groups.calibrate &&
           peers == 0 &&
@@ -921,8 +920,8 @@ class _LinkedOffsetButtons extends StatelessWidget {
   }
 }
 
-/// 主控的校准按钮：不能校准时置灰，悬停查看原因，点击时提示原因（点击由按钮
-/// 接住，不会落到播放器上）
+/// 主控的校准按钮：打开校准面板（按频段对齐、开始校准；暂时不能校准时面板中
+/// 说明原因），点击由按钮接住，不会落到播放器上
 class _LinkedCalibrateButton extends StatelessWidget {
   const _LinkedCalibrateButton({
     required this.metrics,
@@ -938,26 +937,18 @@ class _LinkedCalibrateButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Obx(() {
-      final unavailable = linkedPlayback.calibrationUnavailable;
-      return Tooltip(
-        message: unavailable ?? '一键声学校准',
-        child: _textButton(
-          _calibrateLabel,
-          () {
-            onInteraction();
-            if (unavailable == null) {
-              openLinkedCalibration();
-            } else {
-              SmartDialog.showToast(unavailable);
-            }
-          },
-          padding: padding,
-          metrics: metrics,
-          enabled: unavailable == null,
-        ),
-      );
-    });
+    return Tooltip(
+      message: '声学校准与按频段对齐',
+      child: _textButton(
+        _calibrateLabel,
+        () {
+          onInteraction();
+          openLinkedCalibration();
+        },
+        padding: padding,
+        metrics: metrics,
+      ),
+    );
   }
 }
 

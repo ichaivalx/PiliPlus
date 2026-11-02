@@ -14,7 +14,8 @@ abstract final class LinkProtocol {
 
   /// 联动协议版本，两端不同时不建立联动（同名字段的含义可能已不同）。
   /// 2：延迟偏移为实际时间（与倍速无关）、新增声学校准
-  static const version = 2;
+  /// 3：校准测试音增加两段低频扫频音、各设备间隔加大，校准安排带临时音量
+  static const version = 3;
 
   static String encode(Map<String, Object?> message) => jsonEncode(message);
 
@@ -105,7 +106,8 @@ abstract final class LinkMessageType {
   static const volumeSet = 'volumeSet';
 
   /// 主控 → 跟随端：声学校准，按安排（`id`、`devices`、`start`）在约定时刻播放
-  /// 第 `slot` 台设备的测试音
+  /// 第 `slot` 台设备的测试音；带 `volume`（0~1）时期间临时把本机音量提高到该值
+  /// （原音量更低时），结束后恢复
   static const calibrate = 'calib';
 
   /// 主控 → 跟随端：校准 `id` 结束或取消，停止测试音

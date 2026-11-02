@@ -6,6 +6,7 @@ import 'package:PiliPlus/services/linked_playback/clock.dart';
 import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/player_access.dart';
 import 'package:PiliPlus/utils/path_utils.dart';
+import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:path/path.dart' as p;
@@ -81,6 +82,17 @@ class CalibrationTone {
         if (volume.isNotEmpty) options['volume'] = volume;
       } else if (Platform.isAndroid) {
         options['ao'] = Pref.audioOutput;
+      } else if (PlatformUtils.isDesktop) {
+        // 没有打开的播放器：本机音量为保存的桌面播放器音量
+        options['volume'] = (Pref.desktopVolume * 100).toStringAsFixed(1);
+      }
+      // 校准临时提高音量：桌面端的本机音量即播放器音量，由测试音播放器直接按
+      // 目标音量播放；安卓的系统媒体音量另行提高，播放器音量通常已是 100
+      if (plan.volume case final target?) {
+        final current = double.tryParse(options['volume'] ?? '') ?? 100;
+        if (current < target * 100) {
+          options['volume'] = (target * 100).toStringAsFixed(1);
+        }
       }
       final player = _player = await Player.create(
         configuration: PlayerConfiguration(

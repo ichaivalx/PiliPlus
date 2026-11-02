@@ -42,6 +42,17 @@ abstract final class LinkedPlayer {
     return seconds == null ? null : (seconds * 1e6).round();
   }
 
+  /// 定位到 [targetUs] 并就绪后，实际起播位置超出目标的媒体时长（微秒）：有
+  /// 视频时 mpv 让音频与定位后的第一帧画面同时开始（目标之后最近的一帧，相差
+  /// 最多一帧），暂停中的画面位置即起播位置；没有视频时与目标一致。超出视为
+  /// 到位的范围（低至约 3fps 的一帧）时多半是等待就绪超时、定位尚未完成，按 0 计
+  static int landedUs(Player player, int targetUs) {
+    final pos = timePos(player);
+    if (pos == null) return 0;
+    final landed = pos - targetUs;
+    return landed >= 0 && landed <= _seekToleranceUs ? landed : 0;
+  }
+
   /// 采样耗时超过此值时采样时刻不够准确，不用于精细对齐
   static const _maxSampleCostUs = 4000;
 
@@ -140,10 +151,30 @@ abstract final class LinkedPlayer {
         targetUs <= (cached * 1e6).round() - _readyAheadUs;
   }
 
-  /// 直接设置播放器的实际速度，不改动页面记录的倍速
-  static void setSpeed(Player player, double speed) {
+  /// 直接设置播放器的实际速度为倍速 [rate] 乘以联动的微调 [factor]，不改动页面
+  /// 记录的倍速。微调以重采样实现，音调随之有同比例的微小变化：音调校正插入的
+  /// scaletempo2 在速度 1 附近约 ±0.17% 内原样复制，速度并不改变，超出后也要等
+  /// 累积偏差超出其搜索范围（约 16ms）才实际变速，而 audio-pts 按设定的速度推算，
+  /// 读数与实际声音相差可达 16ms，恢复原样复制时又跳回实际位置。
+  /// 原速时关闭音调校正，速度只经重采样，每次实际变化的只有速度，不会因速度与
+  /// pitch 先后写入的中间状态插入 scaletempo2；其他倍速由 scaletempo2 按倍速变速，
+  /// pitch 设为微调使微调部分改由重采样实现
+  static void setSpeed(Player player, double rate, double factor) {
     if (player.disposed) return;
-    player.setProperty('speed', speed.toStringAsFixed(6));
+    final original = rate == 1;
+    player
+      ..setProperty('audio-pitch-correction', original ? 'no' : 'yes')
+      ..setProperty('pitch', (original ? 1.0 : factor).toStringAsFixed(6))
+      ..setProperty('speed', (rate * factor).toStringAsFixed(6));
+  }
+
+  /// 恢复播放器的速度为页面记录的倍速，音调校正恢复默认
+  static void restoreSpeed(Player player) {
+    if (player.disposed) return;
+    player
+      ..setProperty('audio-pitch-correction', 'yes')
+      ..setProperty('pitch', '1.000000')
+      ..setProperty('speed', player.state.rate.toStringAsFixed(6));
   }
 
   /// 联动期间以音频为主时钟，结束后恢复设置中的值

@@ -45,7 +45,10 @@ class FollowerSession {
     required RxnDouble leaderVolume,
     required Future<double?> Function(double) setSystemVolume,
     required void Function(LinkedVolume) onVolumeSaved,
-  }) : _offsetUs = offsetUs {
+    required this.raiseCalibrationVolume,
+    required this.restoreCalibrationVolume,
+  }) : _offsetUs = offsetUs,
+       _biasSamples = [startBiasUs] {
     _volume = FollowerVolume(
       state: volume,
       leaderVolume: leaderVolume,
@@ -70,7 +73,10 @@ class FollowerSession {
 
   /// 起播后在此时刻测量起播偏差，用于下次起播的补偿
   static const _learnUs = 1250000;
-  static const _learnRate = 0.5;
+
+  /// 起播补偿取最近几次起播实测的理想补偿的中位数：个别起播受主控进度预热等
+  /// 影响偏差很大时不左右结果，也不在相邻两次之间来回追赶
+  static const _biasWindow = 5;
   static const _maxStartBiasUs = 300000;
   static const _learnMaxDriftMs = 300.0;
   static const _learnMaxRttMs = 50.0;
@@ -138,6 +144,13 @@ class FollowerSession {
   final RxnDouble driftMs;
   final RxnDouble rttMs;
 
+  /// 校准期间临时提高本机音量（原音量更低时），结束后恢复
+  final Future<void> Function(double) raiseCalibrationVolume;
+  final Future<void> Function() restoreCalibrationVolume;
+
+  /// 最近几次起播实测的理想补偿（微秒），以保存的补偿为初值
+  final List<int> _biasSamples;
+
   late final FollowerTransport _transport;
   late final FollowerVolume _volume;
   ClockSync get _clock => _transport.clock;
@@ -203,6 +216,10 @@ class FollowerSession {
   /// 当前定位所用的延迟偏移对应的媒体位置差；起播时与当前的不同（偏移或倍速
   /// 已变）则按差额移动
   int? _positionedOffsetUs;
+
+  /// 定位后实际的起播位置超出目标的媒体时长：有视频时音频从目标之后的第一帧
+  /// 开始播放（定位后的画面位置），超出最多一帧；起播时刻按此推迟
+  int _landedUs = 0;
 
   /// 应跟随播放而被本机暂停（音频焦点、媒体控制等），本机恢复播放后重新对齐；
   /// 属于本机的会话状态，主控切换内容时保留，期间不参与共同起播
@@ -280,6 +297,8 @@ class FollowerSession {
 
   /// 结束会话；返回的 Future 在已发出的消息（如一起停止）送达连接后完成
   Future<void> dispose() {
+    // 先解除联动：此后尚未完成的异步回调（如页面改倍速完成）不再设置速度
+    _linked = false;
     _ticker?.cancel();
     _playingSubscription?.cancel();
     _bufferingSubscription?.cancel();
@@ -566,6 +585,7 @@ class FollowerSession {
   /// 只发送身份与协议版本，主控回应同步状态确认版本一致后再建立联动
   void _onConnected() {
     _linked = false;
+    _releaseSpeed();
     _restored = false;
     // 主控可能已换，两端的频差需重新学习
     _speed.reset();
@@ -609,6 +629,7 @@ class FollowerSession {
     // 未建立联动（如协议版本不同被拒）时不提示断开
     final wasLinked = _linked;
     _linked = false;
+    _releaseSpeed();
     _stopCalibration();
     _volume.disconnect();
     _restored = false;
@@ -803,6 +824,9 @@ class FollowerSession {
   CalibrationTone? _calibrationTone;
   int? _calibrationId;
 
+  /// 本机音量已为校准临时提高，校准结束、取消或断开时恢复
+  bool _calibrationRaised = false;
+
   /// 主控开始声学校准：在约定时刻播放本机的测试音，回报其起点实际发声的时刻
   void _onCalibrate(LinkMessage message) {
     final plan = CalibrationPlan.fromJson(message);
@@ -819,6 +843,10 @@ class FollowerSession {
       return;
     }
     SmartDialog.showToast('联动播放：主控正在校准');
+    if (plan.volume case final volume?) {
+      _calibrationRaised = true;
+      raiseCalibrationVolume(volume);
+    }
     _calibrationTone = CalibrationTone(
       plan: plan,
       slot: slot,
@@ -847,6 +875,10 @@ class FollowerSession {
     _calibrationId = null;
     _calibrationTone?.stop();
     _calibrationTone = null;
+    if (_calibrationRaised) {
+      _calibrationRaised = false;
+      restoreCalibrationVolume();
+    }
   }
 
   void _setOffset(int offsetUs) {
@@ -945,15 +977,17 @@ class FollowerSession {
     if (await LinkedPlayer.waitLoaded(player, isCurrent) == null) return;
     // 定位期间延迟偏移变化时按新偏移重新定位
     int offset;
+    int destination;
     do {
       offset = _mediaOffsetUs;
-      final destination = max(0, pos - offset);
+      destination = max(0, pos - offset);
       await target.seek(Duration(microseconds: destination));
       if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) {
         return;
       }
     } while (offset != _mediaOffsetUs);
     _positionedOffsetUs = offset;
+    _landedUs = LinkedPlayer.landedUs(player, destination);
     while (!_clock.isReady) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       if (!isCurrent()) return;
@@ -971,7 +1005,7 @@ class FollowerSession {
     final generation = _generation;
     _startTimer?.cancel();
     _startTimer = LinkedPlayer.scheduleAt(
-      _clock.toLocal(leaderAt) + startBiasUs,
+      _clock.toLocal(leaderAt) + startBiasUs + (_landedUs / _rate).round(),
       () {
         _startTimer = null;
         if (generation != _generation) return;
@@ -994,7 +1028,7 @@ class FollowerSession {
     final now = LinkClock.nowUs;
     linkedDiagnostics.log(
       'started offset=$_offsetUs positioned=$_positionedOffsetUs '
-      'bias=$startBiasUs',
+      'bias=$startBiasUs landed=$_landedUs',
     );
     _endStartLoad();
     _settleUntil = now + _settleUs;
@@ -1119,7 +1153,8 @@ class FollowerSession {
       // 定位期间延迟偏移变化时重新定位
       if (offset != _mediaOffsetUs) continue;
       _positionedOffsetUs = offset;
-      final playAt = at + startBiasUs;
+      _landedUs = LinkedPlayer.landedUs(player, destination);
+      final playAt = at + startBiasUs + (_landedUs / _rate).round();
       if (LinkClock.nowUs < playAt) {
         _startTimer = LinkedPlayer.scheduleAt(playAt, () {
           _startTimer = null;
@@ -1196,11 +1231,14 @@ class FollowerSession {
     if (synced != null && !synced.disposed) {
       LinkedPlayer.setVideoSync(synced, linked: false);
     }
-    final speed = _speedPlayer;
-    if (speed != null && !speed.disposed) {
-      LinkedPlayer.setSpeed(speed, speed.state.rate);
-    }
     _syncedPlayer = null;
+    _releaseSpeed();
+  }
+
+  /// 不再控制速度（断开、结束跟随）：恢复页面的倍速与音调校正，重新建立联动
+  /// 后重新接管
+  void _releaseSpeed() {
+    if (_speedPlayer case final player?) LinkedPlayer.restoreSpeed(player);
     _speedPlayer = null;
     _appliedSpeed = null;
   }
@@ -1221,6 +1259,10 @@ class FollowerSession {
         ..shift((_offsetUs * (1 - previous / rate)).round());
     }
     if (target.rate != rate) {
+      // 先按新倍速切换微调的实现方式，页面随后只改写速度，期间仅缺少微调
+      if (_loadedPlayer case final player?) {
+        _applySpeed(player, force: true);
+      }
       target.setRate(rate).whenComplete(() {
         if (_loadedPlayer case final player?) {
           _applySpeed(player, force: true);
@@ -1388,7 +1430,9 @@ class FollowerSession {
     }
   }
 
+  /// 按倍速与微调设置播放器的速度；未建立联动（含断开期间自行播放）时不控制
   void _applySpeed(Player player, {bool force = false}) {
+    if (!_linked) return;
     final speed = _rate * _speed.factor;
     final applied = _appliedSpeed;
     final same = identical(player, _speedPlayer) && applied != null;
@@ -1401,7 +1445,7 @@ class FollowerSession {
     }
     _speedPlayer = player;
     _appliedSpeed = speed;
-    LinkedPlayer.setSpeed(player, speed);
+    LinkedPlayer.setSpeed(player, _rate, _speed.factor);
     linkedDiagnostics.log('speed set=${speed.toStringAsFixed(6)}');
   }
 
@@ -1470,7 +1514,8 @@ class FollowerSession {
     return true;
   }
 
-  /// 按起播后的实测偏差调整下次起播的补偿
+  /// 按起播后的实测偏差调整下次起播的补偿：本次的理想补偿为当时的补偿加上
+  /// 实测偏差，取最近几次的中位数
   void _learnStartBias(double drift) {
     _learnAt = null;
     final rtt = _clock.rttUs;
@@ -1479,12 +1524,14 @@ class FollowerSession {
         rtt / 1000 > _learnMaxRttMs) {
       return;
     }
-    final bias = (startBiasUs + drift * 1000 * _learnRate)
-        .round()
-        .clamp(-_maxStartBiasUs, _maxStartBiasUs)
-        .toInt();
+    _biasSamples.add(startBiasUs + (drift * 1000).round());
+    if (_biasSamples.length > _biasWindow) _biasSamples.removeAt(0);
+    final bias = _median(
+      _biasSamples,
+    ).round().clamp(-_maxStartBiasUs, _maxStartBiasUs).toInt();
     linkedDiagnostics.log(
-      'bias drift=${drift.toStringAsFixed(2)} rtt=$rtt from=$startBiasUs to=$bias',
+      'bias drift=${drift.toStringAsFixed(2)} rtt=$rtt from=$startBiasUs '
+      'to=$bias samples=${_biasSamples.join('/')}',
     );
     if (bias != startBiasUs) {
       startBiasUs = bias;

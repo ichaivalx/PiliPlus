@@ -16,13 +16,17 @@ void main() {
     return (sum - 6) * sigma;
   }
 
-  Int16List record(int length, Map<int, (int slot, double gain)> chirps) {
+  Int16List record(
+    int length,
+    Map<int, (int slot, double gain)> chirps, {
+    ChirpBand band = ChirpBand.high,
+  }) {
     final mix = Float64List(length);
     for (var i = 0; i < length; i++) {
       mix[i] = noise(300);
     }
     for (final MapEntry(key: at, value: (slot, gain)) in chirps.entries) {
-      final chirp = CalibrationSignal.chirp(slot);
+      final chirp = CalibrationSignal.chirp(slot, band: band);
       for (var i = 0; i < chirp.length; i++) {
         mix[at + i] += chirp[i] * gain * 16384;
       }
@@ -70,5 +74,73 @@ void main() {
       chirpIdentity(samples, 2, right.index, 3),
       greaterThan(CalibrationSignal.minIdentity),
     );
+  });
+
+  test('finds the direct low tone before stronger later reverberation', () {
+    final samples = record(144000, {
+      30000: (0, 0.2),
+      // 晚 25ms 的更强混响，按中高频的判定会被当作直达声
+      31200: (0, 0.35),
+    }, band: ChirpBand.bass);
+    final found = detectChirp(
+      samples,
+      0,
+      10800,
+      49200,
+      band: ChirpBand.bass,
+    )!;
+    expect(found.index, closeTo(30000, 24));
+    expect(found.snr, greaterThan(CalibrationSignal.minSnr));
+  });
+
+  test('reports no reliable low tone without the device tone', () {
+    final samples = record(144000, {}, band: ChirpBand.lowMid);
+    final missing = detectChirp(
+      samples,
+      0,
+      70800,
+      109200,
+      band: ChirpBand.lowMid,
+    )!;
+    expect(missing.snr, lessThan(CalibrationSignal.minSnr));
+  });
+
+  test('takes the low-mid tone instead of a missing bass tone', () {
+    int samplesOf(int us) => us * CalibrationPlan.sampleRate ~/ 1000000;
+    // 低音区没有输出的设备，三轮都只有中低频扫频音
+    const rounds = [60000, 120024, 179976];
+    final samples = record(240000, {
+      for (final at in rounds) at: (0, 0.3),
+    }, band: ChirpBand.lowMid);
+    for (final lowMid in rounds) {
+      final high = lowMid - samplesOf(ChirpBand.lowMid.offsetUs);
+      final bassAt = high + samplesOf(ChirpBand.bass.offsetUs);
+      // 低音区的模板与中低频扫频音的一端部分对上，峰值足够突出
+      final bass = detectChirp(
+        samples,
+        0,
+        bassAt - samplesOf(400000),
+        bassAt + samplesOf(400000),
+        band: ChirpBand.bass,
+      )!;
+      expect(bass.snr, greaterThan(CalibrationSignal.minSnr));
+      expect(
+        chirpBandIdentity(samples, 0, bass.index, band: ChirpBand.bass),
+        lessThan(CalibrationSignal.minBandIdentity),
+      );
+      final found = detectChirp(
+        samples,
+        0,
+        lowMid - samplesOf(400000),
+        lowMid + samplesOf(400000),
+        band: ChirpBand.lowMid,
+      )!;
+      expect(found.index, closeTo(lowMid, 24));
+      expect(found.snr, greaterThan(CalibrationSignal.minSnr));
+      expect(
+        chirpBandIdentity(samples, 0, found.index, band: ChirpBand.lowMid),
+        greaterThan(CalibrationSignal.minBandIdentity),
+      );
+    }
   });
 }

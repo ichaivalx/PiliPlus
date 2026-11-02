@@ -4,6 +4,7 @@ import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:PiliPlus/services/linked_playback/band.dart';
 import 'package:PiliPlus/services/linked_playback/calibration_recorder.dart';
 import 'package:PiliPlus/services/linked_playback/calibration_signal.dart';
 import 'package:PiliPlus/services/linked_playback/calibration_tone.dart';
@@ -11,11 +12,12 @@ import 'package:PiliPlus/services/linked_playback/clock.dart';
 import 'package:PiliPlus/services/linked_playback/diagnostics.dart';
 import 'package:PiliPlus/services/linked_playback/leader.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart'
-    show LinkedContent, LinkedPlayback;
+    show LinkedContent, LinkedPlayback, linkedPlayback;
 import 'package:PiliPlus/services/linked_playback/offset_dial.dart';
 import 'package:PiliPlus/services/linked_playback/protocol.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart';
 import 'package:PiliPlus/utils/permission_handler.dart';
+import 'package:PiliPlus/utils/storage.dart';
 import 'package:collection/collection.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
@@ -49,10 +51,22 @@ class CalibrationDevice {
   /// 自身测试音的轮次（均为 0）
   final List<double> rounds = [];
 
+  /// 各低频频段各轮测得的相对中高频额外的延迟（微秒）
+  final Map<ChirpBand, List<double>> gaps = {
+    ChirpBand.bass: [],
+    ChirpBand.lowMid: [],
+  };
+
   /// 采用的延迟差与写入的偏移，未能校准时为原因
   int? lateUs;
   int? newOffsetUs;
   String? problem;
+
+  /// 采用的低频额外延迟及其频段（能可靠测出的较低一段），都测不到时为原因
+  /// （保底按 0 计）
+  int? gapUs;
+  ChirpBand? gapBand;
+  String? gapProblem;
 
   bool get isReference => id == null;
 
@@ -72,6 +86,20 @@ class CalibrationDevice {
     return '${formatLinkedOffset(lateUs!)} → 已补偿'
         '（原 ${formatLinkedOffset(offsetUs ?? 0)}）';
   }
+
+  /// 校准完成后低频的结果：实测值及其频段，或保底值的原因；中高频未能校准
+  /// 的跟随端不更新，尚未得出结果时为空
+  String? get lowResult {
+    if (!isReference && problem != null) return null;
+    if (gapProblem case final problem?) return '低频：保底 0 ms（$problem）';
+    final gap = gapUs;
+    final band = gapBand;
+    if (gap == null || band == null) return null;
+    final (from, to) = band.sweeps.first;
+    final range = '${from.round()}~${to.round()}Hz';
+    final ms = (gap.abs() / 1000).toStringAsFixed(1);
+    return '低频：实测（$range）比中高频${gap < 0 ? '早' : '晚'} $ms ms';
+  }
 }
 
 /// 一轮检测的输入：录音、录音起点（主控时钟）与各设备本轮扫频音的发声时刻
@@ -81,18 +109,28 @@ typedef _RoundInput = ({
   List<int?> emits,
 });
 
-typedef _Hit = ({int slot, double index, double snr, double identity});
+typedef _Hit = ({
+  int slot,
+  ChirpBand band,
+  double index,
+  double snr,
+  double identity,
+  double bandIdentity,
+});
 
 extension on _Hit {
-  /// 峰值足够突出，且确是该设备的扫频音
+  /// 峰值足够突出，且确是该设备该频段的扫频音
   bool get accepted =>
       snr >= CalibrationSignal.minSnr &&
-      identity >= CalibrationSignal.minIdentity;
+      identity >= CalibrationSignal.minIdentity &&
+      bandIdentity >= CalibrationSignal.minBandIdentity;
 }
 
 /// 先在预计位置附近找主控自身的测试音，各跟随端再按与主控的发声时刻之差在
 /// 其附近寻找，窗口足以容纳输出与录音的未知延迟；窗口可能覆盖相邻设备的扫频
-/// 音，每次检测再核对扫频音的身份
+/// 音，每次检测再核对扫频音的身份。确认了中高频的设备再在其后寻找低频扫频音，
+/// 窗口容纳低频前后 ±400ms 的额外延迟，并留出估计背景的余量；窗口会覆盖同一
+/// 设备的另一段低频，再核对是哪一段
 List<_Hit> _detectRound(_RoundInput input) {
   int samplesOf(num us) => (us * CalibrationPlan.sampleRate / 1e6).round();
   final emits = input.emits;
@@ -107,11 +145,24 @@ List<_Hit> _detectRound(_RoundInput input) {
   );
   if (lead == null) return const [];
   final devices = emits.length;
-  _Hit hit(int slot, ChirpDetection found) => (
+  _Hit hit(int slot, ChirpDetection found, {ChirpBand band = ChirpBand.high}) => (
     slot: slot,
+    band: band,
     index: found.index,
     snr: found.snr,
-    identity: chirpIdentity(input.samples, slot, found.index, devices),
+    identity: chirpIdentity(
+      input.samples,
+      slot,
+      found.index,
+      devices,
+      band: band,
+    ),
+    bandIdentity: chirpBandIdentity(
+      input.samples,
+      slot,
+      found.index,
+      band: band,
+    ),
   );
   final reference = hit(0, lead);
   final hits = [reference];
@@ -127,6 +178,20 @@ List<_Hit> _detectRound(_RoundInput input) {
       (at + samplesOf(500000)).ceil(),
     );
     if (found != null) hits.add(hit(slot, found));
+  }
+  for (final high in [...hits]) {
+    if (!high.accepted) continue;
+    for (final band in const [ChirpBand.bass, ChirpBand.lowMid]) {
+      final at = high.index + samplesOf(band.offsetUs);
+      final found = detectChirp(
+        input.samples,
+        high.slot,
+        (at - samplesOf(400000)).floor(),
+        (at + samplesOf(400000)).ceil(),
+        band: band,
+      );
+      if (found != null) hits.add(hit(high.slot, found, band: band));
+    }
   }
   return hits;
 }
@@ -152,6 +217,12 @@ class LinkedCalibration {
   /// 与各轮中位数相差超过此值的结果不采用，采用的不足两轮时不校准该设备
   static const _consistencyUs = 3000;
 
+  /// 低频的相关峰较宽（3~6ms），近处的反射更易改变最早峰的判定，放宽一些
+  static const _lowConsistencyUs = 5000;
+
+  static const _boostKey = 'linkedPlaybackCalibrationBoost';
+  static const _boostLevelKey = 'linkedPlaybackCalibrationBoostLevel';
+
   /// 录音的均方根（16 位采样）低于此值视为没有录到任何声音
   static const _silentRms = 2.0;
 
@@ -163,6 +234,31 @@ class LinkedCalibration {
 
   /// 失败原因需在系统设置中解决（权限被永久拒绝）
   final RxBool needsSettings = false.obs;
+
+  /// 校准期间各设备临时把音量提高到 [boostLevel]（原音量更低时），结束后恢复
+  final RxBool boost = RxBool(
+    GStorage.setting.get(_boostKey, defaultValue: true) as bool,
+  );
+
+  /// 安卓为系统媒体音量，桌面端为播放器音量（测试音按此音量播放）；测试音
+  /// 峰值为满幅的一半，60% 时桌面端约 -19dBFS（播放器音量为立方曲线）
+  final RxDouble boostLevel = RxDouble(
+    (GStorage.setting.get(_boostLevelKey, defaultValue: 0.6) as num)
+        .toDouble(),
+  );
+
+  void setBoost(bool value) {
+    boost.value = value;
+    GStorage.setting.put(_boostKey, value);
+  }
+
+  void setBoostLevel(double value) {
+    boostLevel.value = value;
+    GStorage.setting.put(_boostLevelKey, value);
+  }
+
+  /// 校准前的低频记录，撤销时恢复
+  LinkedBandState? _bandBefore;
 
   bool get isRunning => switch (stage.value) {
     CalibrationStage.pausing ||
@@ -193,6 +289,12 @@ class LinkedCalibration {
   int _scheduledRounds = 0;
   bool _finishing = false;
 
+  /// 本机音量已为校准临时提高，结束时恢复
+  bool _raised = false;
+
+  /// 最近一次恢复音量的完成
+  Future<void> _restoring = Future.value();
+
   static String get _microphoneHint => Platform.isWindows
       ? '\n请在 Windows 设置 → 隐私和安全性 → 麦克风中打开「麦克风访问权限」与'
             '「让桌面应用访问麦克风」，并确认默认录音设备可用'
@@ -209,6 +311,7 @@ class LinkedCalibration {
     _detecting = Future.value();
     _scheduledRounds = 0;
     _finishing = false;
+    _bandBefore = null;
     message.value = null;
     needsSettings.value = false;
     round.value = 0;
@@ -266,7 +369,12 @@ class LinkedCalibration {
       id: math.Random().nextInt(1 << 30),
       devices: devices.length,
       startAt: LinkClock.nowUs + _prepareUs,
+      volume: boost.value ? boostLevel.value : null,
     );
+    if (plan.volume case final volume?) {
+      _raised = true;
+      linkedPlayback.raiseCalibrationVolume(volume);
+    }
     linkedDiagnostics.log(
       'calib start id=${plan.id} devices=${plan.devices} start=${plan.startAt} '
       'record=$_recordStart source=$source '
@@ -322,8 +430,8 @@ class LinkedCalibration {
   /// 第 [index] 轮的检测时刻：本轮最后一台设备的测试音应已录入
   int _deadline(CalibrationPlan plan, int index) =>
       plan.startAt +
-      plan.chirpAtUs(plan.devices - 1, index) +
-      CalibrationSignal.chirpUs +
+      plan.chirpAtUs(plan.devices - 1, index, band: ChirpBand.lowMid) +
+      ChirpBand.lowMid.durationUs +
       _maxLatencyUs;
 
   void _tick(int generation) {
@@ -430,29 +538,47 @@ class LinkedCalibration {
 
   void _apply(int index, List<int?> emits, List<_Hit> hits) {
     const rate = CalibrationPlan.sampleRate;
-    final lead = hits.firstWhereOrNull((e) => e.slot == 0);
     for (final hit in hits) {
       linkedDiagnostics.log(
-        'calib hit round=$index slot=${hit.slot} '
+        'calib hit round=$index slot=${hit.slot} band=${hit.band.name} '
         'index=${hit.index.toStringAsFixed(2)} '
         'at=${(_recordStart + hit.index / rate * 1e6).round()} '
         'emit=${emits[hit.slot]} snr=${hit.snr.toStringAsFixed(1)} '
-        'identity=${hit.identity.toStringAsFixed(1)} accepted=${hit.accepted}',
+        'identity=${hit.identity.toStringAsFixed(1)} '
+        'bandIdentity=${hit.bandIdentity.toStringAsFixed(2)} '
+        'accepted=${hit.accepted}',
       );
     }
-    if (lead == null || !lead.accepted) {
+    final highs = {
+      for (final hit in hits)
+        if (hit.band == ChirpBand.high && hit.accepted) hit.slot: hit,
+    };
+    final lead = highs[0];
+    if (lead == null) {
       linkedDiagnostics.log('calib round=$index reference missed');
       return;
     }
     devices.first.rounds.add(0);
-    for (final hit in hits) {
-      if (hit.slot == 0 || !hit.accepted) continue;
+    for (final hit in highs.values) {
+      if (hit.slot == 0) continue;
       final late =
           (hit.index - lead.index) / rate * 1e6 -
           (emits[hit.slot]! - emits[0]!);
       devices[hit.slot].rounds.add(late);
       linkedDiagnostics.log(
         'calib round=$index slot=${hit.slot} late=${late.toStringAsFixed(0)}',
+      );
+    }
+    // 低频与同一设备同一轮的中高频比较，与其他设备无关
+    for (final hit in hits) {
+      if (hit.band == ChirpBand.high || !hit.accepted) continue;
+      final high = highs[hit.slot];
+      if (high == null) continue;
+      final gap = (hit.index - high.index) / rate * 1e6 - hit.band.offsetUs;
+      devices[hit.slot].gaps[hit.band]!.add(gap);
+      linkedDiagnostics.log(
+        'calib round=$index slot=${hit.slot} band=${hit.band.name} '
+        'gap=${gap.toStringAsFixed(0)}',
       );
     }
     devices.refresh();
@@ -490,17 +616,30 @@ class LinkedCalibration {
       return;
     }
     if (_interruption(leader) case final reason?) return _fail(reason);
+    for (final device in devices) {
+      if (!device.isReference) device.problem = _resolve(device);
+      device.gapProblem = _resolveGap(device);
+    }
+    // 中高频未能校准的跟随端保留原有的偏移与低频记录
+    _bandBefore = linkedBand.snapshot();
+    linkedBand.calibrated(devices.first.gapUs, {
+      for (final device in devices.skip(1))
+        if (device.lateUs != null) device.id!: device.gapUs,
+    });
     for (final device in devices.skip(1)) {
-      device.problem = _resolve(device);
       final late = device.lateUs;
       if (late == null) continue;
       const step = LinkedPlayback.offsetStepUs;
-      final offset = (-late / step).round() * step;
+      final shift = linkedBand.shiftFor(device.id!);
+      final offset = (-late / step).round() * step + shift;
       device.newOffsetUs = offset;
-      leader.setOffset(device.id!, offset);
+      linkedBand.setOffset(leader, device.id!, offset, shift);
     }
+    // 其他跟随端：主控的低频记录可能已变，按差额平移
+    linkedBand.apply(leader);
     linkedDiagnostics.log(
-      'calib result ${[for (final device in devices.skip(1)) 'slot=${device.slot} rounds=${device.rounds.map((e) => e.round()).join('/')} late=${device.lateUs} offset=${device.offsetUs}->${device.newOffsetUs} problem=${device.problem}'].join('; ')}',
+      'calib result band=${linkedBand.weight.value} '
+      '${[for (final device in devices) 'slot=${device.slot} rounds=${device.rounds.map((e) => e.round()).join('/')} late=${device.lateUs} gaps=${[for (final MapEntry(:key, :value) in device.gaps.entries) '${key.name}:${value.map((e) => e.round()).join('/')}'].join(',')} gap=${device.gapUs}@${device.gapBand?.name} offset=${device.offsetUs}->${device.newOffsetUs} problem=${device.problem} gapProblem=${device.gapProblem}'].join('; ')}',
     );
     stage.value = CalibrationStage.done;
     progress.value = 1;
@@ -527,11 +666,35 @@ class LinkedCalibration {
     return null;
   }
 
-  void _fail(String reason) {
+  /// 按各轮结果确定该设备低频相对中高频额外的延迟：低音区能可靠测出时以其为
+  /// 准，否则取中低频；都不能时返回原因
+  String? _resolveGap(CalibrationDevice device) {
+    var inconsistent = false;
+    for (final band in const [ChirpBand.bass, ChirpBand.lowMid]) {
+      final values = [...device.gaps[band]!]..sort();
+      if (values.length < 2) continue;
+      final median = values[values.length ~/ 2];
+      final agreed = [
+        for (final value in values)
+          if ((value - median).abs() <= _lowConsistencyUs) value,
+      ];
+      if (agreed.length < 2) {
+        inconsistent = true;
+        continue;
+      }
+      device
+        ..gapUs = agreed[agreed.length ~/ 2].round()
+        ..gapBand = band;
+      return null;
+    }
+    return inconsistent ? '多轮结果不一致' : '未测到低频，可能音量太小';
+  }
+
+  void _fail(String reason, {bool resume = true}) {
     linkedDiagnostics.log('calib failed $reason');
     message.value = reason;
     stage.value = CalibrationStage.failed;
-    _end(resume: true);
+    _end(resume: resume);
   }
 
   /// 结束本次校准：停止测试音与录音，通知跟随端停止；[resume] 时若校准前在
@@ -544,6 +707,10 @@ class LinkedCalibration {
     _tone = null;
     _recorder?.stop();
     _recorder = null;
+    if (_raised) {
+      _raised = false;
+      _restoring = linkedPlayback.restoreCalibrationVolume();
+    }
     final leader = _leader;
     if (leader != null && !leader.isClosed) {
       if (_plan case final plan?) {
@@ -577,23 +744,41 @@ class LinkedCalibration {
     stage.value = null;
   }
 
+  /// 主控会话结束（关闭联动、退出应用）前调用：直接结束进行中的校准，通知
+  /// 跟随端停止，不恢复播放；返回恢复临时提高的音量的完成
+  Future<void> endWithSession() {
+    if (isRunning) _fail('联动已关闭，校准已取消', resume: false);
+    return _restoring;
+  }
+
   /// 关闭结果
   void close() {
     if (isRunning) return;
     stage.value = null;
   }
 
-  /// 撤销本次校准写入的偏移
+  /// 撤销本次校准：低频记录恢复原样，写入了偏移的跟随端恢复原偏移，其他
+  /// 跟随端因低频记录变化的平移按差额平移回去；此后滑块移动过时按当前位置
+  /// 平移
   void undo() {
     final leader = _leader;
     if (leader != null && !leader.isClosed) {
-      for (final device in devices) {
-        if (device.newOffsetUs != null && device.offsetUs != null) {
-          leader.setOffset(device.id!, device.offsetUs!);
+      if (_bandBefore case final before?) {
+        linkedBand.restore(before);
+        for (final device in devices.skip(1)) {
+          if (device.newOffsetUs == null) continue;
+          linkedBand.setOffset(
+            leader,
+            device.id!,
+            device.offsetUs!,
+            before.applied[device.id!] ?? 0,
+          );
         }
+        linkedBand.apply(leader);
       }
       SmartDialog.showToast('已恢复校准前的延迟偏移');
     }
+    _bandBefore = null;
     linkedDiagnostics.log('calib undone');
     stage.value = null;
   }

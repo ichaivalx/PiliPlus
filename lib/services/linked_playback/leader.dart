@@ -484,11 +484,16 @@ class LeaderSession {
   void Function(String id, LinkMessage message)? onCalibration;
 
   /// 可参与校准的跟随端：已连接且回报过延迟偏移
-  List<({String id, String name, int offsetUs})> get calibrationPeers => [
+  List<CalibrationPeer> get calibrationPeers => [
     for (final state in _peers.values)
       if (state.id case final id?
           when !state.replaced && state.offsetUs != null)
-        (id: id, name: state.name ?? state.address, offsetUs: state.offsetUs!),
+        (
+          id: id,
+          name: state.name ?? state.address,
+          offsetUs: state.offsetUs!,
+          settled: state.setOffsetUs == null,
+        ),
   ];
 
   /// 设备标识为 [id] 的跟随端仍连接着
@@ -1280,3 +1285,12 @@ class LeaderSession {
     ]);
   }
 }
+
+/// 可参与校准的跟随端。[settled] 为最近设置的偏移已有回报（相同的回报，或
+/// 等待超时后采纳的回报），[offsetUs] 已是跟随端的实际值
+typedef CalibrationPeer = ({
+  String id,
+  String name,
+  int offsetUs,
+  bool settled,
+});
