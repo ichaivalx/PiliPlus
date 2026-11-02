@@ -162,13 +162,35 @@ class LinkedDiagnostics {
     _propertiesAt = now;
     final buffer = StringBuffer();
     for (final name in _properties) {
-      buffer.write(' $name=${player.getProperty(name)}');
+      buffer.write(' $name=${_property(player, name)}');
     }
     final properties = buffer.toString();
     if (properties != _lastProperties) {
       _lastProperties = properties;
       log('props$properties');
     }
+  }
+
+  /// 音频参数由子属性组成，整体读取为空时逐个读取
+  static const _audioParams = {'audio-params', 'audio-out-params'};
+  static const _audioSubProperties = ['samplerate', 'format', 'channels'];
+
+  static String _property(Player player, String name) {
+    final value = player.getProperty(name);
+    if (value.isNotEmpty || !_audioParams.contains(name)) return value;
+    return [
+      for (final sub in _audioSubProperties)
+        '$sub:${player.getProperty('$name/$sub')}',
+    ].join(',');
+  }
+
+  /// 记录 [player] 当前的音频输出与实际的音频参数（解码后、输出端）
+  void audioParams(Player player, String tag) {
+    if (!isOn || _closed || player.disposed) return;
+    log(
+      'audio $tag #${player.hashCode} '
+      '${[for (final name in const ['current-ao', 'audio-params', 'audio-out-params']) '$name=${_property(player, name)}'].join(' ')}',
+    );
   }
 
   static bool _isAudioLog(PlayerLog entry) =>

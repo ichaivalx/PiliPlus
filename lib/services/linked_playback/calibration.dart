@@ -43,9 +43,13 @@ class CalibrationDevice {
   /// 校准前的延迟偏移
   final int? offsetUs;
 
-  /// 测试音文件起点实际发声的时刻（主控时钟）或未能播放的原因
-  int? origin;
+  /// 已回报的各轮测试音文件起点实际发声的时刻（主控时钟），该轮计时读数不可
+  /// 用时为空；未能播放测试音时为原因
+  final Map<int, int?> origins = {};
   String? toneError;
+
+  /// 最近回报的可用起点
+  int? get lastOrigin => origins.values.nonNulls.lastOrNull;
 
   /// 各轮测得的相对主控的声学延迟差（微秒），正值为声音偏晚；主控记录检测到
   /// 自身测试音的轮次（均为 0）
@@ -57,15 +61,14 @@ class CalibrationDevice {
     ChirpBand.lowMid: [],
   };
 
-  /// 采用的延迟差与写入的偏移，未能校准时为原因
+  /// 采用的延迟差、采用的轮数与写入的偏移，未能校准时为原因
   int? lateUs;
+  int usedRounds = 0;
   int? newOffsetUs;
   String? problem;
 
-  /// 采用的低频额外延迟及其频段（能可靠测出的较低一段），都测不到时为原因
-  /// （保底按 0 计）
-  int? gapUs;
-  ChirpBand? gapBand;
+  /// 各低频频段能可靠测出的额外延迟，都测不到时为原因
+  final BandGaps lowGaps = {};
   String? gapProblem;
 
   bool get isReference => id == null;
@@ -84,21 +87,34 @@ class CalibrationDevice {
     if (isReference) return '基准';
     if (problem case final problem?) return problem;
     return '${formatLinkedOffset(lateUs!)} → 已补偿'
-        '（原 ${formatLinkedOffset(offsetUs ?? 0)}）';
+        '（原 ${formatLinkedOffset(offsetUs ?? 0)}，'
+        '有效 $usedRounds/${CalibrationPlan.rounds} 轮）';
   }
 
-  /// 校准完成后低频的结果：实测值及其频段，或保底值的原因；中高频未能校准
-  /// 的跟随端不更新，尚未得出结果时为空
-  String? get lowResult {
+  static String _range(ChirpBand band) {
+    final (from, to) = band.sweeps.first;
+    return '${from.round()}~${to.round()}Hz';
+  }
+
+  static String _gap(int gap) =>
+      '${gap < 0 ? '早' : '晚'} ${(gap.abs() / 1000).toStringAsFixed(1)} ms';
+
+  /// 校准完成后低频的结果：主控为各频段的实测值；跟随端为与主控 [reference]
+  /// 比较所用的共同频段，或保底值的原因。中高频未能校准的跟随端不更新，为空
+  String? lowResult(CalibrationDevice reference) {
     if (!isReference && problem != null) return null;
     if (gapProblem case final problem?) return '低频：保底 0 ms（$problem）';
-    final gap = gapUs;
-    final band = gapBand;
-    if (gap == null || band == null) return null;
-    final (from, to) = band.sweeps.first;
-    final range = '${from.round()}~${to.round()}Hz';
-    final ms = (gap.abs() / 1000).toStringAsFixed(1);
-    return '低频：实测（$range）比中高频${gap < 0 ? '早' : '晚'} $ms ms';
+    if (isReference) {
+      return '低频：'
+          '${[for (final MapEntry(key: band, value: gap) in lowGaps.entries) '${_range(band)} 比中高频${_gap(gap)}'].join('；')}';
+    }
+    final band = commonBand(lowGaps, reference.lowGaps);
+    if (band == null) {
+      return '低频：保底 0 ms'
+          '（${reference.lowGaps.isEmpty ? '主控未测到低频' : '与主控没有都测得的频段'}）';
+    }
+    return '低频：按 ${_range(band)} 对齐，比中高频${_gap(lowGaps[band]!)}'
+        '（主控${_gap(reference.lowGaps[band]!)}）';
   }
 }
 
@@ -212,6 +228,9 @@ class LinkedCalibration {
 
   /// 声音从发声到录入的最大延迟（含录音起点的误差），检测在此之后进行
   static const _maxLatencyUs = 500000;
+
+  /// 设备在本轮的读数结束后即回报本轮的起点，未按时回报时最多再等此时长
+  static const _originWaitUs = 1000000;
   static const _tickInterval = Duration(milliseconds: 100);
 
   /// 与各轮中位数相差超过此值的结果不采用，采用的不足两轮时不校准该设备
@@ -292,7 +311,7 @@ class LinkedCalibration {
   /// 本机音量已为校准临时提高，结束时恢复
   bool _raised = false;
 
-  /// 最近一次恢复音量的完成
+  /// 最近一次结束后的收尾（释放测试音、恢复音量、恢复播放）的完成
   Future<void> _restoring = Future.value();
 
   static String get _microphoneHint => Platform.isWindows
@@ -318,6 +337,9 @@ class LinkedCalibration {
     progress.value = 0;
     devices.clear();
     stage.value = CalibrationStage.pausing;
+    // 上次校准的收尾（含恢复播放）完成后再开始
+    await _restoring;
+    if (generation != _generation) return;
     _beginAt = LinkClock.nowUs;
     if (Platform.isAndroid) {
       final status = await Permission.microphone.request();
@@ -393,15 +415,18 @@ class LinkedCalibration {
       slot: 0,
       reference: leader.calibrationReference,
       startAt: plan.startAt,
-      onResult: (origin, error) {
+      onRound: (reading) {
         if (generation != _generation) return;
-        self
-          ..origin = origin?.origin
-          ..toneError = error;
+        self.origins[reading.round] = reading.origin;
         linkedDiagnostics.log(
-          'calib origin slot=0 origin=${origin?.origin} '
-          'spread=${origin?.spread} n=${origin?.samples} error=$error',
+          'calib origin slot=0 round=${reading.round} origin=${reading.origin} '
+          'spread=${reading.spread} n=${reading.samples}',
         );
+      },
+      onError: (error) {
+        if (generation != _generation) return;
+        self.toneError = error;
+        linkedDiagnostics.log('calib tone slot=0 error=$error');
         devices.refresh();
       },
     )..start();
@@ -413,26 +438,39 @@ class LinkedCalibration {
     if (!isRunning || plan == null || message['id'] != plan.id) return;
     final device = devices.firstWhereOrNull((e) => e.id == id);
     if (device == null) return;
+    final round = message['round'];
     final origin = message['origin'];
     final error = message['error'];
-    device
-      ..origin = origin is int ? origin : null
-      ..toneError = origin is int
-          ? null
-          : (error is String ? error : '测试音未能播放');
+    if (round is int) {
+      if (round < 0 || round >= CalibrationPlan.rounds) return;
+      device.origins[round] = origin is int ? origin : null;
+    } else {
+      device.toneError = error is String ? error : '测试音未能播放';
+      devices.refresh();
+    }
     linkedDiagnostics.log(
-      'calib origin slot=${device.slot} origin=$origin '
+      'calib origin slot=${device.slot} round=$round origin=$origin '
       'spread=${message['spread']} n=${message['samples']} error=$error',
     );
-    devices.refresh();
   }
 
-  /// 第 [index] 轮的检测时刻：本轮最后一台设备的测试音应已录入
-  int _deadline(CalibrationPlan plan, int index) =>
-      plan.startAt +
-      plan.chirpAtUs(plan.devices - 1, index, band: ChirpBand.lowMid) +
+  /// 设备 [device] 第 [index] 轮的测试音应已录入的时刻：按其本轮回报的起点，
+  /// 尚未回报（或本轮不可用）时按最近回报的起点估计，都没有时按计划
+  int _recordedAt(CalibrationPlan plan, CalibrationDevice device, int index) =>
+      (device.origins[index] ?? device.lastOrigin ?? plan.startAt) +
+      plan.chirpAtUs(device.slot, index, band: ChirpBand.lowMid) +
       ChirpBand.lowMid.durationUs +
       _maxLatencyUs;
+
+  /// 第 [index] 轮可以检测：各设备本轮的测试音都应已录入，且已回报本轮的
+  /// 起点；未按时回报的不再等待（本轮视为未能检测）
+  bool _canDetect(CalibrationPlan plan, int index, int now) => devices.every(
+    (device) =>
+        device.toneError != null ||
+        now >=
+            _recordedAt(plan, device, index) +
+                (device.origins.containsKey(index) ? 0 : _originWaitUs),
+  );
 
   void _tick(int generation) {
     if (generation != _generation) return;
@@ -450,7 +488,13 @@ class LinkedCalibration {
     }
     _read();
     final now = LinkClock.nowUs;
-    final end = _deadline(plan, CalibrationPlan.rounds - 1);
+    final end = devices.fold(
+      plan.startAt,
+      (latest, device) => math.max(
+        latest,
+        _recordedAt(plan, device, CalibrationPlan.rounds - 1),
+      ),
+    );
     progress.value =
         ((now - _beginAt) / (end - _beginAt)).clamp(0.0, 1.0) * 0.95;
     if (now >= plan.startAt && stage.value == CalibrationStage.pausing) {
@@ -464,7 +508,7 @@ class LinkedCalibration {
               .toInt();
     }
     while (_scheduledRounds < CalibrationPlan.rounds &&
-        now >= _deadline(plan, _scheduledRounds)) {
+        _canDetect(plan, _scheduledRounds, now)) {
       _schedule(generation, plan, _scheduledRounds++);
     }
     if (_scheduledRounds == CalibrationPlan.rounds && !_finishing) {
@@ -517,7 +561,7 @@ class LinkedCalibration {
           if (generation != _generation) return;
           final emits = [
             for (final device in devices)
-              if (device.origin case final origin?)
+              if (device.origins[index] case final origin?)
                 origin + plan.chirpAtUs(device.slot, index)
               else
                 null,
@@ -622,9 +666,9 @@ class LinkedCalibration {
     }
     // 中高频未能校准的跟随端保留原有的偏移与低频记录
     _bandBefore = linkedBand.snapshot();
-    linkedBand.calibrated(devices.first.gapUs, {
+    linkedBand.calibrated(devices.first.lowGaps, {
       for (final device in devices.skip(1))
-        if (device.lateUs != null) device.id!: device.gapUs,
+        if (device.lateUs != null) device.id!: device.lowGaps,
     });
     for (final device in devices.skip(1)) {
       final late = device.lateUs;
@@ -639,7 +683,7 @@ class LinkedCalibration {
     linkedBand.apply(leader);
     linkedDiagnostics.log(
       'calib result band=${linkedBand.weight.value} '
-      '${[for (final device in devices) 'slot=${device.slot} rounds=${device.rounds.map((e) => e.round()).join('/')} late=${device.lateUs} gaps=${[for (final MapEntry(:key, :value) in device.gaps.entries) '${key.name}:${value.map((e) => e.round()).join('/')}'].join(',')} gap=${device.gapUs}@${device.gapBand?.name} offset=${device.offsetUs}->${device.newOffsetUs} problem=${device.problem} gapProblem=${device.gapProblem}'].join('; ')}',
+      '${[for (final device in devices) 'slot=${device.slot} origins=${device.origins} rounds=${device.rounds.map((e) => e.round()).join('/')} late=${device.lateUs} used=${device.usedRounds} gaps=${[for (final MapEntry(:key, :value) in device.gaps.entries) '${key.name}:${value.map((e) => e.round()).join('/')}'].join(',')} low=${device.lowGaps.map((band, gap) => MapEntry(band.name, gap))} offset=${device.offsetUs}->${device.newOffsetUs} problem=${device.problem} gapProblem=${device.gapProblem}'].join('; ')}',
     );
     stage.value = CalibrationStage.done;
     progress.value = 1;
@@ -649,25 +693,31 @@ class LinkedCalibration {
 
   /// 按各轮结果确定该设备的延迟差，不能确定时返回原因
   String? _resolve(CalibrationDevice device) {
-    if (device.origin == null) {
-      return device.toneError == null
-          ? '未收到该设备的测试音信息（可能未更新到同一版本），保留原设置'
-          : '未能播放测试音（${device.toneError}），保留原设置';
-    }
     final values = [...device.rounds]..sort();
-    if (values.length < 2) return '未录到声音（可能音量太小），保留原设置';
+    if (values.length < 2) {
+      if (device.toneError case final error?) {
+        return '未能播放测试音（$error），保留原设置';
+      }
+      if (device.origins.isEmpty) return '未收到该设备的测试音信息，保留原设置';
+      if (device.origins.values.nonNulls.length < 2) {
+        return '测试音的播放计时不稳定，保留原设置';
+      }
+      return '未录到声音（可能音量太小），保留原设置';
+    }
     final median = values[values.length ~/ 2];
     final agreed = [
       for (final value in values)
         if ((value - median).abs() <= _consistencyUs) value,
     ];
     if (agreed.length < 2) return '多轮结果不一致（可能受噪声或回声干扰），保留原设置';
-    device.lateUs = agreed[agreed.length ~/ 2].round();
+    device
+      ..lateUs = agreed[agreed.length ~/ 2].round()
+      ..usedRounds = agreed.length;
     return null;
   }
 
-  /// 按各轮结果确定该设备低频相对中高频额外的延迟：低音区能可靠测出时以其为
-  /// 准，否则取中低频；都不能时返回原因
+  /// 按各轮结果确定该设备各低频频段相对中高频额外的延迟，记录能可靠测出的
+  /// 频段；都不能时返回原因
   String? _resolveGap(CalibrationDevice device) {
     var inconsistent = false;
     for (final band in const [ChirpBand.bass, ChirpBand.lowMid]) {
@@ -682,11 +732,9 @@ class LinkedCalibration {
         inconsistent = true;
         continue;
       }
-      device
-        ..gapUs = agreed[agreed.length ~/ 2].round()
-        ..gapBand = band;
-      return null;
+      device.lowGaps[band] = agreed[agreed.length ~/ 2].round();
     }
+    if (device.lowGaps.isNotEmpty) return null;
     return inconsistent ? '多轮结果不一致' : '未测到低频，可能音量太小';
   }
 
@@ -697,20 +745,13 @@ class LinkedCalibration {
     _end(resume: resume);
   }
 
-  /// 结束本次校准：停止测试音与录音，通知跟随端停止；[resume] 时若校准前在
-  /// 播放、期间未被停止或暂缓且仍是同一内容，则恢复播放
+  /// 结束本次校准：停止录音，通知跟随端停止，再依次收尾（见 [_wrapUp]）
   void _end({required bool resume}) {
     _generation++;
     _ticker?.cancel();
     _ticker = null;
-    _tone?.stop();
-    _tone = null;
     _recorder?.stop();
     _recorder = null;
-    if (_raised) {
-      _raised = false;
-      _restoring = linkedPlayback.restoreCalibrationVolume();
-    }
     final leader = _leader;
     if (leader != null && !leader.isClosed) {
       if (_plan case final plan?) {
@@ -718,22 +759,58 @@ class LinkedCalibration {
       }
       if (leader.onCalibration == _onMessage) leader.onCalibration = null;
     }
+    final tone = _tone;
+    _tone = null;
+    final raised = _raised;
+    _raised = false;
     final load = _resume;
     _resume = null;
-    if (load != null) {
-      if (resume &&
-          leader != null &&
-          !leader.isClosed &&
-          identical(leader.currentContent, _content)) {
-        if (shutdownTimerService.canAutoplay(load)) {
-          leader.resumeAfterCalibration();
-        } else if (shutdownTimerService.isHeld(load)) {
-          // 仍被打断：打断结束后继续播放
-          leader.deferResume(load);
-        }
-      }
-      shutdownTimerService.endLoad(load);
+    final content = _content;
+    _restoring = _restoring.then(
+      (_) => _wrapUp(
+        tone: tone,
+        raised: raised,
+        load: load,
+        resume: resume,
+        leader: leader,
+        content: content,
+      ),
+    );
+  }
+
+  /// 依次收尾：测试音停止并释放 → 恢复临时提高的音量 → [resume] 时若校准前在
+  /// 播放、期间未被停止或暂缓且仍是同一内容，则恢复播放（收尾期间已重新开始
+  /// 的校准等收尾完成后再继续）
+  Future<void> _wrapUp({
+    required CalibrationTone? tone,
+    required bool raised,
+    required ShutdownLoad? load,
+    required bool resume,
+    required LeaderSession? leader,
+    required LinkedContent? content,
+  }) async {
+    if (tone != null) {
+      await tone.stop();
+      linkedDiagnostics.log('calib tone released');
     }
+    if (raised) {
+      await linkedPlayback.restoreCalibrationVolume();
+      linkedDiagnostics.log('calib volume restored');
+    }
+    if (load == null) return;
+    if (resume &&
+        leader != null &&
+        !leader.isClosed &&
+        identical(leader.currentContent, content)) {
+      if (shutdownTimerService.canAutoplay(load)) {
+        linkedDiagnostics.log('calib resume');
+        leader.resumeAfterCalibration();
+      } else if (shutdownTimerService.isHeld(load)) {
+        // 仍被打断：打断结束后继续播放
+        leader.deferResume(load);
+      }
+    }
+    shutdownTimerService.endLoad(load);
   }
 
   /// 取消进行中的校准：偏移未改动，按需恢复播放
@@ -745,7 +822,7 @@ class LinkedCalibration {
   }
 
   /// 主控会话结束（关闭联动、退出应用）前调用：直接结束进行中的校准，通知
-  /// 跟随端停止，不恢复播放；返回恢复临时提高的音量的完成
+  /// 跟随端停止，不恢复播放；返回收尾（释放测试音、恢复音量）的完成
   Future<void> endWithSession() {
     if (isRunning) _fail('联动已关闭，校准已取消', resume: false);
     return _restoring;

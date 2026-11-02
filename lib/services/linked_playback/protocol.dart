@@ -15,7 +15,8 @@ abstract final class LinkProtocol {
   /// 联动协议版本，两端不同时不建立联动（同名字段的含义可能已不同）。
   /// 2：延迟偏移为实际时间（与倍速无关）、新增声学校准
   /// 3：校准测试音增加两段低频扫频音、各设备间隔加大，校准安排带临时音量
-  static const version = 3;
+  /// 4：校准起点按轮回报（`round`）
+  static const version = 4;
 
   static String encode(Map<String, Object?> message) => jsonEncode(message);
 
@@ -113,7 +114,8 @@ abstract final class LinkMessageType {
   /// 主控 → 跟随端：校准 `id` 结束或取消，停止测试音
   static const calibrateStop = 'calibStop';
 
-  /// 跟随端 → 主控：校准 `id` 的测试音文件起点实际发声的时刻 `origin`（主控时钟，
-  /// 按 audio-pts 推算），或未能播放的原因 `error`
+  /// 跟随端 → 主控：校准 `id` 第 `round` 轮按该轮前后的 audio-pts 推算的测试音
+  /// 文件起点实际发声的时刻 `origin`（主控时钟，读数不可用时没有）及读数的极差
+  /// `spread`、个数 `samples`；或未能播放测试音的原因 `error`（不带 `round`）
   static const calibrateOrigin = 'calibOrigin';
 }

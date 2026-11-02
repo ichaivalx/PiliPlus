@@ -86,6 +86,13 @@ class FollowerSession {
   /// 偏差取最近几次读数的中位数
   static const _driftWindow = 5;
 
+  /// 主控位置与偏差的窗口内合格（可用于精细对齐）的读数达到此数时只用合格的
+  static const _minFine = 3;
+
+  /// 主控约每 250ms 发送一次播放位置，超过此时间未收到（主控缓冲、卡顿）时
+  /// 原有的进度模型作废，暂停修正，之后只按新的位置重建
+  static const _leaderStaleUs = 750000;
+
   /// 偏差超过此值时不用倍速追赶，本机直接跳转到主控的位置，主控不受影响
   static const _jumpMs = 100.0;
 
@@ -190,16 +197,14 @@ class FollowerSession {
   int _offsetUs;
   int? _pausePos;
 
-  /// 主控的播放进度模型：位置 = 截距 + 倍速 × 主控时刻
+  /// 主控的播放进度模型：位置 = 截距 + 倍速 × 主控时刻；各截距带有对应采样
+  /// 能否用于精细对齐
   double _rate = 1.0;
-  final List<int> _intercepts = [];
+  final List<({int value, bool fine})> _intercepts = [];
 
   /// 延迟偏移（实际时间）按当前倍速对应的媒体位置差：倍速 r 下同样的实际时间
   /// 对应 r 倍的媒体时长
   int get _mediaOffsetUs => (_offsetUs * _rate).round();
-
-  /// 主控最近的进度采样可用于精细对齐
-  bool _leaderFine = false;
 
   /// 最近的偏差读数（毫秒）及其能否用于精细对齐
   final List<({double value, bool fine})> _drifts = [];
@@ -217,8 +222,9 @@ class FollowerSession {
   /// 已变）则按差额移动
   int? _positionedOffsetUs;
 
-  /// 定位后实际的起播位置超出目标的媒体时长：有视频时音频从目标之后的第一帧
-  /// 开始播放（定位后的画面位置），超出最多一帧；起播时刻按此推迟
+  /// 实际的起播位置超出理想位置（主控位置减偏移）的媒体时长，起播时刻按此
+  /// 推迟：理想位置在开头之前时定位截到 0 的部分（如从头起播而偏移为正），
+  /// 加上定位后的帧落点（有视频时音频从目标之后的第一帧开始，最多一帧）
   int _landedUs = 0;
 
   /// 应跟随播放而被本机暂停（音频焦点、媒体控制等），本机恢复播放后重新对齐；
@@ -295,7 +301,8 @@ class FollowerSession {
     _ticker = Timer.periodic(_tickInterval, _tick);
   }
 
-  /// 结束会话；返回的 Future 在已发出的消息（如一起停止）送达连接后完成
+  /// 结束会话；返回的 Future 在已发出的消息（如一起停止）送达连接、且校准的
+  /// 收尾（释放测试音、恢复音量）完成后完成
   Future<void> dispose() {
     // 先解除联动：此后尚未完成的异步回调（如页面改倍速完成）不再设置速度
     _linked = false;
@@ -312,7 +319,7 @@ class FollowerSession {
     leader.value = null;
     driftMs.value = null;
     rttMs.value = null;
-    return closing;
+    return Future.wait<void>([closing, _calibrationEnd]);
   }
 
   void wake() => _transport.wake();
@@ -572,6 +579,9 @@ class FollowerSession {
 
   void _onLoaded() {
     LinkedFrames.finish(_settleFrames);
+    if (_loadedPlayer case final player?) {
+      linkedDiagnostics.audioParams(player, 'follower loaded');
+    }
     _loaded = true;
     _failure = null;
     _transport.send({'t': LinkMessageType.loaded, 'round': _round});
@@ -827,21 +837,24 @@ class FollowerSession {
   /// 本机音量已为校准临时提高，校准结束、取消或断开时恢复
   bool _calibrationRaised = false;
 
-  /// 主控开始声学校准：在约定时刻播放本机的测试音，回报其起点实际发声的时刻
-  void _onCalibrate(LinkMessage message) {
+  /// 最近一次校准的收尾（释放测试音、恢复音量）的完成；完成前不就绪、不起播
+  Future<void> _calibrationEnd = Future.value();
+
+  /// 主控开始声学校准：在约定时刻播放本机的测试音，回报各轮起点实际发声的
+  /// 时刻
+  Future<void> _onCalibrate(LinkMessage message) async {
     final plan = CalibrationPlan.fromJson(message);
     final slot = message['slot'];
     if (plan == null || slot is! int) return;
     _stopCalibration();
     final id = _calibrationId = plan.id;
     if (!_clock.isReady) {
-      _transport.send({
-        't': LinkMessageType.calibrateOrigin,
-        'id': id,
-        'error': '尚未完成对时',
-      });
+      _sendCalibrationError(id, '尚未完成对时');
       return;
     }
+    // 上次校准的收尾完成后再开始
+    await _calibrationEnd;
+    if (_calibrationId != id) return;
     SmartDialog.showToast('联动播放：主控正在校准');
     if (plan.volume case final volume?) {
       _calibrationRaised = true;
@@ -852,32 +865,59 @@ class FollowerSession {
       slot: slot,
       reference: _loadedPlayer,
       startAt: _clock.toLocal(plan.startAt),
-      onResult: (origin, error) {
+      onRound: (reading) {
         if (_calibrationId != id) return;
-        final remote = origin == null ? null : _clock.toRemote(origin.origin);
+        final origin = reading.origin;
+        final remote = origin == null ? null : _clock.toRemote(origin);
         linkedDiagnostics.log(
-          'calib origin slot=$slot local=${origin?.origin} remote=$remote '
-          'spread=${origin?.spread} n=${origin?.samples} error=$error',
+          'calib origin slot=$slot round=${reading.round} local=$origin '
+          'remote=$remote spread=${reading.spread} n=${reading.samples}',
         );
         _transport.send({
           't': LinkMessageType.calibrateOrigin,
           'id': id,
+          'round': reading.round,
           'origin': ?remote,
-          'spread': ?origin?.spread,
-          'samples': ?origin?.samples,
-          'error': ?error,
+          'spread': reading.spread,
+          'samples': reading.samples,
         });
+      },
+      onError: (error) {
+        if (_calibrationId != id) return;
+        linkedDiagnostics.log('calib tone slot=$slot error=$error');
+        _sendCalibrationError(id, error);
       },
     )..start();
   }
 
+  void _sendCalibrationError(int id, String error) {
+    _transport.send({
+      't': LinkMessageType.calibrateOrigin,
+      'id': id,
+      'error': error,
+    });
+  }
+
   void _stopCalibration() {
     _calibrationId = null;
-    _calibrationTone?.stop();
+    final tone = _calibrationTone;
     _calibrationTone = null;
-    if (_calibrationRaised) {
-      _calibrationRaised = false;
-      restoreCalibrationVolume();
+    final raised = _calibrationRaised;
+    _calibrationRaised = false;
+    if (tone != null || raised) {
+      _calibrationEnd = _wrapUpCalibration(tone, raised);
+    }
+  }
+
+  /// 依次收尾：测试音停止并释放 → 恢复临时提高的音量
+  Future<void> _wrapUpCalibration(CalibrationTone? tone, bool raised) async {
+    if (tone != null) {
+      await tone.stop();
+      linkedDiagnostics.log('calib tone released');
+    }
+    if (raised) {
+      await restoreCalibrationVolume();
+      linkedDiagnostics.log('calib volume restored');
     }
   }
 
@@ -987,11 +1027,17 @@ class FollowerSession {
       }
     } while (offset != _mediaOffsetUs);
     _positionedOffsetUs = offset;
-    _landedUs = LinkedPlayer.landedUs(player, destination);
+    _landedUs =
+        destination -
+        (pos - offset) +
+        LinkedPlayer.landedUs(player, destination);
     while (!_clock.isReady) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       if (!isCurrent()) return;
     }
+    // 校准的收尾完成（恢复了音量）后才就绪
+    await _calibrationEnd;
+    if (!isCurrent()) return;
     _pendingRound = null;
     _readyRound = round;
     _transport.send({'t': LinkMessageType.ready, 'round': round});
@@ -1086,8 +1132,8 @@ class FollowerSession {
 
   /// 在 [begin] 开始跳转时的预留与目标：目标已在缓冲范围内（如主控拖动后已预先
   /// 定位）时按普通跳转预留，否则按冷定位预留，宁可多等也要一次对齐；[at] 为预计
-  /// 主控到达 [destination] 对应位置的时刻
-  ({int at, int destination, bool cold})? _jumpPlan(
+  /// 主控到达 [ideal] 对应位置的时刻，[destination] 为 [ideal] 截到 0 后的定位目标
+  ({int at, int ideal, int destination, bool cold})? _jumpPlan(
     Player player,
     int begin,
     int offset,
@@ -1098,7 +1144,8 @@ class FollowerSession {
     final at = begin + _jumpLeadUs(cold: cold);
     final leaderPos = _leaderPosition(at);
     if (leaderPos == null) return null;
-    return (at: at, destination: max(0, leaderPos - offset), cold: cold);
+    final ideal = leaderPos - offset;
+    return (at: at, ideal: ideal, destination: max(0, ideal), cold: cold);
   }
 
   /// 跳转对齐；多次跳转仍未对齐时请主控共同暂停后重新共同起播
@@ -1138,6 +1185,8 @@ class FollowerSession {
     if (player.state.playing) {
       await _pause(target);
     }
+    // 校准的收尾完成（恢复了音量）后才加入
+    await _calibrationEnd;
     // 定位慢于预留时间时按更新后的耗时再试一次；延迟偏移变化后的重新定位不计次数
     var lateCount = 0;
     while (lateCount < 2) {
@@ -1146,14 +1195,15 @@ class FollowerSession {
       final offset = _mediaOffsetUs;
       final plan = _jumpPlan(player, begin, offset);
       if (plan == null) break;
-      final (:at, :destination, :cold) = plan;
+      final (:at, :ideal, :destination, :cold) = plan;
       await target.seek(Duration(microseconds: destination));
       if (!await LinkedPlayer.waitReady(player, destination, isCurrent)) return;
       _learnSeekCost(LinkClock.nowUs - begin, cold: cold);
       // 定位期间延迟偏移变化时重新定位
       if (offset != _mediaOffsetUs) continue;
       _positionedOffsetUs = offset;
-      _landedUs = LinkedPlayer.landedUs(player, destination);
+      _landedUs =
+          destination - ideal + LinkedPlayer.landedUs(player, destination);
       final playAt = at + startBiasUs + (_landedUs / _rate).round();
       if (LinkClock.nowUs < playAt) {
         _startTimer = LinkedPlayer.scheduleAt(playAt, () {
@@ -1276,15 +1326,23 @@ class FollowerSession {
     final at = message['at'];
     final rate = message['rate'];
     if (pos is! int || at is! int || rate is! num) return;
-    _leaderPosAt = LinkClock.nowUs;
+    final now = LinkClock.nowUs;
+    if (now - _leaderPosAt > _leaderStaleUs) {
+      // 中断后的新位置：旧的进度模型与偏差读数不再使用
+      _intercepts.clear();
+      _drifts.clear();
+    }
+    _leaderPosAt = now;
     _leaderCid = message['cid'] as int?;
     if (_leaderCid != _content?.cid) return;
-    _leaderFine = message['fine'] == true;
     final target = _target;
     if (target != null && rate.toDouble() != _rate) {
       _setRate(target, rate.toDouble());
     }
-    _intercepts.add(pos - (_rate * at).round());
+    _intercepts.add((
+      value: pos - (_rate * at).round(),
+      fine: message['fine'] == true,
+    ));
     if (_intercepts.length > _interceptWindow) {
       _intercepts.removeAt(0);
     }
@@ -1303,9 +1361,11 @@ class FollowerSession {
     _bufferingSubscription?.cancel();
     _observedPlayer = player;
     _expectOwnPause = false;
-    _bufferingSubscription = player.stream.buffering.listen(
-      (_) => _onAdvancing(player),
-    );
+    _bufferingSubscription = player.stream.buffering.listen((buffering) {
+      // 本机缓冲恢复后的读数不与缓冲前的混用
+      if (!buffering && identical(player, _loadedPlayer)) _drifts.clear();
+      _onAdvancing(player);
+    });
     _playingSubscription = player.stream.playing.listen((playing) {
       _onAdvancing(player);
       if (playing) {
@@ -1457,41 +1517,70 @@ class FollowerSession {
         : (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
-  /// 本机时刻 [localUs] 时主控的位置
-  int? _leaderPosition(int localUs) {
-    if (_intercepts.isEmpty || !_clock.isReady) return null;
-    return (_median(_intercepts) + _rate * _clock.toRemote(localUs)).round();
+  /// 本机时刻 [localUs] 时主控的位置；合格的截距足够时只用合格的，[fine]
+  /// 表示可用于精细对齐。主控的位置太久没有更新时为空
+  ({int pos, bool fine})? _leaderModel(int localUs) {
+    if (_intercepts.isEmpty ||
+        !_clock.isReady ||
+        LinkClock.nowUs - _leaderPosAt > _leaderStaleUs) {
+      return null;
+    }
+    final fine = [
+      for (final item in _intercepts)
+        if (item.fine) item.value,
+    ];
+    final enough = fine.length >= _minFine;
+    final intercept = _median(
+      enough ? fine : [for (final item in _intercepts) item.value],
+    );
+    return (
+      pos: (intercept + _rate * _clock.toRemote(localUs)).round(),
+      fine: enough,
+    );
   }
 
+  int? _leaderPosition(int localUs) => _leaderModel(localUs)?.pos;
+
   /// 本机相对主控（已扣除延迟偏移）的偏差，正值表示本机超前（毫秒），取最近
-  /// 读数的中位数；[fine] 表示参与的读数都可用于精细对齐。倍速变化的瞬态期间
-  /// 的读数不计入，此时返回之前的结果（尚无时为本次读数）
+  /// 读数的中位数：合格（两端都可用于精细对齐）的读数足够时只取合格的，此时
+  /// [fine] 为 true。倍速变化的瞬态期间的读数不计入，此时返回之前的结果（尚无
+  /// 时为本次读数）
   ({double drift, bool fine})? _measure(Player player, int now) {
     final sample = LinkedPlayer.sample(player);
     if (sample == null) return null;
-    final leaderPos = _leaderPosition(sample.at);
-    if (leaderPos == null) return null;
+    final leader = _leaderModel(sample.at);
+    if (leader == null) return null;
+    final leaderPos = leader.pos;
     // 媒体位置差按倍速换算为实际时间
     final raw = ((sample.pos - leaderPos) / _rate + _offsetUs) / 1000;
     final holding = _speed.isHolding(now);
     if (!holding) {
-      _drifts.add((value: raw, fine: sample.fine && _leaderFine));
+      _drifts.add((value: raw, fine: sample.fine && leader.fine));
       if (_drifts.length > _driftWindow) {
         _drifts.removeAt(0);
       }
     }
-    final result = _drifts.isEmpty
-        ? (drift: raw, fine: false)
-        : (
-            drift: _median([for (final item in _drifts) item.value]),
-            fine: _drifts.length >= 3 && _drifts.every((item) => item.fine),
-          );
+    final fine = [
+      for (final item in _drifts)
+        if (item.fine) item.value,
+    ];
+    final ({double drift, bool fine}) result;
+    if (fine.length >= _minFine) {
+      result = (drift: _median(fine), fine: true);
+    } else if (_drifts.isEmpty) {
+      result = (drift: raw, fine: false);
+    } else {
+      result = (
+        drift: _median([for (final item in _drifts) item.value]),
+        fine: false,
+      );
+    }
     if (linkedDiagnostics.isOn) {
       final timePos = sample.audio ? LinkedPlayer.timePos(player) : sample.pos;
       linkedDiagnostics.log(
         'tick src=${sample.audio ? 'apts' : 'tpos'} cost=${sample.cost} '
         'pos=${sample.pos} tpos=$timePos lead=$leaderPos '
-        'leadFine=$_leaderFine raw=${raw.toStringAsFixed(2)} '
+        'leadFine=${leader.fine} raw=${raw.toStringAsFixed(2)} '
         'filt=${result.drift.toStringAsFixed(2)} fine=${result.fine} '
         'hold=$holding p=${_speed.proportional.toStringAsFixed(6)} '
         'i=${_speed.integral.toStringAsFixed(6)} '
@@ -1550,11 +1639,21 @@ class FollowerSession {
     }
     _stall = 0;
     final measured = _measure(player, now);
-    if (measured == null) return null;
+    if (measured == null) {
+      // 无法测量（如主控的位置太久没有更新）：暂停位置修正，保留频差与开环移动
+      _speed.update(errorMs: null, fine: false, now: now);
+      _applySpeed(player);
+      return null;
+    }
     final drift = measured.drift;
     final learnAt = _learnAt;
-    if (learnAt != null && now >= learnAt && _drifts.length >= 3) {
-      _learnStartBias(drift);
+    if (learnAt != null && now >= learnAt) {
+      if (measured.fine) {
+        _learnStartBias(drift);
+      } else if (now >= _settleUntil) {
+        // 稳定期内未能可靠测量，之后已开始修正：本次不学习
+        _learnAt = null;
+      }
     }
     if (now < _settleUntil) return drift;
     final magnitude = drift.abs();

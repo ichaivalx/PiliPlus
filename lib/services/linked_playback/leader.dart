@@ -385,6 +385,7 @@ class LeaderSession {
       return;
     }
     _attach(player);
+    linkedDiagnostics.audioParams(player, 'leader loaded');
     round.selfLoaded = true;
     _advance(round);
   }

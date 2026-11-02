@@ -58,10 +58,28 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
     }
   }
 
-  static String _gap(int? gap) {
-    if (gap == null) return '未实测，按 0 计';
-    final ms = (gap.abs() / 1000).toStringAsFixed(1);
-    return '低频${gap < 0 ? '早' : '晚'} $ms ms';
+  static String _range(ChirpBand band) {
+    final (from, to) = band.sweeps.first;
+    return '${from.round()}~${to.round()}Hz';
+  }
+
+  static String _gap(int gap) =>
+      '${gap < 0 ? '早' : '晚'} ${(gap.abs() / 1000).toStringAsFixed(1)} ms';
+
+  /// 主控各频段的实测值
+  static String _leaderGaps(BandGaps gaps) {
+    if (gaps.isEmpty) return '未测到低频';
+    return [
+      for (final MapEntry(key: band, value: gap) in gaps.entries)
+        '${_range(band)} ${_gap(gap)}',
+    ].join('，');
+  }
+
+  /// 跟随端与主控比较所用的频段及差值
+  static String _peerGap(String id) {
+    final pair = linkedBand.pairFor(id);
+    if (pair == null) return '没有与主控都测得的频段，按 0 计';
+    return '按 ${_range(pair.band)} 比主控${_gap(pair.gap - pair.leaderGap)}';
   }
 
   /// 按频段对齐：在线跟随端的偏移随滑块实时平移
@@ -99,9 +117,9 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
       if (available)
         Text(
           [
-            '本机 ${_gap(linkedBand.leaderGap.value)}',
+            '本机低频 ${_leaderGaps(linkedBand.leaderGaps.value)}',
             for (final peer in linkedPlayback.adjustablePeers)
-              '${peer.name} ${_gap(linkedBand.gaps[peer.id])}',
+              '${peer.name} 低频${_peerGap(peer.id)}',
           ].join('；'),
           style: hint,
         ),
@@ -208,7 +226,8 @@ class _CalibrationDialogState extends State<_CalibrationDialog> {
                                   style: device.isReference ? hint : null,
                                 ),
                                 if (done)
-                                  if (device.lowResult case final low?)
+                                  if (device.lowResult(devices.first)
+                                      case final low?)
                                     Text(
                                       low,
                                       textAlign: TextAlign.end,

@@ -1,3 +1,4 @@
+import 'package:PiliPlus/services/linked_playback/calibration_signal.dart';
 import 'package:PiliPlus/services/linked_playback/leader.dart';
 import 'package:PiliPlus/services/linked_playback/linked_playback.dart'
     show LinkedPlayback;
@@ -6,17 +7,29 @@ import 'package:get/get.dart';
 
 final linkedBand = LinkedBand._();
 
-/// 主控的按频段对齐：校准实测各设备低频相对中高频额外的延迟 g（主控为 g₀，
-/// 测不出的设备保底按 0 计），位置 w 在按中高频对齐（0）与按低频对齐（1）之间
-/// 连续调节，各跟随端的延迟偏移在中高频对齐的基础上平移 −w·(g − g₀)，使各设备
-/// 的等效到达 H + w·g 一致。平移量记在主控，滑块移动、重新校准或跟随端重新
-/// 连接时按差额改写其偏移；手动调节的偏移与平移叠加，互不影响
+/// 各低频频段实测的低频相对中高频额外的延迟（微秒），只含能可靠测出的频段
+typedef BandGaps = Map<ChirpBand, int>;
+
+/// 两台设备都可靠测得的低频频段，优先低音区；没有共同频段时为空
+ChirpBand? commonBand(BandGaps a, BandGaps b) {
+  for (final band in const [ChirpBand.bass, ChirpBand.lowMid]) {
+    if (a.containsKey(band) && b.containsKey(band)) return band;
+  }
+  return null;
+}
+
+/// 主控的按频段对齐：校准实测各设备各低频频段相对中高频额外的延迟，跟随端与
+/// 主控按两者都测得的同一频段比较（优先低音区），得到差值 Δg（没有共同频段时
+/// 保底按 0 计）；位置 w 在按中高频对齐（0）与按低频对齐（1）之间连续调节，各
+/// 跟随端的延迟偏移在中高频对齐的基础上平移 −w·Δg。平移量记在主控，滑块移动、
+/// 重新校准或跟随端重新连接时按差额改写其偏移；手动调节的偏移与平移叠加，互不
+/// 影响
 class LinkedBand {
   LinkedBand._();
 
   static const _weightKey = 'linkedPlaybackBandWeight';
-  static const _leaderGapKey = 'linkedPlaybackBandLeaderGap';
-  static const _gapsKey = 'linkedPlaybackBandGaps';
+  static const _leaderGapsKey = 'linkedPlaybackBandLeaderGaps';
+  static const _peerGapsKey = 'linkedPlaybackBandPeerGaps';
   static const _appliedKey = 'linkedPlaybackBandApplied';
 
   /// 0 为按中高频对齐，1 为按低频对齐
@@ -24,35 +37,70 @@ class LinkedBand {
     (GStorage.setting.get(_weightKey, defaultValue: 0.0) as num).toDouble(),
   );
 
-  /// 主控实测的低频相对中高频额外的延迟（微秒），测不出时为空，按 0 计
-  final RxnInt leaderGap = RxnInt(GStorage.setting.get(_leaderGapKey) as int?);
+  /// 主控各频段实测的低频额外延迟
+  final Rx<BandGaps> leaderGaps = Rx<BandGaps>(
+    _gapsOf(GStorage.setting.get(_leaderGapsKey)),
+  );
 
-  /// 各跟随端（设备标识）实测的低频相对中高频额外的延迟（微秒）；测不出或
-  /// 未校准过的没有记录，按 0 计
-  final RxMap<String, int> gaps = RxMap<String, int>(_load(_gapsKey));
+  /// 各跟随端（设备标识）各频段实测的低频额外延迟；都测不出或未校准过的没有
+  /// 记录
+  final RxMap<String, BandGaps> gaps = RxMap<String, BandGaps>(_loadPeers());
 
   /// 各跟随端的延迟偏移中已含的平移量（微秒，按偏移的调节单位取整）
-  final Map<String, int> _applied = _load(_appliedKey);
+  final Map<String, int> _applied = _loadApplied();
 
   /// 已发出、尚待跟随端回报确认的偏移改写及其中所含的平移量
   final Map<String, ({int offsetUs, int shift})> _pending = {};
 
-  static Map<String, int> _load(String key) {
-    final stored = GStorage.setting.get(key);
+  static BandGaps _gapsOf(Object? stored) {
+    if (stored is! Map) return {};
+    final bands = ChirpBand.values.asNameMap();
+    return {
+      for (final MapEntry(key: name, value: gap) in stored.entries)
+        if (bands[name] case final band? when gap is int) band: gap,
+    };
+  }
+
+  static Map<String, Object> _gapsToJson(BandGaps gaps) => {
+    for (final MapEntry(key: band, value: gap) in gaps.entries) band.name: gap,
+  };
+
+  static Map<String, BandGaps> _loadPeers() {
+    final stored = GStorage.setting.get(_peerGapsKey);
     if (stored is! Map) return {};
     return {
-      for (final MapEntry(key: id, value: gap) in stored.entries)
-        if (id is String && gap is int) id: gap,
+      for (final MapEntry(key: id, value: value) in stored.entries)
+        if (id is String) id: _gapsOf(value),
+    };
+  }
+
+  static Map<String, int> _loadApplied() {
+    final stored = GStorage.setting.get(_appliedKey);
+    if (stored is! Map) return {};
+    return {
+      for (final MapEntry(key: id, value: shift) in stored.entries)
+        if (id is String && shift is int) id: shift,
     };
   }
 
   /// 有低频的实测数据，滑块可用
-  bool get available => leaderGap.value != null || gaps.isNotEmpty;
+  bool get available => leaderGaps.value.isNotEmpty || gaps.isNotEmpty;
+
+  /// 跟随端 [id] 与主控比较所用的共同频段及两者的实测值，没有共同频段时为空
+  ({ChirpBand band, int gap, int leaderGap})? pairFor(String id) {
+    final BandGaps peer = gaps[id] ?? const {};
+    final leader = leaderGaps.value;
+    final band = commonBand(peer, leader);
+    if (band == null) return null;
+    return (band: band, gap: peer[band]!, leaderGap: leader[band]!);
+  }
 
   /// 跟随端 [id] 在当前位置应有的平移量
   int shiftFor(String id) {
+    final pair = pairFor(id);
+    if (pair == null) return 0;
     const step = LinkedPlayback.offsetStepUs;
-    final shift = -weight.value * ((gaps[id] ?? 0) - (leaderGap.value ?? 0));
+    final shift = -weight.value * (pair.gap - pair.leaderGap);
     return (shift / step).round() * step;
   }
 
@@ -101,32 +149,36 @@ class LinkedBand {
     if (leader != null) apply(leader);
   }
 
-  /// 校准测得主控与跟随端 [peers]（设备标识）的低频额外延迟，为空的未能实测
-  void calibrated(int? leader, Map<String, int?> peers) {
-    leaderGap.value = leader;
-    for (final MapEntry(key: id, value: gap) in peers.entries) {
-      if (gap == null) {
+  /// 校准测得主控与跟随端 [peers]（设备标识）各频段的低频额外延迟，为空的
+  /// 未能实测
+  void calibrated(BandGaps leader, Map<String, BandGaps> peers) {
+    leaderGaps.value = Map.of(leader);
+    for (final MapEntry(key: id, value: value) in peers.entries) {
+      if (value.isEmpty) {
         gaps.remove(id);
       } else {
-        gaps[id] = gap;
+        gaps[id] = Map.of(value);
       }
     }
     _saveGaps();
   }
 
   void _saveGaps() {
-    if (leaderGap.value case final gap?) {
-      GStorage.setting.put(_leaderGapKey, gap);
-    } else {
-      GStorage.setting.delete(_leaderGapKey);
-    }
-    GStorage.setting.put(_gapsKey, Map<String, int>.of(gaps));
+    GStorage.setting
+      ..put(_leaderGapsKey, _gapsToJson(leaderGaps.value))
+      ..put(_peerGapsKey, {
+        for (final MapEntry(key: id, value: value) in gaps.entries)
+          id: _gapsToJson(value),
+      });
   }
 
   /// 当前的低频记录，及各跟随端当前偏移（含尚待确认的改写）中的平移量
   LinkedBandState snapshot() => (
-    leaderGap: leaderGap.value,
-    gaps: Map.of(gaps),
+    leaderGaps: Map.of(leaderGaps.value),
+    gaps: {
+      for (final MapEntry(key: id, value: value) in gaps.entries)
+        id: Map.of(value),
+    },
     applied: {
       ..._applied,
       for (final MapEntry(key: id, value: pending) in _pending.entries)
@@ -136,14 +188,14 @@ class LinkedBand {
 
   /// 恢复低频记录（撤销校准）；平移量随各跟随端偏移的改写确认后更新
   void restore(LinkedBandState state) {
-    leaderGap.value = state.leaderGap;
+    leaderGaps.value = state.leaderGaps;
     gaps.assignAll(state.gaps);
     _saveGaps();
   }
 }
 
 typedef LinkedBandState = ({
-  int? leaderGap,
-  Map<String, int> gaps,
+  BandGaps leaderGaps,
+  Map<String, BandGaps> gaps,
   Map<String, int> applied,
 });

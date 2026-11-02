@@ -62,7 +62,8 @@ class LinkedSpeedControl {
   int? _lastAt;
   int _holdUntil = 0;
 
-  /// 两次更新的间隔（秒），开环移动每次不超过剩余量
+  /// 两次更新的标称间隔（秒）。开环移动按上次实际的间隔（不短于此）估计到下次
+  /// 更新时的移动量，不超过剩余量
   static const _updateSeconds = 0.25;
 
   double get integral => _integral;
@@ -109,17 +110,15 @@ class LinkedSpeedControl {
     _lastAt ??= now;
   }
 
-  /// 结算上次计时以来开环移动的量（按实际播放的时长），返回经过的时长
+  /// 结算上次计时以来开环移动的量（按实际播放的时长），返回经过的时长。更新
+  /// 延迟时会移动过头，剩余量保留符号，下次更新反向补回
   int _settle(int now) {
     final last = _lastAt;
     _lastAt = now;
     if (last == null) return 0;
     final elapsed = now - last;
     if (_shift != 0 && elapsed > 0) {
-      final moved = -_shift * elapsed;
-      _pendingUs = _pendingUs > 0
-          ? max(0.0, _pendingUs - moved)
-          : min(0.0, _pendingUs - moved);
+      _pendingUs += _shift * elapsed;
     }
     return elapsed;
   }
@@ -149,13 +148,15 @@ class LinkedSpeedControl {
     required bool fine,
     required int now,
   }) {
-    final dt = min(_settle(now), _maxDtUs);
+    final elapsed = _settle(now);
+    final dt = min(elapsed, _maxDtUs);
     if (_pendingUs.abs() >= 1) {
       final magnitude = _pendingUs.abs() / 1e6;
-      // 按下次更新时再次估计，不超过剩余量
+      // 按下次更新时再次估计，不超过剩余量；更新间隔变长时按实际间隔（不截断），
+      // 避免每次都移动过头而来回振荡
       final shift = min(
         (magnitude / _shiftSeconds).clamp(_minShift, _maxShift).toDouble(),
-        magnitude / _updateSeconds,
+        magnitude / max(_updateSeconds, elapsed / 1e6),
       );
       _shift = _pendingUs > 0 ? -shift : shift;
       _proportional = 0;
@@ -167,7 +168,12 @@ class LinkedSpeedControl {
       _holdUntil = now + holdUs;
       return;
     }
-    if (errorMs == null || now < _holdUntil) return;
+    if (errorMs == null) {
+      // 无法测量：暂停位置修正，只保持已学到的频差
+      _proportional = 0;
+      return;
+    }
+    if (now < _holdUntil) return;
     final magnitude = errorMs.abs();
     if (magnitude > _coarseMs) {
       _proportional = (-errorMs / 1000 / _coarseTauSeconds)
